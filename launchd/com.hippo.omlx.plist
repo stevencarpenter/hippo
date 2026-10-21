@@ -8,7 +8,11 @@
       - The server answers: do nothing, even when the app did not start it.
       - oMLX.app is not running: do nothing. The user quit it, and the app's
         own Launch-at-Login entry (com.omlx.app) starts it at login.
-      - The app runs without a server: ask it to start one.
+      - The app runs without a server and its control socket exists: ask it
+        to start one. A Cmd+Q removes the socket before the app process
+        exits, so the socket check stops a start during that window.
+      base_url is read only from the [inference] table; one trailing slash
+      is stripped. The script has no XML special characters on purpose.
       It never opens the app, so Cmd+Q stays quit, including across the
       dark wakes launchd runs this job in while the lid is closed.
       No KeepAlive on purpose.
@@ -19,7 +23,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>url=$(sed -n 's/^base_url *= *"\([^"]*\)".*/\1/p' "${XDG_CONFIG_HOME:-$HOME/.config}/hippo/config.toml" 2>/dev/null | head -n 1); curl -fs -o /dev/null --max-time 3 "${url:-http://127.0.0.1:42069/v1}/models" || ! pgrep -xq oMLX || exec /Applications/oMLX.app/Contents/MacOS/omlx-cli start --no-wait</string>
+        <string>url=$(sed -n "/^[[:space:]]*\[inference\][[:space:]]*\(#.*\)*\$/,/^[[:space:]]*\[/s/^[[:space:]]*base_url[[:space:]]*=[[:space:]]*[\"']\([^\"']*\)[\"'].*/\1/p" "${XDG_CONFIG_HOME:-$HOME/.config}/hippo/config.toml" 2>/dev/null | head -n 1); url=${url%/}; curl -fs -o /dev/null --max-time 3 "${url:-http://127.0.0.1:42069/v1}/models" || ! pgrep -xq oMLX || [ ! -S "$HOME/Library/Application Support/oMLX/control.sock" ] || exec /Applications/oMLX.app/Contents/MacOS/omlx-cli start --no-wait</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

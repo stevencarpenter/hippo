@@ -973,30 +973,49 @@ mod tests {
         assert!(rendered.contains("<string>/Users/me</string>"));
     }
 
-    /// Runs the rendered keeper script with fake `curl`, `pgrep`, and
-    /// `omlx-cli`, and returns whether it asked oMLX to start.
-    fn omlx_keeper_starts(server_healthy: bool, app_running: bool) -> bool {
+    /// Child half of [`run_omlx_keeper`]: renders the keeper plist the way
+    /// `hippo daemon install-omlx` does, with this process's HOME, PATH, and
+    /// XDG_CONFIG_HOME. A no-op unless `HIPPO_TEST_OMLX_PLIST` is set.
+    #[test]
+    fn omlx_keeper_render_child() {
+        let Some(out) = std::env::var_os("HIPPO_TEST_OMLX_PLIST") else {
+            return;
+        };
+        let home = dirs::home_dir().unwrap();
+        let vars = detect_vars(&home.join("brain"), Some(home.join("bin/hippo"))).unwrap();
+        let template = include_str!("../../../launchd/com.hippo.omlx.plist");
+        std::fs::write(out, render_plist(template, &vars)).unwrap();
+    }
+
+    struct KeeperRun {
+        probed: String,
+        started: bool,
+    }
+
+    /// Renders the keeper plist with HOME and XDG_CONFIG_HOME in a temp dir,
+    /// decodes ProgramArguments and EnvironmentVariables as launchd does,
+    /// and runs the script with fake `curl`, `pgrep`, and `omlx-cli`.
+    fn run_omlx_keeper(
+        config_toml: &str,
+        server_healthy: bool,
+        app_running: bool,
+        control_socket: bool,
+    ) -> KeeperRun {
         use std::os::unix::fs::PermissionsExt;
 
-        let template = include_str!("../../../launchd/com.hippo.omlx.plist");
-        let script = template
-            .split("<string>-c</string>")
-            .nth(1)
-            .and_then(|rest| rest.split("<string>").nth(1))
-            .and_then(|rest| rest.split("</string>").next())
-            .expect("keeper runs an inline /bin/sh -c script");
-
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("bin");
+        // /tmp keeps the control socket path under the sun_path limit.
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let home = dir.path();
+        let bin = home.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let marker = dir.path().join("started");
         let fake = |name: &str, body: String| {
             let path = bin.join(name);
             std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             path
         };
-        let probed = dir.path().join("probed");
+        let probed = home.join("probed");
+        let marker = home.join("started");
         fake(
             "curl",
             format!(
@@ -1007,37 +1026,75 @@ mod tests {
         );
         fake("pgrep", format!("exit {}", if app_running { 0 } else { 1 }));
         let cli = fake("omlx-cli", format!("echo \"$@\" > '{}'", marker.display()));
-        let script = script.replace(
+
+        let config_home = home.join("xdg-config");
+        std::fs::create_dir_all(config_home.join("hippo")).unwrap();
+        std::fs::write(config_home.join("hippo/config.toml"), config_toml).unwrap();
+        let socket_dir = home.join("Library/Application Support/oMLX");
+        std::fs::create_dir_all(&socket_dir).unwrap();
+        let _socket = control_socket.then(|| {
+            std::os::unix::net::UnixListener::bind(socket_dir.join("control.sock")).unwrap()
+        });
+
+        let plist = home.join("com.hippo.omlx.plist");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "install::tests::omlx_keeper_render_child"])
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_DATA_HOME", home.join("xdg-data"))
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("HIPPO_TEST_OMLX_PLIST", &plist)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "render child: {output:?}");
+
+        let output = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import json, plistlib, sys\n\
+                 p = plistlib.load(open(sys.argv[1], 'rb'))\n\
+                 print(json.dumps([p['ProgramArguments'], p['EnvironmentVariables']]))",
+            ])
+            .arg(&plist)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "plist decode: {output:?}");
+        let (args, env): (Vec<String>, std::collections::HashMap<String, String>) =
+            serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(env["HOME"], home.to_str().unwrap());
+        assert_eq!(env["XDG_CONFIG_HOME"], config_home.to_str().unwrap());
+        assert_eq!(args[..2], ["/bin/sh", "-c"]);
+        let script = args[2].replace(
             "/Applications/oMLX.app/Contents/MacOS/omlx-cli",
             cli.to_str().unwrap(),
         );
 
-        let config_dir = dir.path().join(".config/hippo");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::write(
-            config_dir.join("config.toml"),
-            "[inference]\nbase_url = \"http://127.0.0.1:4242/v1\"\n",
-        )
-        .unwrap();
-
-        let status = std::process::Command::new("/bin/sh")
-            .args(["-c", &script])
+        let status = std::process::Command::new(&args[0])
+            .args([&args[1], &script])
             .env_clear()
-            .env("HOME", dir.path())
-            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .envs(&env)
             .status()
             .unwrap();
         assert!(status.success(), "keeper must exit 0 in every case");
-        assert_eq!(
-            std::fs::read_to_string(&probed).unwrap().trim(),
-            "http://127.0.0.1:4242/v1/models",
-            "keeper must probe the configured inference base_url"
-        );
         let started = std::fs::read_to_string(&marker).ok();
         if let Some(args) = &started {
             assert_eq!(args.trim(), "start --no-wait");
         }
-        started.is_some()
+        KeeperRun {
+            probed: std::fs::read_to_string(&probed).unwrap().trim().to_owned(),
+            started: started.is_some(),
+        }
+    }
+
+    const KEEPER_CONFIG: &str = "[inference]\nbase_url = \"http://127.0.0.1:4242/v1\"\n";
+
+    fn omlx_keeper_starts(server_healthy: bool, app_running: bool) -> bool {
+        let run = run_omlx_keeper(KEEPER_CONFIG, server_healthy, app_running, app_running);
+        assert_eq!(
+            run.probed, "http://127.0.0.1:4242/v1/models",
+            "keeper must probe the configured inference base_url"
+        );
+        run.started
     }
 
     #[test]
@@ -1056,6 +1113,45 @@ mod tests {
     #[test]
     fn omlx_keeper_starts_the_server_when_the_app_runs_without_one() {
         assert!(omlx_keeper_starts(false, true));
+    }
+
+    #[test]
+    fn omlx_keeper_does_not_start_while_a_quitting_app_has_no_socket() {
+        // Cmd+Q removes the control socket before the process exits.
+        assert!(!run_omlx_keeper(KEEPER_CONFIG, false, true, false).started);
+    }
+
+    #[test]
+    fn omlx_keeper_reads_base_url_only_from_the_inference_table() {
+        let probe = |config: &str| run_omlx_keeper(config, true, false, false).probed;
+        assert_eq!(
+            probe(
+                "[models]\nbase_url = \"http://wrong:1/v1\"\n\n\
+                 [inference]\nbase_url = \"http://127.0.0.1:4242/v1\"\n\
+                 [brain]\nbase_url = \"http://wrong:2/v1\"\n"
+            ),
+            "http://127.0.0.1:4242/v1/models"
+        );
+        assert_eq!(
+            probe("[inference]\n  base_url = \"http://127.0.0.1:4242/v1\"\n"),
+            "http://127.0.0.1:4242/v1/models",
+            "indented key"
+        );
+        assert_eq!(
+            probe("[inference]\nbase_url = 'http://127.0.0.1:4242/v1'\n"),
+            "http://127.0.0.1:4242/v1/models",
+            "single-quoted TOML string"
+        );
+        assert_eq!(
+            probe("[inference]\nbase_url = \"http://127.0.0.1:4242/v1/\"\n"),
+            "http://127.0.0.1:4242/v1/models",
+            "one trailing slash is stripped"
+        );
+        assert_eq!(
+            probe("[models]\nbase_url = \"http://wrong:1/v1\"\n"),
+            "http://127.0.0.1:42069/v1/models",
+            "no [inference] base_url falls back to the default"
+        );
     }
 
     /// The brain LaunchAgent must resolve `TYPESAFE_API_KEY` from 1Password at

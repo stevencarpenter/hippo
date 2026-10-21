@@ -82,9 +82,11 @@ If Hippo is configured to use the oMLX macOS app, `mise run install:omlx`
 installs an optional `com.hippo.omlx` keeper LaunchAgent. Every 60 s it checks
 `[inference].base_url`. If the server answers, or oMLX.app is not running, it
 does nothing. If the app is running without a server, it runs
-`omlx-cli start --no-wait`. It never reopens a quit app, so Cmd+Q stays quit;
-the app's own Launch-at-Login entry starts oMLX at login. After a crash, reopen
-oMLX.app yourself.
+`omlx-cli start --no-wait`. It never reopens a quit app, so Cmd+Q stays quit.
+Because of this, login start relies on oMLX's own Launch-at-Login setting
+(`~/Library/LaunchAgents/com.omlx.app.plist`); `install:omlx` warns when it is
+off. After a quit or a crash, reopen oMLX.app yourself
+(`open -gj /Applications/oMLX.app` or `mise run omlx:start`).
 `mise run omlx:start|stop|restart|status|logs` manage the app from the
 repo; `omlx:stop` also unloads the keeper so the server stays stopped.
 
