@@ -63,6 +63,66 @@ def test_http_and_mcp_read_identical_query_settings(tmp_path, monkeypatch):
     )  # MCP reads the recipe, starts no worker.
 
 
+def primed_rerank_outcomes(monkeypatch):
+    from collections import defaultdict
+
+    from hippo_brain import telemetry
+
+    records = defaultdict(list)
+
+    class Meter:
+        def create_counter(self, name, **_):
+            class Counter:
+                def add(self, value, attrs):
+                    records[name].append((value, attrs))
+
+            return Counter()
+
+        create_histogram = create_counter
+
+    monkeypatch.setattr(telemetry, "get_meter", lambda _: Meter())
+    return records
+
+
+def test_mcp_startup_primes_decision_counters_for_jev_rerank(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    records = primed_rerank_outcomes(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    path = tmp_path / ".config/hippo/config.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text('[retrieval]\nrerank=true\nrerank_backend="jev"\n')
+    monkeypatch.setattr(mcp_module, "_state", SimpleNamespace())
+    monkeypatch.setattr(mcp_module, "_jev_client_from_config", lambda _: None)
+
+    def no_vector_db(_):
+        raise OSError("vector store not needed")
+
+    monkeypatch.setattr(mcp_module, "open_vector_db", no_vector_db)
+    mcp_module._init_state()
+    assert {
+        (attrs["task"], attrs["outcome"])
+        for value, attrs in records["hippo.brain.decision.count"]
+        if value == 0 and attrs["backend"] == "jev"
+    } == {("rerank", "success"), ("rerank", "fallback"), ("rerank", "cancelled")}
+
+
+def test_brain_server_startup_primes_rerank_and_classification_counters(tmp_db, monkeypatch):
+    _, path = tmp_db
+    records = primed_rerank_outcomes(monkeypatch)
+    retrieval.configure({"rerank": True, "rerank_backend": "jev"})
+    BrainServer(db_path=str(path), classification_enabled=True)
+    primed = {
+        (attrs["task"], attrs["outcome"])
+        for value, attrs in records["hippo.brain.decision.count"]
+        if value == 0
+    }
+    assert ("rerank", "success") in primed
+    assert ("classification", "stale") in primed
+
+
 def test_mcp_jev_uses_configured_key_without_inherited_fallback(monkeypatch):
     monkeypatch.setenv("TYPESAFE_API_KEY", "rolled-key")
     monkeypatch.setattr(mcp_module.shutil, "which", lambda _: "/usr/local/bin/op")

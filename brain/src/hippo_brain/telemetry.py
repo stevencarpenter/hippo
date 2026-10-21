@@ -192,17 +192,14 @@ def hist(histogram, value, **attrs):
         histogram.record(value, attrs)
 
 
-DECISION_OUTCOMES = (
-    "success",
-    "fallback",
-    "cancelled",
-    "failed",
-    "error",
-    "retry",
-    "stale",
-    "skipped",
-    "unknown",
-)
+# Outcomes each task's recorder can produce. Rerank maps every stop reason to
+# success, fallback, or cancelled; classification records ready (success),
+# stale, cancelled, failed, or retry.
+DECISION_TASK_OUTCOMES = {
+    "rerank": ("success", "fallback", "cancelled"),
+    "classification": ("success", "stale", "cancelled", "failed", "retry"),
+}
+DECISION_ERROR_OUTCOMES = ("fallback", "failed", "error", "retry")
 
 
 def _decision_instruments(meter):
@@ -242,12 +239,14 @@ def _decision_instruments(meter):
 
 
 def prime_decision_metrics(rerank_backend: str | None, *, classification: bool = False) -> None:
-    """Export zero-valued decision counters before the first decision.
+    """Add zero to the decision counters for each producible outcome, then flush.
 
     A per-session ``hippo-mcp`` process otherwise exports its first sample with
     the first rerank already counted, so Prometheus ``rate()``/``increase()``
-    never see that increment. The histogram is not primed: a placeholder
-    would be a fake observation.
+    never see that increment. The flush sends the zero series to the collector
+    at startup instead of one export interval later. A decision made before
+    Prometheus first scrapes the collector can still be missed. The histogram
+    is not primed: a placeholder would be a fake observation.
     """
     tasks = []
     if rerank_backend in ("jev", "rules"):
@@ -262,12 +261,20 @@ def prime_decision_metrics(rerank_backend: str | None, *, classification: bool =
             return
         counts, tokens, _ = _decision_instruments(meter)
         for backend, task in tasks:
-            for outcome in DECISION_OUTCOMES:
+            for outcome in DECISION_TASK_OUTCOMES[task]:
                 attrs = {"backend": backend, "task": task, "outcome": outcome}
-                for counter in counts.values():
-                    counter.add(0, attrs)
+                for name, counter in counts.items():
+                    if name != "errors" or outcome in DECISION_ERROR_OUTCOMES:
+                        counter.add(0, attrs)
                 for direction in ("input", "output"):
                     tokens.add(0, {**attrs, "direction": direction})
+        from opentelemetry import metrics as otel_metrics
+
+        # The global may be a proxy provider without force_flush. A short timeout
+        # bounds the startup delay when the collector is down.
+        force_flush = getattr(otel_metrics.get_meter_provider(), "force_flush", None)
+        if callable(force_flush):
+            force_flush(timeout_millis=1000)
     except Exception:
         # Advisory metrics must not fail process startup.
         return
@@ -321,7 +328,7 @@ def record_decision_metrics(diagnostics: dict, task: str = "rerank") -> None:
         }
         counts, tokens, duration = _decision_instruments(meter)
         counts["count"].add(1, attrs)
-        if outcome in ("fallback", "failed", "error", "retry"):
+        if outcome in DECISION_ERROR_OUTCOMES:
             counts["errors"].add(1, attrs)
 
         def timing(value: object, stage: str) -> None:

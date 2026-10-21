@@ -238,12 +238,113 @@ def test_prime_exports_zero_counters_on_the_same_label_sets_the_recorder_uses(me
     assert [value for value, attrs in tokens if attrs == success_input] == [0, 11]
     assert (0, {**success_input, "outcome": "fallback"}) in tokens
     assert (0, {**success_input, "task": "classification", "direction": "output"}) in tokens
-    for name in ("count", "requests", "errors", "usage_unknown", "requests_unknown"):
+    for name in ("count", "requests", "usage_unknown", "requests_unknown"):
         assert (0, {"backend": "jev", "task": "rerank", "outcome": "success"}) in meter.records[
             PREFIX + name
         ]
     # A histogram cannot hold a zero placeholder without a fake observation.
     assert meter.records[PREFIX + "duration"] == []
+
+
+def label_sets(meter):
+    return {
+        name.removeprefix(PREFIX): {frozenset(attrs.items()) for _, attrs in records}
+        for name, records in meter.records.items()
+        if name != PREFIX + "duration"
+    }
+
+
+def test_prime_covers_only_producible_outcomes_and_error_outcomes(meter):
+    telemetry.prime_decision_metrics("jev", classification=True)
+    primed = label_sets(meter)
+
+    def outcomes(name, task):
+        return {dict(attrs)["outcome"] for attrs in primed[name] if dict(attrs)["task"] == task}
+
+    assert outcomes("count", "rerank") == {"success", "fallback", "cancelled"}
+    assert outcomes("count", "classification") == {
+        "success",
+        "stale",
+        "cancelled",
+        "failed",
+        "retry",
+    }
+    assert outcomes("errors", "rerank") == {"fallback"}
+    assert outcomes("errors", "classification") == {"failed", "retry"}
+
+
+RERANK_PASS = {
+    "transport": {"network_calls": 1},
+    "usage": {"input_tokens": 11, "output_tokens": 3},
+}
+FAILED_PASS = {"status": "failed", "usage": None, "transport": None}
+
+
+@pytest.mark.parametrize(
+    "diagnostics",
+    [
+        {"stop_reason": "single_pass", "passes": [RERANK_PASS]},
+        {"stop_reason": "invalid_decision", "fallback_reason": "ValueError", "passes": []},
+        {"stop_reason": "deadline", "fallback_reason": "TimeoutError", "passes": [FAILED_PASS]},
+        {"stop_reason": "cancelled", "passes": [{**FAILED_PASS, "status": "cancelled"}]},
+    ],
+    ids=["success", "fallback-invalid", "fallback-deadline", "cancelled"],
+)
+@pytest.mark.parametrize("backend", ["jev", "rules"])
+def test_recorded_rerank_label_sets_were_primed(monkeypatch, backend, diagnostics):
+    primed_meter, recorded_meter = FakeMeter(), FakeMeter()
+    monkeypatch.setattr(telemetry, "get_meter", lambda _: primed_meter)
+    telemetry.prime_decision_metrics(backend)
+    monkeypatch.setattr(telemetry, "get_meter", lambda _: recorded_meter)
+    telemetry.record_decision_metrics({**diagnostics, "backend": backend}, task="rerank")
+    primed, recorded = label_sets(primed_meter), label_sets(recorded_meter)
+    assert recorded["count"]
+    for name, attrs in recorded.items():
+        assert attrs <= primed[name], name
+
+
+@pytest.mark.parametrize("status", ["ready", "stale", "cancelled", "failed", "retry"])
+def test_recorded_classification_label_sets_were_primed(monkeypatch, status):
+    primed_meter, recorded_meter = FakeMeter(), FakeMeter()
+    monkeypatch.setattr(telemetry, "get_meter", lambda _: primed_meter)
+    telemetry.prime_decision_metrics(None, classification=True)
+    monkeypatch.setattr(telemetry, "get_meter", lambda _: recorded_meter)
+    for record in (
+        {"backend": "jev", "status": status, "usage": None, "transport": None},
+        {"backend": "jev", "status": status, **RERANK_PASS},
+    ):
+        telemetry.record_decision_metrics(record, task="classification")
+    primed, recorded = label_sets(primed_meter), label_sets(recorded_meter)
+    assert recorded["count"]
+    for name, attrs in recorded.items():
+        assert attrs <= primed[name], name
+
+
+def test_prime_flushes_the_global_provider_and_tolerates_one_without_flush(meter, monkeypatch):
+    from opentelemetry import metrics as otel_metrics
+
+    class Flushing:
+        def __init__(self):
+            self.calls = []
+
+        def force_flush(self, timeout_millis):
+            self.calls.append(timeout_millis)
+
+    provider = Flushing()
+    monkeypatch.setattr(otel_metrics, "get_meter_provider", lambda: provider)
+    telemetry.prime_decision_metrics("jev")
+    assert len(provider.calls) == 1
+    assert meter.records[PREFIX + "count"]
+
+    monkeypatch.setattr(otel_metrics, "get_meter_provider", object)
+    telemetry.prime_decision_metrics("jev")
+
+    def broken(timeout_millis):
+        raise RuntimeError("collector down")
+
+    provider.force_flush = broken
+    monkeypatch.setattr(otel_metrics, "get_meter_provider", lambda: provider)
+    telemetry.prime_decision_metrics("jev")
 
 
 def test_prime_skips_local_backend_and_disabled_classification(meter):
