@@ -1,5 +1,6 @@
 pub mod agentic;
 pub mod config;
+pub mod enrichment_state;
 pub mod events;
 pub mod gh_annotations;
 pub mod primitives;
