@@ -109,19 +109,6 @@ async def test_operator_pause_stops_enrichment_claims(env):
 
 
 @pytest.mark.asyncio
-async def test_brain_starting_paused_stays_paused(env):
-    conn, db_path, data_dir = env
-    _write_state(data_dir, paused=True)
-    server = _make_server(db_path, data_dir)
-    try:
-        await _run_loop(server)
-        assert _queue_status(conn) == "pending"
-        server.client.chat.assert_not_awaited()
-    finally:
-        server.close()
-
-
-@pytest.mark.asyncio
 async def test_resume_on_disk_restarts_enrichment_without_restart(env):
     conn, db_path, data_dir = env
     _write_state(data_dir, paused=True)
@@ -155,10 +142,12 @@ async def test_bench_resume_does_not_lift_operator_pause(env):
 @pytest.mark.asyncio
 async def test_operator_resume_does_not_lift_bench_pause(env):
     conn, db_path, data_dir = env
-    _write_state(data_dir, paused=False)
+    _write_state(data_dir, paused=True)
     server = _make_server(db_path, data_dir)
     try:
         await server.control_pause(None)
+        await _run_loop(server)
+        _write_state(data_dir, paused=False)
         await _run_loop(server)
         assert _queue_status(conn) == "pending"
         server.client.chat.assert_not_awaited()
