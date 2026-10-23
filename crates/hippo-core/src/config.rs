@@ -924,10 +924,6 @@ impl HippoConfig {
     pub fn fallback_dir(&self) -> PathBuf {
         self.storage.data_dir.join("fallback")
     }
-
-    pub fn log_path(&self) -> PathBuf {
-        self.storage.data_dir.join("hippo.log")
-    }
 }
 
 pub fn socket_path(data_dir: &Path) -> PathBuf {
