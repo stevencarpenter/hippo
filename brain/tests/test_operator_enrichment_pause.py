@@ -75,7 +75,10 @@ async def _run_loop(server: BrainServer, decision=OK, secs: float = 0.2) -> None
         task = asyncio.create_task(server._enrichment_loop())
         await asyncio.sleep(secs)
         task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def _queue_status(conn) -> str:
