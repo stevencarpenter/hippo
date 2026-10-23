@@ -5,7 +5,7 @@
 **Scope:** Add OpenAI Codex CLI sessions as a hippo capture source, alongside
 Claude Code and opencode.
 **Tracking:** GitHub issue #154 (this feature), under epic #113 (agentic
-ingestion). Implementation plan: `docs/superpowers/plans/2026-05-17-codex-ingestion.md`.
+ingestion). Implementation plan: `docs/archive/superpowers-plans/2026-05-17-codex-ingestion.md`.
 
 ## 1. Summary
 
