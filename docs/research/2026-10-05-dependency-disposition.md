@@ -3,7 +3,8 @@
 Update, 2026-10-23: Firefox packaging now uses Python's ZIP standard library.
 Removing web-ext also removes adbkit and the unpatched node-forge dependency
 from both extension lockfiles. The package test checks the generated archive's
-runtime files, and CI builds and verifies the ZIP.
+runtime files, including `lib/Readability.js`, which the background script
+registers at runtime. CI builds and verifies the ZIP, then runs the package test.
 
 The site now uses patched Astro and DOMPurify releases, with updated Zod,
 undici, and fast-uri floors. Published http-cache-semantics 4.3.0 still reproduces

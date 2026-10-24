@@ -2,7 +2,7 @@
 # flagged by Dependabot / `pnpm audit`. pnpm 10 reads `overrides` from here,
 # not from the deprecated "pnpm" field in package.json.
 #
-#   astro is bumped directly in package.json (^7.3.3); the rest are transitive:
+#   astro is bumped directly in package.json (^7.4.2); the rest are transitive:
 #   - devalue / dompurify / vite / esbuild / yaml / js-yaml : astro + vitest
 #   - undici                                      : unifont, jsdom, linkinator
 #   - brace-expansion@5                           : dev-only, via linkinator

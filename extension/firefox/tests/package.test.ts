@@ -8,6 +8,7 @@ test("packages exactly the extension's runtime files", () => {
 
   const checked = Bun.spawnSync(["python3", "-c", `
 import json
+import re
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -19,8 +20,11 @@ with ZipFile('web-ext-artifacts/hippo-browser-capture.zip') as archive:
     expected = {
         'manifest.json', manifest['browser_action']['default_popup'],
         *manifest['background']['scripts'], *manifest['icons'].values(),
-        'dist/content.js', 'dist/popup.js',
+        # Content scripts are registered at runtime, not in the manifest.
+        *re.findall(r'file: "([^"]+)"', Path('src/background.ts').read_text()),
+        *re.findall(r'<script src="([^"]+)"', Path('popup.html').read_text()),
     }
+    assert 'lib/Readability.js' in expected, expected
     assert files == expected, (files, expected)
     assert all(archive.read(name) for name in files)
 `], { cwd });
