@@ -1,9 +1,27 @@
 # Optional dependency disposition, 2026-10-05
 
-The optional Firefox, site, and observability dependency audits remain non-clean.
-Verified patches remove reported vulnerabilities, but two JavaScript package
-advisories and container advisories remain open. This evidence does not approve
-a release or establish 1.0 acceptance.
+Update, 2026-10-23: Firefox packaging now uses Python's ZIP standard library.
+Removing web-ext also removes adbkit and the unpatched node-forge dependency
+from both extension lockfiles. The package test checks the generated archive's
+runtime files, and CI builds and verifies the ZIP.
+
+The site now uses patched Astro and DOMPurify releases, with updated Zod,
+undici, and fast-uri floors. Published http-cache-semantics 4.3.0 still reproduces
+GHSA-ch52-4w7c-c8xp. The site pins that version and applies a checked-in pnpm
+patch that prevents stale allowances from overriding response privacy or
+revalidation requirements. Behavioral tests cover the failing cases and
+ordinary stale public responses. The 2026-10-05 findings are historical.
+These JavaScript fixes do not change the container findings.
+
+Current npm and pnpm audits report zero vulnerabilities. OSV reports zero
+across the Python runtime lock, Python build constraints, site lock, and both
+Firefox locks. All 38 site tests, 14 extension tests, Astro checks, and the
+62-page static build passed. Container images were not rescanned.
+
+On 2026-10-05, the optional Firefox, site, and observability audits were not clean.
+Two JavaScript package advisories and container advisories remained open after
+the prepared patches. That evidence did not approve a release or establish
+1.0 acceptance.
 
 The Firefox and site scans target their resolved lockfiles. Container scans
 target the exact image digests selected by `otel/docker-compose.yml`, on
