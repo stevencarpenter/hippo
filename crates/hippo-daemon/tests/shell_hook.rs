@@ -271,7 +271,19 @@ async fn opt_in_hook_sends_independent_streams_and_preserves_legacy_events() {
         events
     });
     let hook = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../shell/hippo.zsh");
-    let mut shell = Command::new("zsh")
+    let mut shell = Command::new("zsh");
+    // Interactive zsh opens /dev/tty and reads from it instead of the piped stdin.
+    // A new session has no controlling terminal, so zsh reads the script from stdin.
+    // SAFETY: setsid is async-signal-safe and touches no parent state after fork.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut shell, || {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut shell = shell
         .args(["-dfi"])
         .env("HOOK", hook)
         .env("SCRATCH", temp.path().join("legacy-output"))
