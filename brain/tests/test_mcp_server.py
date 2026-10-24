@@ -34,7 +34,7 @@ from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 
 class TestToolRegistration:
     def test_context_tools_advertise_read_only_and_agent_query_has_output_schema(self):
-        assert all(t.annotations.readOnlyHint for t in mcp._tool_manager._tools.values())
+        assert all(t.annotations.read_only_hint for t in mcp._tool_manager._tools.values())
         assert mcp._tool_manager._tools["agent_query"].fn_metadata.output_schema["type"] == "object"
 
     def test_search_knowledge_registered(self):

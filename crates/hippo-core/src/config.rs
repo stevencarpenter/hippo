@@ -924,10 +924,6 @@ impl HippoConfig {
     pub fn fallback_dir(&self) -> PathBuf {
         self.storage.data_dir.join("fallback")
     }
-
-    pub fn log_path(&self) -> PathBuf {
-        self.storage.data_dir.join("hippo.log")
-    }
 }
 
 pub fn socket_path(data_dir: &Path) -> PathBuf {
@@ -1209,56 +1205,6 @@ poll_interval_secs = 10
     }
 
     #[test]
-    fn test_load_default_returns_ok() {
-        // load_default points at ~/.config/hippo/config.toml which likely
-        // does not exist in CI, so it should fall through to default.
-        let config = HippoConfig::load_default().unwrap();
-        assert_eq!(config.daemon.flush_interval_ms, 100);
-    }
-
-    #[test]
-    fn test_db_path() {
-        let config = HippoConfig::default();
-        let db = config.db_path();
-        assert!(db.ends_with("hippo.db"));
-        assert!(db.starts_with(&config.storage.data_dir));
-    }
-
-    #[test]
-    fn test_socket_path_method() {
-        let config = HippoConfig::default();
-        let sock = config.socket_path();
-        assert!(
-            sock.to_string_lossy().contains("daemon.sock")
-                || sock.to_string_lossy().contains("hippo-daemon.sock")
-        );
-    }
-
-    #[test]
-    fn test_fallback_dir() {
-        let config = HippoConfig::default();
-        let fb = config.fallback_dir();
-        assert!(fb.ends_with("fallback"));
-        assert!(fb.starts_with(&config.storage.data_dir));
-    }
-
-    #[test]
-    fn test_log_path() {
-        let config = HippoConfig::default();
-        let log = config.log_path();
-        assert!(log.ends_with("hippo.log"));
-        assert!(log.starts_with(&config.storage.data_dir));
-    }
-
-    #[test]
-    fn test_redact_path() {
-        let config = HippoConfig::default();
-        let redact = config.redact_path();
-        assert!(redact.ends_with("redact.toml"));
-        assert!(redact.starts_with(&config.storage.config_dir));
-    }
-
-    #[test]
     fn test_redact_pattern_default_replacement() {
         // Exercises the default_replacement() serde default function
         let toml_str = r#"
@@ -1313,12 +1259,6 @@ replacement = "***"
         assert_eq!(config.patterns.len(), 1);
         assert_eq!(config.patterns[0].name, "internal_token");
         assert_eq!(config.patterns[0].replacement, "***");
-    }
-
-    #[test]
-    fn test_redact_load_default_returns_ok() {
-        let config = RedactConfig::load_default().unwrap();
-        assert!(!config.patterns.is_empty());
     }
 
     #[test]

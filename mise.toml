@@ -95,10 +95,10 @@ cd extension/firefox
 echo "==> Packaging extension..."
 npm run package --silent
 
-# web-ext emits a .zip; Firefox loads it just fine as an .xpi.
+# The packaging script emits a .zip; Firefox also loads it as an .xpi.
 ARTIFACT=$(ls -t web-ext-artifacts/*.zip 2>/dev/null | head -1)
 if [ -z "$ARTIFACT" ]; then
-    echo "ERROR: web-ext did not produce an artifact"
+    echo "ERROR: extension packaging did not produce an artifact"
     exit 1
 fi
 echo "  Built: $ARTIFACT"

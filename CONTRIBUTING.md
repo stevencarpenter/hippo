@@ -11,7 +11,7 @@ For the codebase's architectural shape, see the [README](README.md) and [`docs/c
 | `hippo-daemon` | Rust (workspace, edition 2024) | Capture from shell + Native Messaging + FSEvents. Stores events to SQLite. Runs the watchdog and probe LaunchAgents. Serves CLI queries over a Unix socket. |
 | `hippo-core` | Rust (library) | Shared types, config schemas, the redaction engine, the SQLite migration runner. |
 | `hippo-brain` | Python 3.14+ (uv-managed) | Polls per-source enrichment queues. Calls LM Studio. Writes knowledge nodes + entities. Embeds via sqlite-vec. Serves the brain HTTP server (`127.0.0.1:9175`) and the `hippo-mcp` MCP server. |
-| `extension/firefox` | TypeScript (web-ext) | Firefox WebExtension that captures allowlisted browsing through native messaging. |
+| `extension/firefox` | TypeScript | Firefox WebExtension that captures allowlisted browsing through native messaging. |
 | `shell/` | zsh | The `preexec`/`precmd` hooks that send shell events to the daemon. |
 | `crates/hippo-core/src/schema.sql` | SQL | The canonical schema for fresh installs. The migration runner in `storage.rs::open_db` keeps existing DBs in sync. |
 

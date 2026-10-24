@@ -36,6 +36,9 @@ This builds the extension, packages it as an .xpi, and side-loads it into the
 `dev-edition-default` Firefox profile at
 `~/Library/Application Support/Firefox/Profiles/*.dev-edition-default/extensions/hippo-browser@local.xpi`.
 
+Packaging requires Python 3 and uses its ZIP standard library. The archive
+contains the manifest, popup, compiled scripts, and icons.
+
 `mise run install` (the full hippo installer) invokes this automatically. If Firefox is
 running when the task completes, restart it to pick up changes.
 

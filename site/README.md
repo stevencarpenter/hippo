@@ -45,8 +45,8 @@ Docs source from `../docs/**`, `../README.md`, `../CONTRIBUTING.md`. The
 
 Locked in:
 - `docs/superpowers/specs/2026-05-01-hippobrain-org-design.md`
-- `docs/superpowers/plans/2026-05-01-hippobrain-org-mvp.md`
-- `docs/superpowers/plans/2026-05-01-hippobrain-org-mvp-addendum.md`
+- `docs/archive/superpowers-plans/2026-05-01-hippobrain-org-mvp.md`
+- `docs/archive/superpowers-plans/2026-05-01-hippobrain-org-mvp-addendum.md`
 
 ## Manual one-time setup (steven)
 

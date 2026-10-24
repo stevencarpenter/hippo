@@ -12,7 +12,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -306,12 +306,10 @@ class TestQueueCleanup:
         conn.close()
 
     def test_releases_orphan_locks(self, tmp_db: Path) -> None:
-        fake_reaped = {"shell": 1, "claude": 0, "browser": 0, "workflow": 0}
-        _watchdog_stub.reap_stale_locks.return_value = fake_reaped
-
         conn = _open_v5(tmp_db)
-        _mod.phase_queue_cleanup(conn, dry_run=False, log=_dummy_log())
-        _watchdog_stub.reap_stale_locks.assert_called_once()
+        with patch.object(_mod, "reap_stale_locks", return_value={"shell": 1}) as reap:
+            _mod.phase_queue_cleanup(conn, dry_run=False, log=_dummy_log())
+        reap.assert_called_once_with(conn, lock_timeout_ms=_mod._QUEUE_LOCK_TIMEOUT_MS, now_ms=ANY)
         conn.close()
 
     def test_resets_recent_failed_rows(self, tmp_db: Path) -> None:

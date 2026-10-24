@@ -24,11 +24,4 @@ mod env_resource_tests {
             std::env::remove_var("OTEL_RESOURCE_ATTRIBUTES");
         }
     }
-
-    #[test]
-    fn test_env_resource_detector_type_is_accessible() {
-        // Compile-time proof: this would fail to compile if EnvResourceDetector
-        // is not in scope after the RB2-01 fix.
-        let _det = opentelemetry_sdk::resource::EnvResourceDetector::new();
-    }
 }

@@ -1,0 +1,22 @@
+diff --git a/index.js b/index.js
+index 56c26025074cbcf218e3ec4d810662da93f8024e..edf8cc06f1571568bd3ac4a79c9b7c9cefd605e5 100644
+--- a/index.js
++++ b/index.js
+@@ -424,6 +424,17 @@ module.exports = class CachePolicy {
+         // the stored response is either:
+         // fresh, or allowed to be served stale
+         if (this.stale()) {
++            // Client stale allowances cannot override response privacy or revalidation.
++            if (
++                !this.storable() || this._rescc['no-cache'] ||
++                (this._isShared && (
++                    this._rescc['proxy-revalidate'] ||
++                    (this._resHeaders['set-cookie'] && !this._rescc.public && !this._rescc.immutable)
++                ))
++            ) {
++                return this._evaluateRequestMissResult(req);
++            }
++
+             // If a value is present, then the client is willing to accept a response that has
+             // exceeded its freshness lifetime by no more than the specified number of seconds
+             const allowsStaleWithoutRevalidation = 'max-stale' in requestCC &&
