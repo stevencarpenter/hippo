@@ -12,7 +12,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from hippo_brain import _default_config_path, _storage_data_dir
@@ -53,7 +53,7 @@ from hippo_brain.telemetry import hist as _hist
 from hippo_brain.telemetry import prime_decision_metrics
 
 logger = setup_logging("hippo-mcp")
-READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
+READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False)
 
 # Instruments are None at import time; _init_telemetry_instruments() must be
 # called from main() after init_telemetry() wires up the real MeterProvider.
@@ -272,7 +272,7 @@ async def _mcp_lifespan(_server):
             _state.jev_client = None
 
 
-mcp = FastMCP(
+mcp = MCPServer(
     "hippo",
     lifespan=_mcp_lifespan,
     instructions=(

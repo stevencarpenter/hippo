@@ -7,11 +7,10 @@
     "watch": "node build.mjs --watch",
     "test": "bun test tests/",
     "typecheck": "tsc --noEmit",
-    "package": "node build.mjs && npx web-ext build --overwrite-dest --ignore-files src/ build.mjs tsconfig.json package.json package-lock.json README.md"
+    "package": "node build.mjs && mkdir -p web-ext-artifacts && python3 -m zipfile -c web-ext-artifacts/hippo-browser-capture.zip manifest.json popup.html dist icons lib"
   },
   "devDependencies": {
     "esbuild": "^0.28",
-    "typescript": "^5.8",
-    "web-ext": "^10.8.0"
+    "typescript": "^7.0.2"
   }
 }

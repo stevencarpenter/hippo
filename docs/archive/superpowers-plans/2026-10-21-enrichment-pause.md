@@ -108,10 +108,9 @@
 
 - [ ] **Step 1: Write failing tests** (reuse fixtures/helpers from `test_bench_pause_rpc.py` / `test_server_extended.py` for a `BrainServer` on a temp DB and data dir, with a stub inference client that records calls):
   - `test_operator_pause_stops_enrichment_claims`: write paused state; run one loop iteration; no queue row changes status from `pending`, stub client received zero chat calls.
-  - `test_brain_starting_paused_stays_paused`: paused state on disk before `BrainServer` is constructed ⇒ same assertions (Review Focus 2).
-  - `test_resume_on_disk_restarts_enrichment_without_restart`: paused, iterate, write running state, iterate ⇒ pending rows get claimed.
+  - `test_resume_on_disk_restarts_enrichment_without_restart`: paused state on disk before `BrainServer` is constructed, iterate ⇒ rows stay `pending` (Review Focus 2); write running state, iterate ⇒ pending rows get claimed.
   - `test_bench_resume_does_not_lift_operator_pause`: operator paused, `POST /control/pause` then `/control/resume` ⇒ still no claims (Review Focus 3).
-  - `test_operator_resume_does_not_lift_bench_pause`: bench paused, operator state running ⇒ no claims.
+  - `test_operator_resume_does_not_lift_bench_pause`: bench paused and operator paused, iterate, write running state, iterate ⇒ no claims.
   - `test_operator_pause_keeps_queries_and_reaper`: operator paused ⇒ a query endpoint returns 200 (not 503) and `_embed_reaper_tick` still embeds an orphan node.
   - `test_pause_transition_resets_preflight_failures`: `source_health` row `brain-preflight` with `consecutive_failures = 40`; brain observes the paused state ⇒ row is `0`; same for the first observation after construction (Review Focus 4).
   - `test_health_reports_operator_pause`: `/health` has `enrichment_paused: true`, `enrichment_paused_since_ms: 1792500000000`, `enrichment_state_valid: true`; invalid file ⇒ `true`, `None`, `false`.

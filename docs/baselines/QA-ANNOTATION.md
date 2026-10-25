@@ -136,4 +136,4 @@ sketches, currently blocked pending design review).
 - Seed code: `brain/src/hippo_brain/bench/qa_seed.py`
 - Filter logic: `brain/src/hippo_brain/bench/downstream_proxy.py::load_qa_items`
 - Methodology panel report: PR #127 review (Copilot + Codex, 2026-05-03)
-- Tracking: `docs/superpowers/plans/2026-05-03-hippo-bench-trust-tracking.md` BT-21
+- Tracking: `docs/archive/superpowers-plans/2026-05-03-hippo-bench-trust-tracking.md` BT-21

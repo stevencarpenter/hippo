@@ -10,7 +10,6 @@ import os
 import statistics
 import time
 import tomllib
-from datetime import timedelta
 from pathlib import Path
 
 from mcp import ClientSession
@@ -168,12 +167,14 @@ async def replay(
         os.chmod(errlog.name, 0o600)
         async with stdio_client(params, errlog=errlog) as (reader, writer):
             async with ClientSession(
-                reader, writer, read_timeout_seconds=timedelta(seconds=timeout_seconds)
+                reader, writer, read_timeout_seconds=float(timeout_seconds)
             ) as session:
                 await session.initialize()
                 inventory = await session.list_tools()
-                require(inventory.nextCursor is None, "incomplete tool inventory")
-                write_artifact(output / "inventory.json", inventory.model_dump(mode="json"))
+                require(inventory.next_cursor is None, "incomplete tool inventory")
+                write_artifact(
+                    output / "inventory.json", inventory.model_dump(mode="json", by_alias=True)
+                )
                 require(TOOLS <= {tool.name for tool in inventory.tools}, "missing context tools")
                 startup_ms = (time.monotonic() - started) * 1000
                 for repeat in range(repeats):
@@ -181,7 +182,7 @@ async def replay(
                         call_started = time.monotonic()
                         try:
                             result = await session.call_tool(case["tool"], case["arguments"])
-                            wire = result.model_dump(mode="json")
+                            wire = result.model_dump(mode="json", by_alias=True)
                         except Exception as error:
                             wire = {
                                 "isError": True,

@@ -1,4 +1,4 @@
-use hippo_core::config::HippoConfig;
+use hippo_core::config::{HippoConfig, RedactConfig};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -28,6 +28,13 @@ fn config_paths_follow_xdg_with_empty_values_treated_as_unset() {
             .map(PathBuf::from)
             .unwrap_or(data_dir);
         assert_eq!(loaded.db_path(), expected_data.join("hippo.db"));
+        assert_eq!(loaded.fallback_dir(), expected_data.join("fallback"));
+        assert_eq!(loaded.redact_path(), config_dir.join("redact.toml"));
+        let redact = RedactConfig::load_default().unwrap();
+        assert_eq!(
+            redact.patterns[0].name,
+            if custom { "xdg-config" } else { ".config" }
+        );
         return;
     }
 
@@ -38,6 +45,11 @@ fn config_paths_follow_xdg_with_empty_values_treated_as_unset() {
             let dir = root.join(base).join("hippo");
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("config.toml"), format!("[brain]\nport = {port}\n")).unwrap();
+            std::fs::write(
+                dir.join("redact.toml"),
+                format!("[[patterns]]\nname = '{base}'\nregex = 'fixture-secret'\n"),
+            )
+            .unwrap();
         }
         let mut command = Command::new(std::env::current_exe().unwrap());
         command

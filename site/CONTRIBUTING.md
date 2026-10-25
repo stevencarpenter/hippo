@@ -134,8 +134,8 @@ sharing-the-blame layer. Cite the rule, fix the PR.
 ## Where the spec lives
 
 - Spec: `docs/superpowers/specs/2026-05-01-hippobrain-org-design.md`
-- Plan: `docs/superpowers/plans/2026-05-01-hippobrain-org-mvp.md`
-- Plan addendum (panel review): `docs/superpowers/plans/2026-05-01-hippobrain-org-mvp-addendum.md`
+- Plan: `docs/archive/superpowers-plans/2026-05-01-hippobrain-org-mvp.md`
+- Plan addendum (panel review): `docs/archive/superpowers-plans/2026-05-01-hippobrain-org-mvp-addendum.md`
 
 The plan + addendum are the source of truth for *what* the site does. The
 "things we don't do" list above is the source of truth for *what* it doesn't.

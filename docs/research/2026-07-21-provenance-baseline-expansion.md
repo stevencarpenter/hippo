@@ -2,7 +2,7 @@
 
 > Date: 2026-07-21. Method: internal evidence (live DB queries, source audit) + external landscape scan (all external claims carry URLs; star counts verified 2026-07-21).
 > Purpose: fix the **provenance baseline** — what must be true about lineage, capture integrity, and trust in Hippo's data — before expanding capability (consolidation layer, more sources, proactive agents) and before any userbase beyond the author.
-> Related: `docs/superpowers/specs/2026-07-21-brain-consolidation-layer-design.md`, `docs/superpowers/plans/2026-07-21-brain-consolidation-phases.md`.
+> Related: `docs/superpowers/specs/2026-07-21-brain-consolidation-layer-design.md`, `docs/archive/superpowers-plans/2026-07-21-brain-consolidation-phases.md`.
 
 ## 1. Internal evidence: four months of real operation
 

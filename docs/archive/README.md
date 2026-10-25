@@ -164,3 +164,27 @@ Pre-v0.16 planning, retrospectives, and one-time install/audit work.
 | [`architecture-review-tracker.md`](v0.9-to-v0.16-history/architecture-review-tracker.md) | Architecture-review working doc; superseded by `docs/capture/` |
 | [`schema-migration-strategy.md`](v0.9-to-v0.16-history/schema-migration-strategy.md) | Schema migrations as of v4. Live schema is v13+; the migration *mechanism* is unchanged but version numbers are out of date. See `crates/hippo-core/src/storage.rs` for current behavior. |
 | [`smoke-test-and-risk-assessment.md`](v0.9-to-v0.16-history/smoke-test-and-risk-assessment.md) | 2026-03-27 install-impact assessment for a fresh-machine install |
+
+### `superpowers-plans/`
+
+Implementation plans formerly in `docs/superpowers/plans/` (May to October 2026). Their companion specs stay in [`docs/superpowers/specs/`](../superpowers/specs/). Paths inside these plans still name their original `docs/superpowers/plans/` location.
+
+| Doc | Topic |
+|---|---|
+| [`2026-05-01-hippobrain-org-mvp.md`](superpowers-plans/2026-05-01-hippobrain-org-mvp.md) | hippobrain.org site implementation plan |
+| [`2026-05-01-hippobrain-org-mvp-addendum.md`](superpowers-plans/2026-05-01-hippobrain-org-mvp-addendum.md) | hippobrain.org plan addendum (panel review synthesis) |
+| [`2026-05-03-hippo-bench-trust-ralph-plan.md`](superpowers-plans/2026-05-03-hippo-bench-trust-ralph-plan.md) | hippo-bench trust initiative: Ralph-loop plan |
+| [`2026-05-03-hippo-bench-trust-tracking.md`](superpowers-plans/2026-05-03-hippo-bench-trust-tracking.md) | hippo-bench trust initiative: tracking document (BT-*) |
+| [`2026-05-17-agentic-session-coverage.md`](superpowers-plans/2026-05-17-agentic-session-coverage.md) | Agentic session coverage |
+| [`2026-05-17-codex-ingestion.md`](superpowers-plans/2026-05-17-codex-ingestion.md) | Codex session ingestion |
+| [`2026-05-18-embedding-orphan-reaper.md`](superpowers-plans/2026-05-18-embedding-orphan-reaper.md) | Embedding orphan reaper and watchdog invariant |
+| [`2026-05-23-understand-static-pages-deploy.md`](superpowers-plans/2026-05-23-understand-static-pages-deploy.md) | Publish the Understand-Anything dashboard to hippobrain.org/understand/ |
+| [`2026-05-25-cursor-ingestion.md`](superpowers-plans/2026-05-25-cursor-ingestion.md) | Cursor agent session ingestion |
+| [`2026-05-30-hippo-bench-trust-blockers.md`](superpowers-plans/2026-05-30-hippo-bench-trust-blockers.md) | hippo-bench trust blockers |
+| [`2026-05-31-bench-results-datastore.md`](superpowers-plans/2026-05-31-bench-results-datastore.md) | Bench results datastore and dashboard |
+| [`2026-05-31-hippo-bench-mise-tasks.md`](superpowers-plans/2026-05-31-hippo-bench-mise-tasks.md) | hippo-bench mise task suite |
+| [`2026-06-27-claude-auto-memory-spike.md`](superpowers-plans/2026-06-27-claude-auto-memory-spike.md) | Claude auto-memory research spike |
+| [`2026-06-28-claude-auto-memory-epic.md`](superpowers-plans/2026-06-28-claude-auto-memory-epic.md) | Claude auto-memory epic |
+| [`2026-07-06-otel-0.32-stack-upgrade.md`](superpowers-plans/2026-07-06-otel-0.32-stack-upgrade.md) | OpenTelemetry 0.32 stack upgrade |
+| [`2026-07-21-brain-consolidation-phases.md`](superpowers-plans/2026-07-21-brain-consolidation-phases.md) | Brain consolidation layer phase plan |
+| [`2026-10-21-enrichment-pause.md`](superpowers-plans/2026-10-21-enrichment-pause.md) | Operator enrichment pause |

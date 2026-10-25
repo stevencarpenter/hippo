@@ -1,6 +1,6 @@
 # Brain Consolidation Layer Design
 
-> Status: draft. Linear push pending API access — see `docs/superpowers/plans/2026-07-21-brain-consolidation-phases.md` for the issue breakdown.
+> Status: draft. Linear push pending API access — see `docs/archive/superpowers-plans/2026-07-21-brain-consolidation-phases.md` for the issue breakdown.
 
 ## Summary
 
