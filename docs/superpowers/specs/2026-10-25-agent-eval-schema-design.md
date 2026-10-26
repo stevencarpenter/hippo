@@ -759,7 +759,9 @@ Producer changes the contract needs:
    token usage over all units: `input_tokens`, `output_tokens`,
    `cache_read_tokens`, and `cache_creation_tokens` (from the `usage` keys
    `input_tokens`, `output_tokens`, `cache_read_input_tokens`, and
-   `cache_creation_input_tokens`). `head_sha` read later at `log` time can
+   `cache_creation_input_tokens`), and `session_id` (from
+   `CLAUDE_CODE_SESSION_ID` at review start; the key is absent when that
+   variable is unset). `head_sha` read later at `log` time can
    point to a later commit, so `log` must not read it. If `base` or `HEAD`
    does not resolve to a SHA, `mechanical_review.py` refuses to run, so
    `run.json` always holds both SHAs.
@@ -768,8 +770,10 @@ Producer changes the contract needs:
    `sha256(repo | base_sha | head_sha | input_sha256 | started_at)`. All of
    these come from the out dir, never from `now()`. The id replaces today's
    `run_id = out.name`, which is not unique when an out dir is reused.
-   `session_id` comes from `CLAUDE_CODE_SESSION_ID`, with `harness` set to
-   `claude-code` when that variable is set. `line_text` is the raw source
+   `session_id` comes from `run.json`. Only when `run.json` has no
+   `session_id` key does `log` fall back to `CLAUDE_CODE_SESSION_ID` in its
+   own environment. `harness` is set to `claude-code` whenever a
+   `session_id` is written. `line_text` is the raw source
    line (section 3.7).
 3. **Finding id.** The first 16 hex characters of
    `sha256(run_id | path | unit_hash | side line | claim)`. Today's id omits
