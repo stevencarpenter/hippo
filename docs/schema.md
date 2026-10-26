@@ -211,7 +211,7 @@ WHERE rn = 1;
 
 Index: `idx_eval_escapes_repo_path (repo, path)`.
 
-**Bench case export.** `hippo eval export-bench-cases --out DIR [--since 90d] [--repo PATH]` (`crates/hippo-daemon/src/eval_export.rs`) turns accepted findings and escapes into private cases for the agents repository's blind-review bench (`bench.py run --cases-dir DIR`). It reads these tables and the repositories in `repo`; it writes nothing to the database.
+**Bench case export.** `hippo eval export-bench-cases --out DIR [--since 90d] [--repo PATH]` (`crates/hippo-daemon/src/eval_export.rs`) turns accepted findings and escapes into private cases for the agents repository's blind-review bench (`bench.py run --cases-dir DIR`). It reads these tables and the repositories in `repo`; it writes nothing to the database. The bench measures whether a reviewer flags a defect that a change introduces, so the exported diff goes from the fixed file to the defective one and introduces the flagged line.
 
 - Findings: the effective verdict (the query above) is `accepted`, `side` is `+`, and a fix commit is known: the accepted verdict's `commit_sha`, else the latest automatic `likely-addressed` `commit_sha`. Escapes: `fix_commit` is set.
 - Each case is `<DIR>/f-<finding_id>.json` or `<DIR>/e-<escape_id>.json`, so a rerun overwrites the same files. `base` holds `path` at the fix commit, `head` holds `path` at the defective revision (the run's `head_sha`, or the parent of `fix_commit`), and the single `bug` trap anchors the flagged line as an added row (`["+", line]`), with `claim` or `note` as `why` plus `category` and, for findings, `severity`.
