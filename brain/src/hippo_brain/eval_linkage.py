@@ -206,6 +206,16 @@ def _line_on_a_ref(repo: Path, path: str, wanted: str, cache: RefLines) -> str |
     return None
 
 
+def _parent_holds(repo: Path, commit: str, path: str, wanted: str) -> bool:
+    """Whether a true parent of ``commit`` holds the line, so ``commit`` removed it.
+
+    The walk is flattened history, so a sibling-branch commit can follow the one
+    that added the line without descending from it.
+    """
+    parents = _git(repo, "rev-parse", f"{commit}^@").stdout.decode().split()
+    return any(_contains(_blob(repo, parent, path), wanted) for parent in parents)
+
+
 def find_change(
     repo: Path,
     head_sha: str,
@@ -217,7 +227,8 @@ def find_change(
     """First commit after the review whose file no longer holds the flagged line.
 
     The line counts as changed only once it is absent from HEAD, so a line that
-    moved but stayed byte-identical stays open. Commits that descend from the
+    moved but stayed byte-identical stays open. An observed fix is a commit
+    without the line whose true parent has it. Commits that descend from the
     start commit and touch ``path`` are walked oldest first; the line is tracked
     from the start commit or, for a line reviewed before it was committed, from
     the first later commit that contains it. A line that never appears in that
@@ -259,7 +270,7 @@ def find_change(
             first_touch = commit
         if _contains(blob, wanted):
             seen = True
-        elif seen:
+        elif seen and _parent_holds(repo, commit, path, wanted):
             return Outcome(commit, None)
     if seen:
         return Outcome(None, "no walked commit removed the line")

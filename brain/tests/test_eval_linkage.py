@@ -742,3 +742,21 @@ def test_only_pre_review_touches_stay_open(db, repo, tmp_path):
     assert notes == {
         "f1": "line absent at walk start; only commits before the review touch the path"
     }
+
+
+def test_sibling_branch_edit_is_not_the_observed_fix(db, repo, tmp_path):
+    """The line lands on main; a sibling branch never held it; the merge removes it."""
+    conn, db_path = db
+    head = repo.commit({"src/app.py": BASE}, "base")
+    repo.git("checkout", "-q", "-b", "other")
+    repo.commit({"src/app.py": [*BASE, "y = 1"]}, "unrelated edit on a sibling branch")
+    repo.git("checkout", "-q", "main")
+    repo.commit({"src/app.py": ORIGINAL}, "commit the reviewed change on main")
+    repo.git("merge", "-q", "--no-ff", "--no-commit", "-s", "ours", "other")
+    merge = repo.commit({"src/app.py": FIXED}, "merge other with the fix")
+    repo.git("branch", "-q", "-D", "other")
+    add_finding(conn, repo.path, head)
+
+    run(db_path, tmp_path)
+
+    assert [(row[3], row[4]) for row in verdicts(conn)] == [(merge, None)]
