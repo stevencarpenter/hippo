@@ -67,8 +67,11 @@ class TestToolRegistration:
     def test_query_memory_history_registered(self):
         assert "query_memory_history" in mcp._tool_manager._tools
 
-    def test_exactly_twelve_tools(self):
-        assert len(mcp._tool_manager._tools) == 12
+    def test_get_agent_scorecard_registered(self):
+        assert "get_agent_scorecard" in mcp._tool_manager._tools
+
+    def test_exactly_thirteen_tools(self):
+        assert len(mcp._tool_manager._tools) == 13
 
 
 class TestAgentQueryTool:

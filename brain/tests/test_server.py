@@ -494,7 +494,7 @@ def test_brain_server_get_routes(tmp_db):
     _, db_path = tmp_db
     server = _make_server(str(db_path))
     routes = server.get_routes()
-    assert len(routes) == 13
+    assert len(routes) == 14
     paths = [r.path for r in routes]
     assert "/health" in paths
     assert "/sessions" in paths
@@ -1151,7 +1151,7 @@ def test_knowledge_list_routes_included(tmp_db):
     paths = [r.path for r in routes]
     assert "/knowledge" in paths
     assert "/knowledge/{id:int}" in paths
-    assert len(routes) == 13
+    assert len(routes) == 14
 
 
 # ---- /knowledge/{id} ----
@@ -1338,7 +1338,7 @@ def test_events_list_routes_included(tmp_db):
     routes = server.get_routes()
     paths = [r.path for r in routes]
     assert "/events" in paths
-    assert len(routes) == 13
+    assert len(routes) == 14
 
 
 # ---- /sessions ----
@@ -1459,7 +1459,7 @@ def test_sessions_list_routes_included(tmp_db):
     routes = server.get_routes()
     paths = [r.path for r in routes]
     assert "/sessions" in paths
-    assert len(routes) == 13
+    assert len(routes) == 14
 
 
 # ---- _record_preflight_to_source_health ----

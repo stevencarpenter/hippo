@@ -126,7 +126,7 @@ Resumed sessions: when a later file continues a `session_id`, the upsert is per 
 - Redacted columns pass through the builtin `RedactionEngine` patterns and then the operator's `redact.toml` before the insert. Ingest redacts first and then caps `claim` and `note` at 4,000 characters, `line_text` at 1,000, and `category` at 64.
 - `severity`, `confidence`, and `verdict` are validated by the ingest code, not by `CHECK`, so a new value needs a contract version and no table rebuild.
 - `payload_expiry = ingested_at + 7,776,000,000` (90 days), on `eval_findings` and `eval_verdicts` only. See [Event payload retention](#event-payload-retention).
-- No brain enrichment, embedding, FTS, classification, retrieval, or MCP path reads these tables ([AP-14](capture/anti-patterns.md)).
+- No brain enrichment, embedding, FTS, classification, or retrieval path reads these tables ([AP-14](capture/anti-patterns.md)). The scorecard module `hippo_brain.scorecard_queries` (MCP tool `get_agent_scorecard`, brain `GET /agents/scorecard`, `hippo agents report`) reads them for aggregates only and never selects `claim`, `line_text`, or `note` ([MCP reference](mcp-reference.md#get_agent_scorecard)).
 
 `eval_review_runs`: one row per review invocation. Insert once, never updated. No column is redacted.
 
