@@ -365,6 +365,95 @@ pub(crate) struct SessionSegment {
     source_file: String,
     is_subagent: bool,
     parent_session_id: Option<String>,
+    /// Filled by the ingest paths from the sibling `meta.json`; never part of
+    /// `content_hash`.
+    subagent: SubagentMeta,
+}
+
+/// Subagent identity read from `<stem>.meta.json`, the sibling of a subagent
+/// transcript `<stem>.jsonl`. Each field is `None` when the file or the key is
+/// absent or has an unexpected type.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SubagentMeta {
+    agent_type: Option<String>,
+    spawn_depth: Option<i64>,
+    tool_use_id: Option<String>,
+    finished: Option<bool>,
+}
+
+/// True for any transcript below a `subagents` directory, including
+/// `subagents/workflows/<wf>/agent-<id>.jsonl`. Workflow `journal.jsonl`
+/// files sit there too but are orchestration journals with no `meta.json`.
+pub(crate) fn is_subagent_transcript(path: &Path) -> bool {
+    path.file_name() != Some(std::ffi::OsStr::new("journal.jsonl"))
+        && path.components().any(|c| c.as_os_str() == "subagents")
+}
+
+/// Read the sibling `meta.json` of a subagent transcript.
+///
+/// Never fails: a missing or malformed file, a missing `agentType` or
+/// `spawnDepth`, or a key of the wrong type logs one `warn` for the file and
+/// leaves the affected fields `None`. `toolUseId` and `finished` are optional
+/// because Claude Code omits them on some agents (for example `finished` on an
+/// agent that has not finished).
+fn read_subagent_meta(path: &Path) -> SubagentMeta {
+    use serde_json::Value;
+
+    if !is_subagent_transcript(path) {
+        return SubagentMeta::default();
+    }
+    let meta_path = path.with_extension("meta.json");
+    let obj = match std::fs::read(&meta_path)
+        .map_err(anyhow::Error::from)
+        .and_then(|bytes| Ok(serde_json::from_slice::<Value>(&bytes)?))
+    {
+        Ok(Value::Object(obj)) => obj,
+        Ok(_) => {
+            warn!(path = %meta_path.display(), "subagent meta.json is not a JSON object");
+            return SubagentMeta::default();
+        }
+        Err(e) => {
+            warn!(path = %meta_path.display(), %e, "subagent meta.json missing or unreadable");
+            return SubagentMeta::default();
+        }
+    };
+
+    let meta = SubagentMeta {
+        agent_type: obj
+            .get("agentType")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        spawn_depth: obj.get("spawnDepth").and_then(Value::as_i64),
+        tool_use_id: obj
+            .get("toolUseId")
+            .and_then(Value::as_str)
+            .map(String::from),
+        finished: obj.get("finished").and_then(Value::as_bool),
+    };
+    let unexpected: Vec<&str> = [
+        ("agentType", meta.agent_type.is_none()),
+        ("spawnDepth", meta.spawn_depth.is_none()),
+        (
+            "toolUseId",
+            obj.contains_key("toolUseId") && meta.tool_use_id.is_none(),
+        ),
+        (
+            "finished",
+            obj.contains_key("finished") && meta.finished.is_none(),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(key, bad)| bad.then_some(key))
+    .collect();
+    if !unexpected.is_empty() {
+        warn!(
+            path = %meta_path.display(),
+            fields = ?unexpected,
+            "subagent meta.json has missing or unexpected fields"
+        );
+    }
+    meta
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -511,13 +600,23 @@ fn extract_tool_summary(block: &serde_json::Value) -> Option<ToolCallSummary> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        "Agent" => inp
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .chars()
-            .take(100)
-            .collect::<String>(),
+        "Agent" => {
+            let description: String = inp
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .chars()
+                .take(100)
+                .collect();
+            match inp
+                .get("subagent_type")
+                .and_then(|v| v.as_str())
+                .filter(|t| !t.is_empty())
+            {
+                Some(subagent_type) => format!("{subagent_type}: {description}"),
+                None => description,
+            }
+        }
         _ => {
             // Generic: stringify first key=value pair, trimmed to 80 chars.
             if let Some(obj) = inp.as_object()
@@ -711,6 +810,7 @@ fn extract_segments(
                 source_file: session_file.path.to_string_lossy().into_owned(),
                 is_subagent: session_file.is_subagent,
                 parent_session_id: session_file.parent_session_id.clone(),
+                subagent: SubagentMeta::default(),
             });
         }
 
@@ -752,6 +852,7 @@ fn extract_segments(
                         source_file: session_file.path.to_string_lossy().into_owned(),
                         is_subagent: session_file.is_subagent,
                         parent_session_id: session_file.parent_session_id.clone(),
+                        subagent: SubagentMeta::default(),
                     });
                     current_chars = 0;
                 }
@@ -1071,17 +1172,36 @@ fn insert_segments(
                  git_branch, slug, title, parent_session_id, is_subagent, summary_text,
                  tool_calls_json, user_prompts_json, source_file, snapshot_diffs_json,
                  commit_messages_json, message_count, token_count, start_time, end_time,
-                 content_hash, created_at)
-             VALUES (?1, 'claude-code', ?2, '', '', ?3, ?4, ?5, '', '', ?6, ?7, ?8,
-                     ?9, ?10, ?11, 'null', '[]', ?12, ?13, ?14, ?15, ?16, ?17)
+                 content_hash, created_at, requested_model, effort, input_tokens,
+                 output_tokens, cache_read_tokens, cache_creation_tokens, spawn_depth,
+                 parent_tool_use_id, subagent_finished, hook_runs, hook_errors,
+                 prevented_continuations, hook_names_json, permission_decisions_json)
+             VALUES (?1, 'claude-code', ?2, '', ?18, ?3, ?4, ?5, '', '', ?6, ?7, ?8,
+                     ?9, ?10, ?11, 'null', '[]', ?12, ?13, ?14, ?15, ?16, ?17,
+                     NULL, NULL, 0, 0, 0, 0, ?19, ?20, ?21, 0, 0, 0, '[]', '{}')
              ON CONFLICT (session_id, harness, segment_index) DO UPDATE SET
-                 end_time          = excluded.end_time,
-                 summary_text      = excluded.summary_text,
-                 tool_calls_json   = excluded.tool_calls_json,
-                 user_prompts_json = excluded.user_prompts_json,
-                 message_count     = excluded.message_count,
-                 token_count       = excluded.token_count,
-                 content_hash      = excluded.content_hash",
+                 end_time                  = excluded.end_time,
+                 summary_text              = excluded.summary_text,
+                 tool_calls_json           = excluded.tool_calls_json,
+                 user_prompts_json         = excluded.user_prompts_json,
+                 message_count             = excluded.message_count,
+                 token_count               = excluded.token_count,
+                 content_hash              = excluded.content_hash,
+                 agent                     = excluded.agent,
+                 requested_model           = excluded.requested_model,
+                 effort                    = excluded.effort,
+                 input_tokens              = excluded.input_tokens,
+                 output_tokens             = excluded.output_tokens,
+                 cache_read_tokens         = excluded.cache_read_tokens,
+                 cache_creation_tokens     = excluded.cache_creation_tokens,
+                 spawn_depth               = excluded.spawn_depth,
+                 parent_tool_use_id        = excluded.parent_tool_use_id,
+                 subagent_finished         = excluded.subagent_finished,
+                 hook_runs                 = excluded.hook_runs,
+                 hook_errors               = excluded.hook_errors,
+                 prevented_continuations   = excluded.prevented_continuations,
+                 hook_names_json           = excluded.hook_names_json,
+                 permission_decisions_json = excluded.permission_decisions_json",
             params![
                 seg.session_id,
                 seg.segment_index,
@@ -1100,6 +1220,10 @@ fn insert_segments(
                 seg.end_time,
                 content_hash,
                 now_ms,
+                seg.subagent.agent_type.as_deref().unwrap_or(""),
+                seg.subagent.spawn_depth,
+                seg.subagent.tool_use_id,
+                seg.subagent.finished.map(i64::from),
             ],
         )?;
 
@@ -1135,7 +1259,14 @@ fn insert_segments(
             && seg.tool_calls.is_empty()
             && seg.assistant_texts.is_empty();
 
+        // Unchanged content already waiting in the queue: rewriting the row
+        // would only bump `updated_at`, so a metadata-only reparse leaves the
+        // queue untouched.
+        let already_pending =
+            prior.is_some() && !hash_changed && prior_queue_status == Some("pending");
+
         if !is_empty
+            && !already_pending
             && decide_enqueue(
                 was_insert,
                 &content_hash,
@@ -1214,14 +1345,26 @@ fn try_insert_segments(conn: &Connection, segments: &[SessionSegment]) -> (usize
     }
 }
 
+/// Extract redacted segments and attach the subagent `meta.json` fields.
+///
+/// Only the ingest paths read `meta.json`; the probe and doctor callers of
+/// `extract_segments` compare content hashes and timestamps, which the
+/// metadata never affects.
+fn extract_segments_for_ingest(path: &Path) -> Result<Vec<SessionSegment>> {
+    let redaction = RedactionEngine::builtin();
+    let mut segments = extract_segments(&SessionFile::from_path(path), &redaction)?;
+    let subagent = read_subagent_meta(path);
+    for seg in &mut segments {
+        seg.subagent = subagent.clone();
+    }
+    Ok(segments)
+}
+
 /// Extract segments from a JSONL session file and insert them into the given
 /// connection. Used by the FS watcher (per-event invocation in a `spawn_blocking`
 /// task with its own connection). Returns `(inserted, skipped, errors)`.
 pub fn ingest_session_file(conn: &Connection, path: &Path) -> (usize, usize, usize) {
-    let redaction = RedactionEngine::builtin();
-    let session_file = SessionFile::from_path(path);
-
-    let segments = match extract_segments(&session_file, &redaction) {
+    let segments = match extract_segments_for_ingest(path) {
         Ok(s) => s,
         Err(e) => {
             warn!(path = %path.display(), %e, "failed to extract session segments");
@@ -1237,10 +1380,7 @@ pub fn ingest_session_file(conn: &Connection, path: &Path) -> (usize, usize, usi
 }
 
 fn write_session_segments(db_path: &Path, path: &Path) -> (usize, usize, usize) {
-    let redaction = RedactionEngine::builtin();
-    let session_file = SessionFile::from_path(path);
-
-    let segments = match extract_segments(&session_file, &redaction) {
+    let segments = match extract_segments_for_ingest(path) {
         Ok(s) => s,
         Err(e) => {
             warn!(path = %path.display(), %e, "failed to extract session segments");
@@ -2024,6 +2164,7 @@ mod tests {
             source_file: "/test/session.jsonl".to_string(),
             is_subagent: false,
             parent_session_id: None,
+            subagent: SubagentMeta::default(),
         }
     }
 
@@ -2198,7 +2339,212 @@ mod tests {
             source_file: "/test/session.jsonl".to_string(),
             is_subagent: false,
             parent_session_id: None,
+            subagent: SubagentMeta::default(),
         }
+    }
+
+    // ─── HIPO-59: subagent meta.json + Agent summary ────────────────────────
+
+    #[test]
+    fn agent_summary_prefixes_subagent_type_and_truncates_description() {
+        let long = "d".repeat(150);
+        let block = serde_json::json!({
+            "type": "tool_use",
+            "name": "Agent",
+            "input": {"subagent_type": "rust-implementer", "description": long},
+        });
+        let summary = extract_tool_summary(&block).unwrap().summary;
+        assert_eq!(summary, format!("rust-implementer: {}", "d".repeat(100)));
+
+        let no_type = serde_json::json!({
+            "name": "Agent",
+            "input": {"description": "find TODOs", "subagent_type": ""},
+        });
+        assert_eq!(
+            extract_tool_summary(&no_type).unwrap().summary,
+            "find TODOs"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+        type Writer = LogBuf;
+        fn make_writer(&'a self) -> LogBuf {
+            self.clone()
+        }
+    }
+
+    /// Run `f` under a thread-local subscriber and count the WARN lines it logs.
+    fn count_warns<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        let buf = LogBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        let out = tracing::subscriber::with_default(subscriber, f);
+        let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        (out, logs.lines().filter(|l| l.contains("WARN")).count())
+    }
+
+    fn subagent_path(root: &Path) -> std::path::PathBuf {
+        let dir = root.join("-proj/parent-uuid/subagents");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("agent-a1.jsonl")
+    }
+
+    #[test]
+    fn read_subagent_meta_parses_all_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = subagent_path(tmp.path());
+        std::fs::write(
+            path.with_extension("meta.json"),
+            r#"{"agentType":"Explore","description":"x","toolUseId":"toolu_1","spawnDepth":2,"finished":true}"#,
+        )
+        .unwrap();
+        let (meta, warns) = count_warns(|| read_subagent_meta(&path));
+        assert_eq!(
+            meta,
+            SubagentMeta {
+                agent_type: Some("Explore".into()),
+                spawn_depth: Some(2),
+                tool_use_id: Some("toolu_1".into()),
+                finished: Some(true),
+            }
+        );
+        assert_eq!(warns, 0);
+    }
+
+    #[test]
+    fn read_subagent_meta_optional_keys_absent_is_silent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = subagent_path(tmp.path());
+        std::fs::write(
+            path.with_extension("meta.json"),
+            r#"{"agentType":"Explore","spawnDepth":1}"#,
+        )
+        .unwrap();
+        let (meta, warns) = count_warns(|| read_subagent_meta(&path));
+        assert_eq!(meta.tool_use_id, None);
+        assert_eq!(meta.finished, None);
+        assert_eq!(warns, 0);
+    }
+
+    #[test]
+    fn read_subagent_meta_degrades_to_null_with_one_warn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = subagent_path(tmp.path());
+        let meta_path = path.with_extension("meta.json");
+        let cases = [
+            None,
+            Some("{not json"),
+            Some("[1, 2]"),
+            Some(r#"{"agentType":7,"spawnDepth":"deep","toolUseId":3,"finished":"yes"}"#),
+        ];
+        for case in cases {
+            match case {
+                Some(body) => std::fs::write(&meta_path, body).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(&meta_path);
+                }
+            }
+            let (meta, warns) = count_warns(|| read_subagent_meta(&path));
+            assert_eq!(meta, SubagentMeta::default(), "case {case:?}");
+            assert_eq!(warns, 1, "exactly one warn for case {case:?}");
+        }
+    }
+
+    #[test]
+    fn read_subagent_meta_ignores_main_sessions_and_finds_workflow_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("-proj/session.jsonl");
+        let (meta, warns) = count_warns(|| read_subagent_meta(&main));
+        assert_eq!((meta, warns), (SubagentMeta::default(), 0));
+
+        let wf = tmp.path().join("-proj/parent/subagents/workflows/wf_1");
+        std::fs::create_dir_all(&wf).unwrap();
+        let path = wf.join("agent-w1.jsonl");
+        std::fs::write(
+            path.with_extension("meta.json"),
+            r#"{"agentType":"workflow-subagent","spawnDepth":1}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_subagent_meta(&path).agent_type.as_deref(),
+            Some("workflow-subagent")
+        );
+
+        let journal = wf.join("journal.jsonl");
+        let (meta, warns) = count_warns(|| read_subagent_meta(&journal));
+        assert_eq!((meta, warns), (SubagentMeta::default(), 0));
+    }
+
+    /// Metadata columns are refreshed on conflict but never feed
+    /// `content_hash`, so a metadata-only change does not re-enqueue.
+    #[test]
+    fn metadata_only_change_updates_row_without_requeue() {
+        let conn = open_test_db();
+        let seg = make_test_segment("session-meta-001", 0);
+        insert_segments(&conn, std::slice::from_ref(&seg)).unwrap();
+        conn.execute(
+            "UPDATE agentic_enrichment_queue SET status = 'done', updated_at = 1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE agentic_sessions SET last_enriched_content_hash = content_hash",
+            [],
+        )
+        .unwrap();
+
+        let with_meta = SessionSegment {
+            subagent: SubagentMeta {
+                agent_type: Some("Explore".into()),
+                spawn_depth: Some(1),
+                tool_use_id: Some("toolu_9".into()),
+                finished: Some(false),
+            },
+            ..seg.clone()
+        };
+        assert_eq!(
+            compute_segment_content_hash(&seg),
+            compute_segment_content_hash(&with_meta)
+        );
+        let (inserted, skipped) = insert_segments(&conn, &[with_meta]).unwrap();
+        assert_eq!((inserted, skipped), (0, 1));
+
+        let row: (String, Option<i64>, Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT agent, spawn_depth, parent_tool_use_id, subagent_finished
+                 FROM agentic_sessions WHERE session_id = 'session-meta-001'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            ("Explore".into(), Some(1), Some("toolu_9".into()), Some(0))
+        );
+        let queue: (String, i64) = conn
+            .query_row(
+                "SELECT status, updated_at FROM agentic_enrichment_queue",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(queue, ("done".into(), 1), "queue row must be untouched");
     }
 
     #[test]

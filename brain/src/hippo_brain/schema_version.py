@@ -57,19 +57,22 @@ v25→v26 adds event payload expiry and deletion receipts. The brain remains
 read-compatible with v24 and v25; payload GC belongs to the Rust storage writer.
 v26→v27 adds canonical projects, aliases and optional knowledge-node project keys.
 Older readable schemas retain their original project-filter behavior.
+v27→v28 adds agent-evaluation columns on agentic_sessions (all nullable or
+defaulted) and the agentic_session_facts table. Brain reads stay valid on v24
+through v27 because no brain query depends on the new columns.
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-EXPECTED_SCHEMA_VERSION: int = 27
+EXPECTED_SCHEMA_VERSION: int = 28
 
 # The v25 table is optional and additive. Ordinary queries and enrichment remain
 # valid on v24; classification checks its table before reading or writing. Older
 # versions still lack mandatory writer contracts and remain unsupported. The
 # daemon handshake retains exact version equality before running migrations.
-ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({24, 25, 26, EXPECTED_SCHEMA_VERSION})
+ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({24, 25, 26, 27, EXPECTED_SCHEMA_VERSION})
 
 
 def require_accepted_schema(conn: sqlite3.Connection) -> None:

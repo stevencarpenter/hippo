@@ -13,14 +13,16 @@ const SCHEMA: &str = concat!(
     "\n",
     include_str!("schema/auto_memory.sql"),
     "\n",
-    include_str!("schema/auto_memory_taxonomy.sql")
+    include_str!("schema/auto_memory_taxonomy.sql"),
+    "\n",
+    include_str!("schema/agentic_eval.sql")
 );
 
 /// Schema version the daemon expects a healthy DB to be at. Exposed so
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 27;
+pub const EXPECTED_VERSION: i64 = 28;
 
 const PROJECT_SCHEMA: &str = include_str!("schema/projects.sql");
 
@@ -36,6 +38,69 @@ const AUTO_MEMORY_SCHEMA: &str = include_str!("schema/auto_memory.sql");
 
 /// Idempotent v19→v20 auto-memory taxonomy DDL.
 const AUTO_MEMORY_TAXONOMY_SCHEMA: &str = include_str!("schema/auto_memory_taxonomy.sql");
+
+/// Idempotent v27→v28 agent-evaluation indexes and `agentic_session_facts`.
+const AGENTIC_EVAL_SCHEMA: &str = include_str!("schema/agentic_eval.sql");
+
+/// v27→v28 `agentic_sessions` columns, in the order `schema.sql` declares them.
+const AGENTIC_EVAL_COLUMNS: [(&str, &str); 14] = [
+    (
+        "requested_model",
+        "ALTER TABLE agentic_sessions ADD COLUMN requested_model TEXT;",
+    ),
+    (
+        "effort",
+        "ALTER TABLE agentic_sessions ADD COLUMN effort TEXT;",
+    ),
+    (
+        "input_tokens",
+        "ALTER TABLE agentic_sessions ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;",
+    ),
+    (
+        "output_tokens",
+        "ALTER TABLE agentic_sessions ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;",
+    ),
+    (
+        "cache_read_tokens",
+        "ALTER TABLE agentic_sessions ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;",
+    ),
+    (
+        "cache_creation_tokens",
+        "ALTER TABLE agentic_sessions ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0;",
+    ),
+    (
+        "spawn_depth",
+        "ALTER TABLE agentic_sessions ADD COLUMN spawn_depth INTEGER;",
+    ),
+    (
+        "parent_tool_use_id",
+        "ALTER TABLE agentic_sessions ADD COLUMN parent_tool_use_id TEXT;",
+    ),
+    (
+        "subagent_finished",
+        "ALTER TABLE agentic_sessions ADD COLUMN subagent_finished INTEGER;",
+    ),
+    (
+        "hook_runs",
+        "ALTER TABLE agentic_sessions ADD COLUMN hook_runs INTEGER NOT NULL DEFAULT 0;",
+    ),
+    (
+        "hook_errors",
+        "ALTER TABLE agentic_sessions ADD COLUMN hook_errors INTEGER NOT NULL DEFAULT 0;",
+    ),
+    (
+        "prevented_continuations",
+        "ALTER TABLE agentic_sessions ADD COLUMN prevented_continuations INTEGER NOT NULL DEFAULT 0;",
+    ),
+    (
+        "hook_names_json",
+        "ALTER TABLE agentic_sessions ADD COLUMN hook_names_json TEXT NOT NULL DEFAULT '[]';",
+    ),
+    (
+        "permission_decisions_json",
+        "ALTER TABLE agentic_sessions ADD COLUMN permission_decisions_json TEXT NOT NULL DEFAULT '{}';",
+    ),
+];
 
 /// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
 /// for the column name; if absent, runs the supplied DDL. Used by
@@ -1748,6 +1813,20 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             )?;
         }
         tx.execute_batch("PRAGMA user_version = 27;")?;
+        tx.commit()?;
+    }
+
+    // v27→v28 is additive: agent-evaluation metadata columns, two partial
+    // indexes, and the per-session `agentic_session_facts` table.
+    if (1..28).contains(&version) {
+        let tx = conn.transaction()?;
+        if table_exists(&tx, "agentic_sessions")? {
+            for (column, ddl) in AGENTIC_EVAL_COLUMNS {
+                add_column_if_missing(&tx, "agentic_sessions", column, ddl)?;
+            }
+            tx.execute_batch(AGENTIC_EVAL_SCHEMA)?;
+        }
+        tx.execute_batch("PRAGMA user_version = 28;")?;
         tx.commit()?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
@@ -6005,6 +6084,114 @@ mod tests {
         assert_eq!(
             clean_links, 1,
             "clean link must be re-resolved into the agentic link table"
+        );
+    }
+
+    /// `(name, type, notnull, default, pk)` for every column, in declared order.
+    fn column_shapes(
+        conn: &Connection,
+        table: &str,
+    ) -> Vec<(String, String, i64, Option<String>, i64)> {
+        let mut stmt = conn
+            .prepare("SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?1)")
+            .unwrap();
+        stmt.query_map([table], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+
+    fn index_names(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_index_list(?1) ORDER BY name")
+            .unwrap();
+        stmt.query_map([table], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    /// A v27 database is the fresh schema minus everything v28 adds. Migrating
+    /// it must reproduce the fresh v28 `agentic_sessions` and
+    /// `agentic_session_facts` exactly (columns, order, defaults, indexes),
+    /// keep existing rows, and stay idempotent on a partial-success rerun.
+    #[test]
+    fn test_migrate_v27_to_v28_matches_fresh_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = open_db(&dir.path().join("fresh.db")).unwrap();
+
+        let migrated_path = dir.path().join("migrated.db");
+        {
+            let conn = Connection::open(&migrated_path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(
+                "DROP INDEX idx_agentic_sessions_agent;
+                 DROP INDEX idx_agentic_sessions_model;
+                 DROP TABLE agentic_session_facts;",
+            )
+            .unwrap();
+            for (column, _) in AGENTIC_EVAL_COLUMNS {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE agentic_sessions DROP COLUMN {column};"
+                ))
+                .unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO agentic_sessions
+                    (id, session_id, harness, project_dir, cwd, summary_text,
+                     start_time, end_time)
+                 VALUES (9, 'sess-v27', 'claude-code', 'p', '/p', 'keep me', 1, 2);
+                 PRAGMA user_version = 27;",
+            )
+            .unwrap();
+        }
+        let migrated = open_db(&migrated_path).unwrap();
+
+        let version: i64 = migrated
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+        assert_eq!(EXPECTED_VERSION, 28);
+        for table in ["agentic_sessions", "agentic_session_facts"] {
+            assert_eq!(
+                column_shapes(&migrated, table),
+                column_shapes(&fresh, table),
+                "{table}: migrated columns differ from fresh"
+            );
+            assert_eq!(index_names(&migrated, table), index_names(&fresh, table));
+        }
+        let fresh_columns: Vec<String> = column_shapes(&fresh, "agentic_sessions")
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        for (column, _) in AGENTIC_EVAL_COLUMNS {
+            assert!(
+                fresh_columns.iter().any(|c| c == column),
+                "missing {column}"
+            );
+        }
+
+        // Existing rows keep their values and receive the column defaults.
+        let row: (String, i64, String, String, Option<i64>) = migrated
+            .query_row(
+                "SELECT summary_text, input_tokens, hook_names_json,
+                        permission_decisions_json, spawn_depth
+                 FROM agentic_sessions WHERE id = 9",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("keep me".into(), 0, "[]".into(), "{}".into(), None));
+
+        // Partial-success crash: columns present, version not bumped.
+        migrated.execute_batch("PRAGMA user_version = 27;").unwrap();
+        drop(migrated);
+        let rerun = open_db(&migrated_path).unwrap();
+        assert_eq!(
+            column_shapes(&rerun, "agentic_sessions"),
+            column_shapes(&fresh, "agentic_sessions")
         );
     }
 

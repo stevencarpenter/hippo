@@ -1357,6 +1357,10 @@ async fn run() -> Result<()> {
                         "  Segments unchanged:   {:>6}   (idempotent no-op)",
                         summary.segments_unchanged
                     );
+                    println!(
+                        "  Subagent agent coverage: {} / {}   (subagent rows with agent filled / subagent rows)",
+                        summary.subagent_rows_with_agent, summary.subagent_rows
+                    );
                     println!("  Duration:             {:>8.1}s", summary.duration_secs);
                     println!();
                     println!("Run `hippo doctor` to confirm enrichment queue depth.");

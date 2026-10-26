@@ -48,12 +48,53 @@ The Rust migration runner at `storage.rs::open_db` walks every version from the 
 | **v21** | Auto-memory watcher source_health identity. | Seeds `source_health.source = 'auto-memory-watcher'` via `INSERT OR IGNORE`. | Watcher liveness for the auto-memory ingest path joins the capture-health family. |
 | **v22** | Watcher resume-state rename (SNUG-115 Phase A). | Creates `agentic_session_offsets` (same columns as legacy `claude_session_offsets`) and `INSERT OR IGNORE` copies existing rows. **Does not drop** legacy tables. | Claude FS watcher and backfill CLI read/write `agentic_session_offsets`. Legacy `claude_session_offsets` remains frozen on upgraded DBs until Phase B. |
 | **v26** | Event payload expiry and deletion receipts (HIPO-13). | Adds `events.payload_expiry`, an insert trigger and expiry index, and append-only `deletion_receipts`. No event table rebuild or bulk backfill. | Explicit payload GC retains event metadata and joins. See [Event payload retention](#event-payload-retention). |
+| **v28** | Agent-evaluation metadata, Phase 1 (HIPO-57). | Additive: 14 `agentic_sessions` columns via `add_column_if_missing` (no rebuild), partial indexes `idx_agentic_sessions_agent` (`WHERE agent <> ''`) and `idx_agentic_sessions_model` (`WHERE model <> ''`), and the per-session `agentic_session_facts` table. Index and table DDL lives in [`schema/agentic_eval.sql`](../crates/hippo-core/src/schema/agentic_eval.sql), shared by fresh installs and the migration. Existing rows take the column defaults. | Lets evaluation queries key on subagent type, model, tokens, and hook outcomes. See [Agent-evaluation columns](#agent-evaluation-columns-v28). |
 
 The v24-to-v25 migration adds optional classification state without rewriting
 knowledge content or vectors. Its authoritative DDL is
 [`schema/classification.sql`](../crates/hippo-core/src/schema/classification.sql),
 with fresh-install parity covered by the storage migration tests. Operational
 usage is in [Jev decisions](jev-decisions.md).
+
+## Agent-evaluation columns (v28)
+
+All metadata columns below sit outside `content_hash`, so a change that touches only them never re-enqueues enrichment. As of v28 only the Claude Code writer (`claude_session.rs::insert_segments`) sets them; other harnesses leave the defaults.
+
+| Column | Type / default | Meaning |
+|---|---|---|
+| `agent` (existing) | `TEXT DEFAULT ''` | Claude Code: `agentType` from the subagent's sibling `meta.json`; `''` for main sessions and when `meta.json` is missing or malformed. |
+| `requested_model` | `TEXT`, NULL | Model alias the session requested (`requestedModel`). |
+| `effort` | `TEXT`, NULL | Requested reasoning effort (`effort`). |
+| `input_tokens` | `INTEGER NOT NULL DEFAULT 0` | Input tokens for the segment. |
+| `output_tokens` | `INTEGER NOT NULL DEFAULT 0` | Output tokens for the segment. |
+| `cache_read_tokens` | `INTEGER NOT NULL DEFAULT 0` | Prompt-cache read tokens for the segment. |
+| `cache_creation_tokens` | `INTEGER NOT NULL DEFAULT 0` | Prompt-cache creation tokens for the segment. |
+| `spawn_depth` | `INTEGER`, NULL | Claude Code subagent nesting depth (`spawnDepth` in `meta.json`). |
+| `parent_tool_use_id` | `TEXT`, NULL | `toolUseId` of the parent's `Agent` call that spawned this subagent. |
+| `subagent_finished` | `INTEGER`, NULL | `finished` from `meta.json` as 0/1; NULL when absent. |
+| `hook_runs` | `INTEGER NOT NULL DEFAULT 0` | Hook executions in the segment. |
+| `hook_errors` | `INTEGER NOT NULL DEFAULT 0` | Hook executions that reported errors. |
+| `prevented_continuations` | `INTEGER NOT NULL DEFAULT 0` | Stop hooks that prevented a continuation. |
+| `hook_names_json` | `TEXT NOT NULL DEFAULT '[]'` | JSON array of hook names that ran. |
+| `permission_decisions_json` | `TEXT NOT NULL DEFAULT '{}'` | JSON object counting permission decisions. |
+
+The token, hook, `requested_model`, and `effort` columns exist from v28 but hold their defaults until their writers land.
+
+`agentic_session_facts` holds one row per `(session_id, harness)` for totals a harness reports for the whole session:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `session_id`, `harness` | `TEXT NOT NULL`, primary key | Same keys as `agentic_sessions`. |
+| `cost_usd` | `REAL` | Reported session cost in USD. |
+| `duration_ms` | `INTEGER` | Session wall-clock duration. |
+| `tool_duration_ms` | `INTEGER` | Time spent in tools. |
+| `lines_added`, `lines_removed` | `INTEGER` | Reported line changes. |
+| `title` | `TEXT` | Session title. |
+| `cli_version` | `TEXT` | Harness CLI version. |
+| `pr_links_json` | `TEXT NOT NULL DEFAULT '[]'` | JSON array of linked pull requests. |
+| `updated_at` | `INTEGER NOT NULL` | Last write, epoch ms. |
+
+`hippo ingest claude-session-backfill <glob>` re-reads `meta.json` for transcripts still on disk and prints `Subagent agent coverage: <filled> / <rows>` for the processed subagent transcripts.
 
 ## Event payload retention
 
@@ -135,6 +176,7 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 | `events` | Shell commands and Claude tool-use events. `source_kind` distinguishes; `probe_tag` marks synthetic. | `storage.rs::insert_event_at` |
 | `sessions` | One row per zsh session (start time, hostname, shell, user). | Daemon at session start |
 | `agentic_sessions` | Live session store. Supported harnesses and uniqueness constraints are defined in `schema.sql`. Holds segment-derived summary, tool calls / user prompts JSON, message count, content hashes. | Daemon session ingesters; brain enrichment writers |
+| `agentic_session_facts` | One row per `(session_id, harness)`: session-level cost, duration, line counts, title, CLI version, PR links (v28). | Not written yet as of v28 |
 | `agentic_session_offsets` | Per-file FS-watcher resume state (byte_offset, inode, device). | `watch_claude_sessions.rs::process_file` |
 | `browser_events` | Firefox-extension visits with Readability-extracted main text, dwell, scroll depth. | `storage.rs::insert_browser_event` |
 | `workflow_runs` / `_jobs` / `_annotations` / `_log_excerpts` | GitHub Actions ingest. | `gh_poll.rs::run_once` |
