@@ -261,6 +261,10 @@ pub(crate) fn extract_segments(
     let mut session_cwd = String::new();
     let mut ambient_model: Option<String> = None;
     let mut ambient_effort: Option<String> = None;
+    // A turn_context votes for the segment of the next prompt, decided after
+    // that prompt's boundary check; with no later prompt, for the open segment.
+    let mut pending_model: Option<String> = None;
+    let mut pending_effort: Option<String> = None;
     // Previous cumulative `total_token_usage`; segments get the per-field growth.
     let mut prev_total = UsageTotals::default();
 
@@ -281,15 +285,11 @@ pub(crate) fn extract_segments(
         if entry_type == "turn_context" {
             if let Some(model) = payload.get("model").and_then(|v| v.as_str()) {
                 ambient_model = Some(model.to_string());
-                if let Some(c) = current.as_mut() {
-                    c.usage.observe_model(model);
-                }
+                pending_model = ambient_model.clone();
             }
             if let Some(effort) = payload.get("effort").and_then(|v| v.as_str()) {
                 ambient_effort = Some(effort.to_string());
-                if let Some(c) = current.as_mut() {
-                    c.usage.observe_effort(effort);
-                }
+                pending_effort = ambient_effort.clone();
             }
             if let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str())
                 && !cwd.is_empty()
@@ -343,6 +343,8 @@ pub(crate) fn extract_segments(
                 current_chars = 0;
             }
 
+            // A new segment takes the ambient context as its vote below.
+            let continues_segment = current.is_some();
             let seg = current.get_or_insert_with(|| {
                 let cwd = if session_cwd.is_empty() {
                     path.parent()
@@ -383,6 +385,10 @@ pub(crate) fn extract_segments(
                     },
                 }
             });
+            let (model, effort) = (pending_model.take(), pending_effort.take());
+            if continues_segment {
+                observe_context(&mut seg.usage, model.as_deref(), effort.as_deref());
+            }
             if ts > 0 {
                 last_user_ms = ts;
                 seg.end_time = seg.end_time.max(ts);
@@ -466,14 +472,28 @@ pub(crate) fn extract_segments(
         }
     }
 
-    if let Some(seg) = current.take()
+    if let Some(mut seg) = current.take()
         && (!seg.user_prompts.is_empty()
             || !seg.tool_calls.is_empty()
             || !seg.assistant_texts.is_empty())
     {
+        observe_context(
+            &mut seg.usage,
+            pending_model.as_deref(),
+            pending_effort.as_deref(),
+        );
         segments.push(seg);
     }
     Ok(segments)
+}
+
+fn observe_context(usage: &mut SegmentUsage, model: Option<&str>, effort: Option<&str>) {
+    if let Some(m) = model {
+        usage.observe_model(m);
+    }
+    if let Some(e) = effort {
+        usage.observe_effort(e);
+    }
 }
 
 /// Map a Codex `total_token_usage` object to `UsageTotals`. Codex counts
@@ -1287,6 +1307,43 @@ mod tests {
             row,
             ("gpt-synth-1".into(), Some("high".into()), 50, 180, 78)
         );
+    }
+
+    #[test]
+    fn codex_turn_context_votes_for_the_segment_of_its_next_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-models.jsonl");
+        let ctx = |ts: &str, model: &str, effort: &str| {
+            format!(
+                r#"{{"timestamp":"{ts}","type":"turn_context","payload":{{"cwd":"/proj","model":"{model}","effort":"{effort}"}}}}"#
+            )
+        };
+        let prompt = |ts: &str, text: &str| {
+            format!(
+                r#"{{"timestamp":"{ts}","type":"event_msg","payload":{{"type":"user_message","message":"{text}"}}}}"#
+            )
+        };
+        let lines = [
+            r#"{"timestamp":"2026-04-04T00:00:00.000Z","type":"session_meta","payload":{"id":"models","cwd":"/proj"}}"#.to_string(),
+            ctx("2026-04-04T00:00:00.500Z", "model-a", "low"),
+            prompt("2026-04-04T00:00:01.000Z", "first"),
+            ctx("2026-04-04T00:01:00.000Z", "model-b", "high"),
+            prompt("2026-04-04T00:01:01.000Z", "second"),
+            // After a gap: this context belongs to the third prompt, which opens segment 2.
+            ctx("2026-04-04T00:10:00.000Z", "model-b", "high"),
+            prompt("2026-04-04T00:10:01.000Z", "third"),
+            // Mid-segment context with no later prompt: votes for segment 2.
+            ctx("2026-04-04T00:11:00.000Z", "model-c", "low"),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let segs = extract_segments(&path, &RedactionEngine::builtin()).unwrap();
+        assert_eq!(segs.len(), 2);
+        // Segment 1: one model-a turn and one model-b turn; the tie keeps the first seen.
+        assert_eq!(segs[0].usage.model(), Some("model-a"));
+        assert_eq!(segs[0].usage.effort(), Some("low"));
+        // Segment 2: model-b once, model-c once; first seen wins.
+        assert_eq!(segs[1].usage.model(), Some("model-b"));
+        assert_eq!(segs[1].usage.effort(), Some("high"));
     }
 
     #[test]
