@@ -109,19 +109,33 @@ def connect(db_path: Path) -> Generator[sqlite3.Connection]:
         conn.close()
 
 
+class ObjectUnavailable(subprocess.SubprocessError):
+    """A path exists at a revision but its object is not stored locally."""
+
+
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         ["git", "--no-optional-locks", "-C", str(repo), *args],
         capture_output=True,
         check=check,
         timeout=60,
+        env={**os.environ, "GIT_NO_LAZY_FETCH": "1"},  # a partial clone must not fetch
     )
 
 
 def _blob(repo: Path, rev: str, path: str) -> bytes | None:
-    """The file at ``rev``, or None when the path does not exist there."""
+    """The file at ``rev``, or None when the path does not exist there.
+
+    Raises ObjectUnavailable when the path exists but its object cannot be read,
+    so a partial clone never reads as a missing line.
+    """
     found = _git(repo, "cat-file", "blob", f"{rev}:{path}", check=False)
-    return found.stdout if found.returncode == 0 else None
+    if found.returncode == 0:
+        return found.stdout
+    listed = _git(repo, "ls-tree", "-z", rev, "--", path, check=False)
+    if listed.returncode == 0 and not listed.stdout:
+        return None
+    raise ObjectUnavailable(f"git object unavailable: {rev}:{path}")
 
 
 def _contains(blob: bytes | None, wanted: str) -> bool:
@@ -217,6 +231,10 @@ def _parent_blobs(repo: Path, commit: str, path: str) -> list[bytes]:
     return [blob for parent in parents if (blob := _blob(repo, parent, path)) is not None]
 
 
+def _is_ancestor(repo: Path, ancestor: str, commit: str) -> bool:
+    return _git(repo, "merge-base", "--is-ancestor", ancestor, commit, check=False).returncode == 0
+
+
 def find_change(
     repo: Path,
     head_sha: str,
@@ -260,6 +278,7 @@ def find_change(
         path,
     ).stdout.decode()
     seen = _contains(_blob(repo, start, path), wanted)
+    holders = [start] if seen else []  # walked commits whose file holds the line
     touched = False
     first_touch: str | None = None
     for commit, committed in (row.split() for row in listed.splitlines()):
@@ -272,12 +291,16 @@ def find_change(
             first_touch = commit
         if _contains(blob, wanted):
             seen = True
+            holders.append(commit)
             continue
         if not seen:
             continue
         parents = _parent_blobs(repo, commit, path)
-        # No parent has the file: recreated after a deletion, without the line.
         if parents and not any(_contains(parent, wanted) for parent in parents):
+            continue
+        # No parent has the file: a recreation only if a holder is an ancestor, so a
+        # sibling branch adding the file without the line is not the fix.
+        if not parents and not any(_is_ancestor(repo, holder, commit) for holder in holders):
             continue
         if guarded and int(committed) * 1000 < started_at_ms:
             # Divergent history: a mainline removal before the review is not the fix.
@@ -398,6 +421,8 @@ def run_once(
                 continue
             try:
                 outcome = find_change(root, head_sha, path, wanted, started_at, ref_lines)
+            except ObjectUnavailable as exc:
+                outcome = Outcome(None, str(exc))
             except (OSError, subprocess.SubprocessError) as exc:
                 outcome = Outcome(None, f"git failed: {type(exc).__name__}")
             if outcome.reason:

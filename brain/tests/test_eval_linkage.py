@@ -794,3 +794,53 @@ def test_file_deleted_then_recreated_without_the_line_links_the_recreation(db, r
     run(db_path, tmp_path)
 
     assert [(row[3], row[4]) for row in verdicts(conn)] == [(recreated, None)]
+
+
+def test_sibling_branch_file_addition_is_not_a_recreation(db, repo, tmp_path):
+    """Both branches add the reviewed file; only the merge removes the flagged line."""
+    conn, db_path = db
+    head = repo.commit({"README": ["x"]}, "base without the file")
+    repo.git("checkout", "-q", "-b", "other")
+    repo.commit({"src/app.py": [*BASE, "y = 1"]}, "sibling adds the file without the line")
+    repo.git("checkout", "-q", "main")
+    repo.commit({"src/app.py": ORIGINAL}, "main adds the file with the line")
+    repo.git("merge", "-q", "--no-ff", "--no-commit", "-s", "ours", "other")
+    merge = repo.commit({"src/app.py": [*FIXED, "w = 3"]}, "merge other with the fix")
+    repo.git("branch", "-q", "-D", "other")
+    add_finding(conn, repo.path, head)
+
+    run(db_path, tmp_path)
+
+    assert [(row[3], row[4]) for row in verdicts(conn)] == [(merge, None)]
+
+
+def test_unavailable_blob_on_a_ref_keeps_the_finding_open(db, repo, tmp_path):
+    """A ref whose blob is missing locally (offline partial clone) never reads as absent."""
+    conn, db_path = db
+    head = repo.commit({"src/app.py": BASE}, "base")
+    repo.git("checkout", "-q", "-b", "feat")
+    repo.commit({"src/app.py": [*ORIGINAL, "z = 2"]}, "commit the reviewed change on feat")
+    oid = repo.git("rev-parse", "feat:src/app.py")
+    repo.git("checkout", "-q", "main")
+    repo.commit({"src/app.py": [*BASE, "y = 1"]}, "unrelated edit on main")
+    (repo.path / ".git" / "objects" / oid[:2] / oid[2:]).unlink()
+    add_finding(conn, repo.path, head)
+
+    run(db_path, tmp_path)
+
+    assert verdicts(conn) == []
+    notes = json.loads((tmp_path / "eval-linkage-notes.json").read_text())
+    assert notes == {"f1": "git object unavailable: refs/heads/feat:src/app.py"}
+
+
+def test_git_runs_with_lazy_fetch_disabled(monkeypatch, tmp_path):
+    seen: list[dict[str, str]] = []
+
+    def fake_run(*args, **kwargs):
+        seen.append(kwargs["env"])
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr(eval_linkage.subprocess, "run", fake_run)
+    eval_linkage._git(tmp_path, "status")
+
+    assert seen[0]["GIT_NO_LAZY_FETCH"] == "1"
