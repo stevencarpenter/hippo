@@ -49,7 +49,7 @@ local LLMs.
 
     uv run --project brain hippo-mcp    # Start MCP server (stdio transport)
 
-The MCP server exposes four tools: `ask`, `search_knowledge`, `search_events`, `get_entities`.
+The MCP server exposes 12 read-only tools: `ask`, `search_knowledge`, `search_hybrid`, `search_events`, `get_entities`, `get_context`, `agent_query`, `get_ci_status`, `get_lessons`, `list_projects`, `query_memory`, `query_memory_history`. Reference: `docs/mcp-reference.md`.
 Configure in your MCP config (e.g., `~/.claude/settings.json`):
 
 ```json
@@ -128,7 +128,7 @@ Ingestion is handled by `crates/hippo-daemon/src/watch_claude_sessions.rs`, a lo
 
 **Hook install:** `hippo daemon install` writes the hook entry into `~/.claude/settings.json`. `hippo doctor` verifies the hook path matches the repo.
 
-**Schema (agentic unification):** All agentic sources (Claude Code, Codex, Cursor, opencode) now write the `agentic_sessions` / `agentic_enrichment_queue` / `knowledge_node_agentic_sessions` family, keyed by a `harness` column and a `(session_id, harness, segment_index)` conflict target. The v17→v18 migration idempotently backfilled all historical `claude_sessions` rows into the agentic family (harness derived from `source_file`); v23 (SNUG-115 Phase B) dropped the frozen legacy `claude_*` tables. v19 adds the read-only Claude auto-memory source tables. `EXPECTED_VERSION` / `EXPECTED_SCHEMA_VERSION` are 23.
+**Schema (agentic unification):** All agentic sources (Claude Code, Codex, Cursor, opencode, Pi) now write the `agentic_sessions` / `agentic_enrichment_queue` / `knowledge_node_agentic_sessions` family, keyed by a `harness` column and a `(session_id, harness, segment_index)` conflict target. The v17→v18 migration idempotently backfilled all historical `claude_sessions` rows into the agentic family (harness derived from `source_file`); v23 (SNUG-115 Phase B) dropped the frozen legacy `claude_*` tables. v19 adds the read-only Claude auto-memory source tables. v24 widens the `harness` CHECK to accept `pi` and seeds `agentic-session-pi` in `source_health`; v25 adds knowledge classification (additive); v26 adds event payload expiry; v27 adds derived project identity (`docs/canonical-project-identity.md`). `EXPECTED_VERSION` / `EXPECTED_SCHEMA_VERSION` are 27.
 
 ### Codex Session Ingestion
 
@@ -167,6 +167,10 @@ hippo doctor        # shows the agentic-session-cursor line
 **Manual recovery:** `hippo ingest cursor-session <path>` does a one-shot batch import (handy if the poller is wedged or for backfilling a single file).
 
 **Spec:** `docs/superpowers/specs/2026-05-25-cursor-ingestion-design.md`
+
+### Pi Session Ingestion
+
+Ingestion is handled by `pi_session::poll_tick` in `crates/hippo-daemon/src/pi_session.rs`, invoked by `hippo pi-poll` under launchd (`com.hippo.pi-session`). It walks `~/.pi/agent/sessions/<slug>/` for main sessions, subagent runs, and reviewer transcripts, and upserts segments into `agentic_sessions` with `harness = 'pi'`. The `source_health` key is `agentic-session-pi`.
 
 ### Capture Reliability (v0.16+)
 
