@@ -43,7 +43,7 @@ _SLUG = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 # Side '-' lines are not in the reviewed tree, and a NULL hash cannot match (section 3.7).
 _OPEN_FINDINGS = """
-SELECT f.finding_id, f.repo, f.repo_identity, f.path, f.line_hash, r.head_sha
+SELECT f.finding_id, f.repo, f.repo_identity, f.path, f.line_hash, r.head_sha, r.started_at
 FROM eval_findings f
 JOIN eval_review_runs r ON r.run_id = f.run_id
 WHERE f.side = '+' AND f.line_hash IS NOT NULL
@@ -117,42 +117,60 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
 
 def _blob(repo: Path, rev: str, path: str) -> bytes | None:
     """The file at ``rev``, or None when the path does not exist there."""
-    found = _git(repo, "rev-parse", "--verify", "--quiet", f"{rev}:{path}", check=False)
-    if found.returncode != 0:
-        return None
-    return _git(repo, "cat-file", "blob", found.stdout.decode().strip()).stdout
+    found = _git(repo, "cat-file", "blob", f"{rev}:{path}", check=False)
+    return found.stdout if found.returncode == 0 else None
 
 
 def _contains(blob: bytes | None, wanted: str) -> bool:
     return blob is not None and any(line_hash(line) == wanted for line in blob.split(b"\n"))
 
 
-def find_change(repo: Path, head_sha: str, path: str, wanted: str) -> Outcome:
-    """First commit after ``head_sha`` whose file no longer holds the flagged line.
+def _walk_start(repo: Path, head_sha: str, started_at_ms: int) -> tuple[str, list[str]] | str:
+    """The commit the walk starts from and the rev-list range, or a skip reason.
+
+    ``head_sha`` in HEAD's history: start there. ``head_sha`` on a branch that was
+    squash-merged: start at the merge-base, so mainline commits from before the
+    fork point onward are judged against the fork point's file. ``head_sha``
+    pruned: start at HEAD's last commit before the review started.
+    """
+    if _git(repo, "cat-file", "-e", f"{head_sha}^{{commit}}", check=False).returncode == 0:
+        base = _git(repo, "merge-base", head_sha, "HEAD", check=False)
+        if base.returncode == 1:
+            return "HEAD shares no history with head_sha"
+        base.check_returncode()
+        start = base.stdout.decode().strip()
+        return start, ["--ancestry-path", f"{start}..HEAD"]
+    started = str(started_at_ms // 1000)  # git reads a 10-digit number as epoch seconds
+    start = _git(repo, "rev-list", "-1", f"--before={started}", "HEAD").stdout.decode().strip()
+    if not start:
+        return "head_sha not in repository and no commit before the review"
+    return start, [f"--since={started}", "HEAD"]
+
+
+def find_change(
+    repo: Path, head_sha: str, path: str, wanted: str, started_at_ms: int = 0
+) -> Outcome:
+    """First commit after the review whose file no longer holds the flagged line.
 
     The line counts as changed only once it is absent from HEAD, so a line that
-    moved but stayed byte-identical stays open. Commits are walked oldest first;
-    the line is tracked from ``head_sha`` or, for a line reviewed before it was
-    committed, from the first later commit that contains it.
+    moved but stayed byte-identical stays open. Commits that descend from the
+    start commit and touch ``path`` are walked oldest first; the line is tracked
+    from the start commit or, for a line reviewed before it was committed, from
+    the first later commit that contains it. A line that never appears in that
+    history (fixed before its first commit, or fixed on a branch before a squash
+    merge) stays open: no commit records the fix.
     """
-    if _git(repo, "cat-file", "-e", f"{head_sha}^{{commit}}", check=False).returncode != 0:
-        return Outcome(None, "head_sha not in repository")
-    ancestor = _git(repo, "merge-base", "--is-ancestor", head_sha, "HEAD", check=False)
-    if ancestor.returncode == 1:
-        return Outcome(None, "HEAD does not contain head_sha")
-    if ancestor.returncode != 0:
-        raise subprocess.CalledProcessError(
-            ancestor.returncode, ancestor.args, stderr=ancestor.stderr
-        )
     current = _blob(repo, "HEAD", path)
     if current is None:
         return Outcome(None, "file deleted at HEAD")
     if _contains(current, wanted):
         return Outcome(None, None)
-    commits = _git(
-        repo, "rev-list", "--reverse", "--topo-order", f"{head_sha}..HEAD", "--", path
-    ).stdout.split()
-    seen = _contains(_blob(repo, head_sha, path), wanted)
+    walk = _walk_start(repo, head_sha, started_at_ms)
+    if isinstance(walk, str):
+        return Outcome(None, walk)
+    start, revs = walk
+    commits = _git(repo, "rev-list", "--reverse", "--topo-order", *revs, "--", path).stdout.split()
+    seen = _contains(_blob(repo, start, path), wanted)
     for commit in (c.decode() for c in commits):
         blob = _blob(repo, commit, path)
         if blob is None:
@@ -161,7 +179,7 @@ def find_change(repo: Path, head_sha: str, path: str, wanted: str) -> Outcome:
             seen = True
         elif seen:
             return Outcome(commit, None)
-    return Outcome(None, "line not found in any commit after head_sha")
+    return Outcome(None, "line not found in any commit after the review")
 
 
 def gh_pr_urls(slug: str, sha: str) -> list[str]:
@@ -216,7 +234,8 @@ def write_verdicts(
                 ).rowcount
             conn.execute("COMMIT")
         except BaseException:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
     return inserted
 
@@ -249,22 +268,30 @@ def run_once(
         findings = conn.execute(_OPEN_FINDINGS).fetchall()
         links: list[tuple[str, str, str | None]] = []
         reasons: dict[str, str] = {}
-        for finding_id, repo, slug, path, wanted, head_sha in findings:
+        for finding_id, repo, slug, path, wanted, head_sha, started_at in findings:
             root = Path(repo)
             if not (root / ".git").exists():
                 reasons[finding_id] = "repository missing"
                 continue
             try:
-                outcome = find_change(root, head_sha, path, wanted)
+                outcome = find_change(root, head_sha, path, wanted, started_at)
             except (OSError, subprocess.SubprocessError) as exc:
                 outcome = Outcome(None, f"git failed: {type(exc).__name__}")
             if outcome.reason:
                 reasons[finding_id] = outcome.reason
             if outcome.commit:
-                note = _pr_note(conn, repo, slug, outcome.commit) if gh_pr_lookup else None
+                note = None
+                if gh_pr_lookup:
+                    try:
+                        note = _pr_note(conn, repo, slug, outcome.commit)
+                    except sqlite3.Error as exc:
+                        logger.warning("eval linkage: PR chain read failed: %s", exc)
                 links.append((finding_id, outcome.commit, note))
-        _record_reasons(notes_path, reasons)
         linked = write_verdicts(conn, links, now_ms) if links else 0
+    try:
+        _record_reasons(notes_path, reasons)
+    except OSError as exc:
+        logger.warning("eval linkage: cannot update %s: %s", notes_path, exc)
     if linked:
         logger.info("eval linkage: recorded %d likely-addressed verdict(s)", linked)
     return RunSummary(

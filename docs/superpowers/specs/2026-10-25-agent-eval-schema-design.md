@@ -474,10 +474,18 @@ are fixed there. First, "open" means a finding with no verdict row at all, so
 the job never adds a verdict after a human one. Second, the job links only
 side `+` findings: a side `-` line is not in the reviewed tree. Third, the
 flagged line counts as changed only when no line of `HEAD:path` carries its
-`line_hash`; the commit recorded is the first one after `head_sha`, in
-`git rev-list --reverse --topo-order` order over commits that touch `path`,
-whose file lacks the hash. `git log -L` is not used because the finding's
-line number refers to the reviewed working tree, not to `HEAD`. A resolved PR
+`line_hash`; the commit recorded is the first one, in
+`git rev-list --reverse --topo-order --ancestry-path <start>..HEAD -- path`
+order, whose file lacks the hash. The start is `git merge-base head_sha HEAD`,
+which is `head_sha` itself unless the reviewed branch was squash-merged; when
+`head_sha` was pruned, the start is HEAD's last commit before `started_at`
+and the walk uses `--since=<started_at>`. `git log -L` is not used because
+the finding's line number refers to the reviewed working tree, not to
+`HEAD`. A line that never appears in the walked history (fixed before its
+first commit, or fixed on a branch before a squash merge) stays open: no
+commit records the fix, and recorded facts are preferred over inference.
+`review_log.py reconcile` marks such findings `likely-addressed` by
+presence, without a commit. A resolved PR
 from the opt-in `gh` lookup is stored in the automatic verdict's `note` as
 `PR <url>, ...`. It is redacted and expires with the note, and the job asks
 only when the chain in steps 1 and 2 finds nothing. Operation and limits:
