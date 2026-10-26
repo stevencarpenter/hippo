@@ -62,12 +62,15 @@ struct FileState {
     in_flight: Option<tokio::task::AbortHandle>,
     /// The sibling `meta.json` changed: re-ingest even without transcript growth.
     meta_changed: bool,
+    /// Start of the last successful ingest (epoch ms), persisted as
+    /// `agentic_session_offsets.updated_at` so it survives a watcher restart.
+    last_ingest_ms: i64,
 }
 
 /// Load all saved offsets from `agentic_session_offsets` into memory.
 fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
     let mut stmt = conn.prepare(
-        "SELECT path, byte_offset, inode, device, size_at_last_read
+        "SELECT path, byte_offset, inode, device, size_at_last_read, updated_at
          FROM agentic_session_offsets",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -77,12 +80,13 @@ fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
             row.get::<_, i64>(2).unwrap_or(0) as u64,
             row.get::<_, i64>(3).unwrap_or(0) as u64,
             row.get::<_, i64>(4).unwrap_or(0) as u64,
+            row.get::<_, i64>(5).unwrap_or(0),
         ))
     })?;
 
     let mut map = HashMap::new();
     for row in rows {
-        let (path, offset, inode, device, size) = row?;
+        let (path, offset, inode, device, size, last_ingest_ms) = row?;
         map.insert(
             path,
             FileState {
@@ -93,15 +97,16 @@ fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
                 cooldown_until: None,
                 in_flight: None,
                 meta_changed: false,
+                last_ingest_ms,
             },
         );
     }
     Ok(map)
 }
 
-/// Persist a file's offset to `agentic_session_offsets`.
+/// Persist a file's offset to `agentic_session_offsets`. `updated_at` stores
+/// `state.last_ingest_ms`, the start of the ingest that produced this offset.
 fn save_offset(conn: &Connection, path: &Path, state: &FileState) -> Result<()> {
-    let now_ms = Utc::now().timestamp_millis();
     let session_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     conn.execute(
         "INSERT INTO agentic_session_offsets
@@ -121,7 +126,7 @@ fn save_offset(conn: &Connection, path: &Path, state: &FileState) -> Result<()> 
             state.inode as i64,
             state.device as i64,
             state.size_at_last_read as i64,
-            now_ms,
+            state.last_ingest_ms,
         ],
     )?;
     Ok(())
@@ -191,13 +196,20 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
     // unterminated final line — so byte_offset can equal size_at_last_read
     // even when the raw file is slightly larger.
     if current_size <= state.size_at_last_read && !state.meta_changed {
-        return Ok(0);
+        // Reconciliation catches a meta.json write whose FS event was dropped
+        // or that landed while the watcher was stopped.
+        if !sibling_meta_newer(path, state.last_ingest_ms) {
+            return Ok(0);
+        }
+        state.meta_changed = true;
     }
 
     #[cfg(feature = "otel")]
     let start = Instant::now();
     let path_owned = path.to_path_buf();
     let db_path_owned = db_path.to_path_buf();
+    // Taken before the parse reads meta.json, so a write during the ingest stays newer.
+    let ingest_started_ms = Utc::now().timestamp_millis();
 
     let mut task = tokio::task::spawn_blocking(move || -> Result<(usize, usize, usize)> {
         let conn = open_db(&db_path_owned)?;
@@ -208,6 +220,7 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
                 inode: current_inode,
                 device: current_device,
                 size_at_last_read: current_size,
+                last_ingest_ms: ingest_started_ms,
                 ..Default::default()
             };
             save_offset(&conn, &path_owned, &snap).unwrap_or_else(|e| {
@@ -260,6 +273,7 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
         state.size_at_last_read = current_size;
         // Cleared only on success: a timeout or failed ingest must retry the meta update.
         state.meta_changed = false;
+        state.last_ingest_ms = ingest_started_ms;
         #[cfg(feature = "otel")]
         if inserted > 0 {
             crate::metrics::WATCHER_SEGMENTS_INGESTED.add(inserted as u64, &[]);
@@ -267,6 +281,20 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
     }
 
     Ok(inserted)
+}
+
+/// True when the sibling `<stem>.meta.json` was modified at or after
+/// `last_ingest_ms`. `>=` errs toward one extra metadata-only ingest when the
+/// write and the ingest start fall in the same millisecond.
+fn sibling_meta_newer(path: &Path, last_ingest_ms: i64) -> bool {
+    let Some(stem) = path.to_str().and_then(|p| p.strip_suffix(".jsonl")) else {
+        return false;
+    };
+    std::fs::metadata(format!("{stem}.meta.json"))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .is_some_and(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX) >= last_ingest_ms)
 }
 
 /// Walk `~/.claude/projects/**/*.jsonl` recursively (catches subagent files too).
@@ -1257,6 +1285,143 @@ mod tests {
         assert!(pending.is_empty());
     }
 
+    /// `<projects>/proj/<parent>/subagents/agent-ccc.{jsonl,meta.json}`, transcript written.
+    fn subagent_fixture(dir: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
+        let projects = dir.path().join("projects");
+        let sub_dir = projects
+            .join("proj")
+            .join("test-sess-0001-0001-0001-0001-000000000003")
+            .join("subagents");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let jsonl = sub_dir.join("agent-ccc.jsonl");
+        let content = [
+            j("agent-ccc", 0, "user", "hello"),
+            j("agent-ccc", 1, "assistant", "hi there"),
+        ]
+        .join("\n")
+            + "\n";
+        std::fs::write(&jsonl, content).unwrap();
+        (projects, jsonl, sub_dir.join("agent-ccc.meta.json"))
+    }
+
+    fn write_finished_meta(meta: &Path) {
+        std::fs::write(
+            meta,
+            r#"{"agentType":"Explore","spawnDepth":1,"toolUseId":"toolu_1","finished":true}"#,
+        )
+        .unwrap();
+    }
+
+    fn subagent_finished(conn: &Connection) -> Option<i64> {
+        conn.query_row(
+            "SELECT subagent_finished FROM agentic_sessions WHERE session_id = 'agent-ccc'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn queue_rows(conn: &Connection) -> Vec<(i64, String, i64)> {
+        let mut stmt = conn
+            .prepare("SELECT id, status, updated_at FROM agentic_enrichment_queue ORDER BY id")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn offset_updated_at(conn: &Connection, path: &Path) -> i64 {
+        conn.query_row(
+            "SELECT updated_at FROM agentic_session_offsets WHERE path = ?1",
+            [path.to_string_lossy()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Keeps file mtimes and ingest timestamps in distinct milliseconds.
+    fn next_ms() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    #[tokio::test]
+    async fn reconcile_picks_up_meta_json_without_fs_event() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).expect("init test db");
+        let (projects, jsonl, meta) = subagent_fixture(&dir);
+
+        let mut states = HashMap::new();
+        reconcile_files(&projects, &mut states, &db_path).await;
+        assert_eq!(subagent_finished(&conn), None);
+        let before = queue_rows(&conn);
+        assert!(!before.is_empty());
+
+        // The meta.json FS event was dropped: only the heartbeat discovery runs.
+        next_ms();
+        write_finished_meta(&meta);
+        reconcile_files(&projects, &mut states, &db_path).await;
+
+        assert_eq!(subagent_finished(&conn), Some(1));
+        assert_eq!(
+            queue_rows(&conn),
+            before,
+            "metadata-only ingest must not re-enqueue"
+        );
+        assert!(!states[&jsonl].meta_changed);
+    }
+
+    #[tokio::test]
+    async fn reconcile_picks_up_meta_json_written_during_watcher_outage() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).expect("init test db");
+        let (projects, _jsonl, meta) = subagent_fixture(&dir);
+
+        reconcile_files(&projects, &mut HashMap::new(), &db_path).await;
+        let before = queue_rows(&conn);
+
+        // Watcher stopped; Claude Code writes the final meta.json; watcher restarts.
+        next_ms();
+        write_finished_meta(&meta);
+        let mut restarted = load_offsets(&conn).unwrap();
+        reconcile_files(&projects, &mut restarted, &db_path).await;
+
+        assert_eq!(subagent_finished(&conn), Some(1));
+        assert_eq!(queue_rows(&conn), before);
+    }
+
+    #[tokio::test]
+    async fn unchanged_meta_json_does_not_reingest_every_heartbeat() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).expect("init test db");
+        let (projects, jsonl, meta) = subagent_fixture(&dir);
+
+        // Meta written before the first ingest: that ingest already reads it.
+        write_finished_meta(&meta);
+        next_ms();
+        let mut states = HashMap::new();
+        reconcile_files(&projects, &mut states, &db_path).await;
+        assert_eq!(subagent_finished(&conn), Some(1));
+        let ingested_at = offset_updated_at(&conn, &jsonl);
+
+        for _ in 0..2 {
+            next_ms();
+            reconcile_files(&projects, &mut states, &db_path).await;
+        }
+        next_ms();
+        reconcile_files(&projects, &mut load_offsets(&conn).unwrap(), &db_path).await;
+
+        assert_eq!(
+            offset_updated_at(&conn, &jsonl),
+            ingested_at,
+            "no re-ingest"
+        );
+        assert_eq!(states[&jsonl].last_ingest_ms, ingested_at);
+    }
+
     #[tokio::test]
     async fn meta_changed_survives_a_failed_ingest() {
         let dir = TempDir::new().unwrap();
@@ -1360,6 +1525,7 @@ mod tests {
             inode: 42,
             device: 7,
             size_at_last_read: 12000,
+            last_ingest_ms: 1_700_000_000_123,
             ..Default::default()
         };
         save_offset(&conn, &path, &state).unwrap();
@@ -1370,6 +1536,7 @@ mod tests {
         assert_eq!(recovered.inode, 42);
         assert_eq!(recovered.device, 7);
         assert_eq!(recovered.size_at_last_read, 12000);
+        assert_eq!(recovered.last_ingest_ms, 1_700_000_000_123);
     }
 
     #[tokio::test]
