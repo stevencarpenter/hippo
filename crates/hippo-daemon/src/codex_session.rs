@@ -14,6 +14,8 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+use crate::segment_usage::{SegmentUsage, UsageTotals};
+
 /// 5-minute gap between user prompts marks a task boundary.
 const TASK_GAP_MS: i64 = 5 * 60 * 1000;
 /// Accumulated character cap before forcing a new segment.
@@ -43,6 +45,8 @@ pub struct CodexSegment {
     pub tool_calls: Vec<ToolCall>,
     pub message_count: i64,
     pub source_file: String,
+    /// Model, effort, and token usage. Metadata only: never part of `content_hash`.
+    pub usage: SegmentUsage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,6 +259,14 @@ pub(crate) fn extract_segments(
     let mut current_chars: usize = 0;
     let mut last_user_ms: i64 = 0;
     let mut session_cwd = String::new();
+    let mut ambient_model: Option<String> = None;
+    let mut ambient_effort: Option<String> = None;
+    // A turn_context votes for the segment of the next prompt, decided after
+    // that prompt's boundary check; with no later prompt, for the open segment.
+    let mut pending_model: Option<String> = None;
+    let mut pending_effort: Option<String> = None;
+    // Previous cumulative `total_token_usage`; segments get the per-field growth.
+    let mut prev_total = UsageTotals::default();
 
     for obj in &entries {
         let entry_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -271,6 +283,14 @@ pub(crate) fn extract_segments(
             continue;
         }
         if entry_type == "turn_context" {
+            if let Some(model) = payload.get("model").and_then(|v| v.as_str()) {
+                ambient_model = Some(model.to_string());
+                pending_model = ambient_model.clone();
+            }
+            if let Some(effort) = payload.get("effort").and_then(|v| v.as_str()) {
+                ambient_effort = Some(effort.to_string());
+                pending_effort = ambient_effort.clone();
+            }
             if let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str())
                 && !cwd.is_empty()
             {
@@ -323,6 +343,8 @@ pub(crate) fn extract_segments(
                 current_chars = 0;
             }
 
+            // A new segment takes the ambient context as its vote below.
+            let continues_segment = current.is_some();
             let seg = current.get_or_insert_with(|| {
                 let cwd = if session_cwd.is_empty() {
                     path.parent()
@@ -349,8 +371,24 @@ pub(crate) fn extract_segments(
                     tool_calls: Vec::new(),
                     message_count: 0,
                     source_file: source_file.clone(),
+                    usage: {
+                        // The turn_context seen before the first prompt of a
+                        // segment names the model that answers it.
+                        let mut usage = SegmentUsage::default();
+                        if let Some(m) = &ambient_model {
+                            usage.observe_model(m);
+                        }
+                        if let Some(e) = &ambient_effort {
+                            usage.observe_effort(e);
+                        }
+                        usage
+                    },
                 }
             });
+            let (model, effort) = (pending_model.take(), pending_effort.take());
+            if continues_segment {
+                observe_context(&mut seg.usage, model.as_deref(), effort.as_deref());
+            }
             if ts > 0 {
                 last_user_ms = ts;
                 seg.end_time = seg.end_time.max(ts);
@@ -362,6 +400,30 @@ pub(crate) fn extract_segments(
                 seg.user_prompts.push(redacted);
             }
             continue;
+        }
+
+        // `total_token_usage` is cumulative and Codex can repeat an event, so
+        // add only the growth since the previous event. Tokens that arrive
+        // before the first segment opens belong to no segment.
+        if entry_type == "event_msg"
+            && payload_type == "token_count"
+            && let Some(total) = payload
+                .get("info")
+                .and_then(|i| i.get("total_token_usage"))
+                .map(codex_usage_totals)
+        {
+            let delta = UsageTotals {
+                input_tokens: (total.input_tokens - prev_total.input_tokens).max(0),
+                output_tokens: (total.output_tokens - prev_total.output_tokens).max(0),
+                cache_read_tokens: (total.cache_read_tokens - prev_total.cache_read_tokens).max(0),
+                cache_creation_tokens: (total.cache_creation_tokens
+                    - prev_total.cache_creation_tokens)
+                    .max(0),
+            };
+            prev_total = total;
+            if let Some(c) = current.as_mut() {
+                c.usage.add(delta);
+            }
         }
 
         // Everything else only matters inside an open segment.
@@ -410,14 +472,43 @@ pub(crate) fn extract_segments(
         }
     }
 
-    if let Some(seg) = current.take()
+    if let Some(mut seg) = current.take()
         && (!seg.user_prompts.is_empty()
             || !seg.tool_calls.is_empty()
             || !seg.assistant_texts.is_empty())
     {
+        observe_context(
+            &mut seg.usage,
+            pending_model.as_deref(),
+            pending_effort.as_deref(),
+        );
         segments.push(seg);
     }
     Ok(segments)
+}
+
+fn observe_context(usage: &mut SegmentUsage, model: Option<&str>, effort: Option<&str>) {
+    if let Some(m) = model {
+        usage.observe_model(m);
+    }
+    if let Some(e) = effort {
+        usage.observe_effort(e);
+    }
+}
+
+/// Map a Codex `total_token_usage` object to `UsageTotals`. Codex counts
+/// cached tokens inside `input_tokens`, so they are subtracted to keep the four
+/// fields disjoint. `reasoning_output_tokens` is already part of
+/// `output_tokens`.
+fn codex_usage_totals(raw: &serde_json::Value) -> UsageTotals {
+    let field = |key: &str| raw.get(key).and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+    let cached = field("cached_input_tokens");
+    UsageTotals {
+        input_tokens: (field("input_tokens") - cached).max(0),
+        output_tokens: field("output_tokens"),
+        cache_read_tokens: cached,
+        cache_creation_tokens: field("cache_write_input_tokens"),
+    }
 }
 
 /// Build the Codex-framed enrichment digest stored in
@@ -551,9 +642,10 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &CodexSegment) -> 
              git_branch, slug, title, parent_session_id, is_subagent, summary_text,
              tool_calls_json, user_prompts_json, source_file, snapshot_diffs_json,
              commit_messages_json, message_count, token_count, start_time, end_time,
-             content_hash, created_at)
-         VALUES (?1, 'codex', ?2, '', '', ?3, ?4, NULL, '', '', ?5, ?6, ?7, ?8, ?9, ?10,
-                 'null', '[]', ?11, 0, ?12, ?13, ?14, ?15)
+             content_hash, created_at, effort, input_tokens, output_tokens,
+             cache_read_tokens, cache_creation_tokens)
+         VALUES (?1, 'codex', ?2, ?16, '', ?3, ?4, NULL, '', '', ?5, ?6, ?7, ?8, ?9, ?10,
+                 'null', '[]', ?11, ?17, ?12, ?13, ?14, ?15, ?18, ?19, ?20, ?21, ?22)
          ON CONFLICT (session_id, harness, segment_index) DO UPDATE SET
              start_time        = excluded.start_time,
              end_time          = excluded.end_time,
@@ -561,6 +653,13 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &CodexSegment) -> 
              tool_calls_json   = excluded.tool_calls_json,
              user_prompts_json = excluded.user_prompts_json,
              message_count     = excluded.message_count,
+             token_count       = excluded.token_count,
+             model             = excluded.model,
+             effort            = excluded.effort,
+             input_tokens      = excluded.input_tokens,
+             output_tokens     = excluded.output_tokens,
+             cache_read_tokens = excluded.cache_read_tokens,
+             cache_creation_tokens = excluded.cache_creation_tokens,
              content_hash      = excluded.content_hash,
              cwd               = excluded.cwd,
              project_dir       = excluded.project_dir,
@@ -583,6 +682,13 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &CodexSegment) -> 
             seg.end_time,
             content_hash,
             now_ms,
+            seg.usage.model().unwrap_or(""),
+            seg.usage.token_count(),
+            seg.usage.effort(),
+            seg.usage.totals().input_tokens,
+            seg.usage.totals().output_tokens,
+            seg.usage.totals().cache_read_tokens,
+            seg.usage.totals().cache_creation_tokens,
         ],
     )?;
 
@@ -1060,6 +1166,7 @@ mod tests {
             }],
             message_count: 3,
             source_file: "/Users/x/.codex/sessions/2026/04/04/rollout-s1.jsonl".into(),
+            usage: SegmentUsage::default(),
         }
     }
 
@@ -1122,6 +1229,121 @@ mod tests {
         assert_eq!(s.segment_index, 0);
         assert!(s.start_time > 0);
         assert!(s.message_count > 0);
+    }
+
+    #[test]
+    fn codex_usage_uses_counter_growth_and_turn_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-usage.jsonl");
+        let tc = |ts: &str, input: i64, cached: i64, output: i64| {
+            format!(
+                r#"{{"timestamp":"{ts}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{input},"cached_input_tokens":{cached},"cache_write_input_tokens":0,"output_tokens":{output},"reasoning_output_tokens":0,"total_tokens":{}}}}}}}}}"#,
+                input + output
+            )
+        };
+        let lines = [
+            r#"{"timestamp":"2026-04-04T00:00:00.000Z","type":"session_meta","payload":{"id":"usage","cwd":"/proj"}}"#.to_string(),
+            r#"{"timestamp":"2026-04-04T00:00:00.500Z","type":"turn_context","payload":{"cwd":"/proj","model":"gpt-synth-1","effort":"high"}}"#.to_string(),
+            // Before any segment opens: moves the baseline, belongs to no segment.
+            tc("2026-04-04T00:00:00.800Z", 20, 0, 2),
+            r#"{"timestamp":"2026-04-04T00:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"first request"}}"#.to_string(),
+            tc("2026-04-04T00:00:02.000Z", 100, 60, 10),
+            // Repeated event: no growth, must add nothing.
+            tc("2026-04-04T00:00:02.500Z", 100, 60, 10),
+            tc("2026-04-04T00:00:03.000Z", 250, 180, 30),
+            // info null: ignored.
+            r#"{"timestamp":"2026-04-04T00:00:03.500Z","type":"event_msg","payload":{"type":"token_count","info":null}}"#.to_string(),
+            // More than 5 minutes later: second segment.
+            r#"{"timestamp":"2026-04-04T00:10:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"second request"}}"#.to_string(),
+            tc("2026-04-04T00:10:02.000Z", 400, 300, 50),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let segs = extract_segments(&path, &RedactionEngine::builtin()).unwrap();
+        assert_eq!(segs.len(), 2);
+        // Segment 0: growth from the pre-prompt baseline (20 in, 0 cached, 2 out)
+        // to the last event (250 in, 180 cached, 30 out).
+        assert_eq!(
+            segs[0].usage.totals(),
+            UsageTotals {
+                input_tokens: 50,
+                output_tokens: 28,
+                cache_read_tokens: 180,
+                cache_creation_tokens: 0,
+            }
+        );
+        assert_eq!(segs[0].usage.token_count(), 78);
+        // Segment 1: only the growth after segment 0's last event.
+        assert_eq!(
+            segs[1].usage.totals(),
+            UsageTotals {
+                input_tokens: 30,
+                output_tokens: 20,
+                cache_read_tokens: 120,
+                cache_creation_tokens: 0,
+            }
+        );
+        // Segments plus the 20 in / 2 out baseline equal the final counter
+        // (400 in - 300 cached = 100 uncached, 50 out, 300 cached).
+        let (t0, t1) = (segs[0].usage.totals(), segs[1].usage.totals());
+        assert_eq!(t0.input_tokens + t1.input_tokens + 20, 100);
+        assert_eq!(t0.output_tokens + t1.output_tokens + 2, 50);
+        assert_eq!(t0.cache_read_tokens + t1.cache_read_tokens, 300);
+        assert_eq!(segs[0].usage.model(), Some("gpt-synth-1"));
+        assert_eq!(segs[0].usage.effort(), Some("high"));
+        assert_eq!(segs[1].usage.model(), Some("gpt-synth-1"));
+        assert_eq!(segs[0].usage.requested_model(), None);
+
+        let conn = hippo_core::storage::open_db(&tmp.path().join("hippo.db")).unwrap();
+        upsert_segment(&conn, &segs[0]).unwrap();
+        let row: (String, Option<String>, i64, i64, i64) = conn
+            .query_row(
+                "SELECT model, effort, input_tokens, cache_read_tokens, token_count
+                 FROM agentic_sessions WHERE harness = 'codex'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            ("gpt-synth-1".into(), Some("high".into()), 50, 180, 78)
+        );
+    }
+
+    #[test]
+    fn codex_turn_context_votes_for_the_segment_of_its_next_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout-models.jsonl");
+        let ctx = |ts: &str, model: &str, effort: &str| {
+            format!(
+                r#"{{"timestamp":"{ts}","type":"turn_context","payload":{{"cwd":"/proj","model":"{model}","effort":"{effort}"}}}}"#
+            )
+        };
+        let prompt = |ts: &str, text: &str| {
+            format!(
+                r#"{{"timestamp":"{ts}","type":"event_msg","payload":{{"type":"user_message","message":"{text}"}}}}"#
+            )
+        };
+        let lines = [
+            r#"{"timestamp":"2026-04-04T00:00:00.000Z","type":"session_meta","payload":{"id":"models","cwd":"/proj"}}"#.to_string(),
+            ctx("2026-04-04T00:00:00.500Z", "model-a", "low"),
+            prompt("2026-04-04T00:00:01.000Z", "first"),
+            ctx("2026-04-04T00:01:00.000Z", "model-b", "high"),
+            prompt("2026-04-04T00:01:01.000Z", "second"),
+            // After a gap: this context belongs to the third prompt, which opens segment 2.
+            ctx("2026-04-04T00:10:00.000Z", "model-b", "high"),
+            prompt("2026-04-04T00:10:01.000Z", "third"),
+            // Mid-segment context with no later prompt: votes for segment 2.
+            ctx("2026-04-04T00:11:00.000Z", "model-c", "low"),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let segs = extract_segments(&path, &RedactionEngine::builtin()).unwrap();
+        assert_eq!(segs.len(), 2);
+        // Segment 1: one model-a turn and one model-b turn; the tie keeps the first seen.
+        assert_eq!(segs[0].usage.model(), Some("model-a"));
+        assert_eq!(segs[0].usage.effort(), Some("low"));
+        // Segment 2: model-b once, model-c once; first seen wins.
+        assert_eq!(segs[1].usage.model(), Some("model-b"));
+        assert_eq!(segs[1].usage.effort(), Some("high"));
     }
 
     #[test]
@@ -1389,6 +1611,7 @@ mod tests {
             tool_calls: vec![],
             message_count: 1,
             source_file: "/Users/me/.codex/sessions/rollout-x.jsonl".into(),
+            usage: SegmentUsage::default(),
         };
         upsert_segment(&conn, &codex_seg).unwrap();
 

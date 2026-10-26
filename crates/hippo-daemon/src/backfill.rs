@@ -21,7 +21,7 @@ use tracing::warn;
 use hippo_core::config::HippoConfig;
 use hippo_core::storage::open_db;
 
-use crate::claude_session::ingest_session_file;
+use crate::claude_session::{ingest_session_file, repair_subagent_identity};
 
 /// Summary returned after a backfill run.
 pub struct BackfillSummary {
@@ -30,6 +30,13 @@ pub struct BackfillSummary {
     pub files_errored: usize,
     pub segments_updated: usize,
     pub segments_unchanged: usize,
+    /// Rows the database-side pass relabeled as subagents from their stored
+    /// `source_file` (covers transcripts no longer on disk).
+    pub subagent_identity_repaired: usize,
+    /// `is_subagent = 1` rows from the processed transcripts.
+    pub subagent_rows: usize,
+    /// Of `subagent_rows`, the rows whose `agent` is filled from `meta.json`.
+    pub subagent_rows_with_agent: usize,
     pub duration_secs: f64,
 }
 
@@ -59,6 +66,9 @@ pub fn run_backfill(
             files_errored: 0,
             segments_updated: 0,
             segments_unchanged: 0,
+            subagent_identity_repaired: 0,
+            subagent_rows: 0,
+            subagent_rows_with_agent: 0,
             duration_secs: start.elapsed().as_secs_f64(),
         });
     }
@@ -66,10 +76,15 @@ pub fn run_backfill(
     let db_path = config.db_path();
     let conn = open_db(&db_path).context("failed to open hippo.db for backfill")?;
 
+    let subagent_identity_repaired = repair_subagent_identity(&conn)
+        .context("failed to repair subagent identity from stored source_file")?;
+
     let mut files_processed = 0usize;
     let mut files_errored = 0usize;
     let mut segments_updated = 0usize;
     let mut segments_unchanged = 0usize;
+    let mut subagent_rows = 0usize;
+    let mut subagent_rows_with_agent = 0usize;
 
     for path in &paths {
         // Reset size_at_last_read so the live watcher reprocesses on its
@@ -94,6 +109,16 @@ pub fn run_backfill(
 
         segments_updated += inserted;
         segments_unchanged += skipped;
+
+        match subagent_agent_coverage(&conn, path) {
+            Ok((rows, filled)) => {
+                subagent_rows += rows;
+                subagent_rows_with_agent += filled;
+            }
+            Err(e) => {
+                warn!(path = %path.display(), %e, "backfill: failed to read subagent coverage");
+            }
+        }
     }
 
     Ok(BackfillSummary {
@@ -102,8 +127,26 @@ pub fn run_backfill(
         files_errored,
         segments_updated,
         segments_unchanged,
+        subagent_identity_repaired,
+        subagent_rows,
+        subagent_rows_with_agent,
         duration_secs: start.elapsed().as_secs_f64(),
     })
+}
+
+/// `(is_subagent rows, rows with agent filled)` for one transcript, keyed on
+/// the upsert conflict key (`session_id` = file stem, `harness`).
+fn subagent_agent_coverage(conn: &rusqlite::Connection, path: &Path) -> Result<(usize, usize)> {
+    let session_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let (rows, filled): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(COALESCE(agent, '') <> ''), 0)
+         FROM agentic_sessions
+         WHERE session_id = ?1 AND harness = 'claude-code'
+           AND is_subagent = 1 AND probe_tag IS NULL",
+        [session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok((usize::try_from(rows)?, usize::try_from(filled)?))
 }
 
 /// Parse `--since YYYY-MM-DD` into a `DateTime<Utc>` at midnight local time,
@@ -286,6 +329,71 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0, "dry-run must not insert agentic_sessions rows");
+    }
+
+    #[test]
+    fn test_backfill_reports_subagent_agent_coverage() {
+        let (dir, _db_path) = setup_tmp();
+        let project = dir.path().join("-proj");
+        let subagents = project.join("parent-uuid/subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        write_jsonl(&project, "main-session.jsonl", &make_session_jsonl("main"));
+        let with_meta = write_jsonl(&subagents, "agent-a1.jsonl", &make_session_jsonl("a1"));
+        std::fs::write(
+            with_meta.with_extension("meta.json"),
+            r#"{"agentType":"Explore","spawnDepth":1}"#,
+        )
+        .unwrap();
+        // No meta.json: the row still lands, with agent unfilled.
+        write_jsonl(&subagents, "agent-a2.jsonl", &make_session_jsonl("a2"));
+        let workflow = subagents.join("workflows/wf_1");
+        std::fs::create_dir_all(&workflow).unwrap();
+        let wf_agent = write_jsonl(&workflow, "agent-w1.jsonl", &make_session_jsonl("w1"));
+        std::fs::write(
+            wf_agent.with_extension("meta.json"),
+            r#"{"agentType":"workflow-subagent","spawnDepth":1}"#,
+        )
+        .unwrap();
+
+        // A mislabeled row from the old path rules whose transcript is gone.
+        let conn = open_db(&cfg_db(dir.path())).unwrap();
+        conn.execute(
+            "INSERT INTO agentic_sessions
+                (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                 source_file, is_subagent, start_time, end_time)
+             VALUES ('agent-gone', 'claude-code', 0, 'wf_9', '/p', 's',
+                     '/deleted/-proj/parent-9/subagents/workflows/wf_9/agent-gone.jsonl',
+                     0, 1, 2)",
+            [],
+        )
+        .unwrap();
+
+        let cfg = test_config(dir.path());
+        let pattern = format!("{}/**/*.jsonl", project.display());
+        let summary = run_backfill(&cfg, &pattern, None, false).expect("backfill");
+        assert_eq!(summary.files_processed, 4);
+        assert_eq!(summary.subagent_identity_repaired, 1);
+        assert_eq!(
+            (summary.subagent_rows_with_agent, summary.subagent_rows),
+            (2, 3),
+            "main-session rows are excluded from subagent coverage"
+        );
+
+        // The printed denominator agrees with SQL that filters is_subagent = 1.
+        let processed_subagent_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agentic_sessions
+                 WHERE harness = 'claude-code' AND is_subagent = 1
+                   AND session_id IN ('agent-a1', 'agent-a2', 'agent-w1')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(processed_subagent_rows, 3);
+    }
+
+    fn cfg_db(dir: &Path) -> PathBuf {
+        test_config(dir).db_path()
     }
 
     #[test]

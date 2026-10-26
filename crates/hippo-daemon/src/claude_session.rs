@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufRead;
 use std::path::Path;
 
@@ -14,6 +14,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::commands::send_event_fire_and_forget;
+use crate::segment_usage::{SegmentUsage, UsageTotals};
 
 /// Maximum bytes to store in CapturedOutput
 const MAX_OUTPUT_BYTES: usize = 4096;
@@ -361,10 +362,289 @@ pub(crate) struct SessionSegment {
     pub(crate) assistant_texts: Vec<String>,
     pub(crate) tool_calls: Vec<ToolCallSummary>,
     message_count: i64,
-    token_count: i64,
+    /// Model, effort, and token usage. Metadata only: never part of `content_hash`.
+    usage: SegmentUsage,
+    /// Stop-hook outcomes and permission decisions. Metadata only: never part
+    /// of `content_hash`.
+    hooks: HookStats,
     source_file: String,
     is_subagent: bool,
     parent_session_id: Option<String>,
+    /// Filled by the ingest paths from the sibling `meta.json`; never part of
+    /// `content_hash`.
+    subagent: SubagentMeta,
+}
+
+/// Subagent identity read from `<stem>.meta.json`, the sibling of a subagent
+/// transcript `<stem>.jsonl`. Each field is `None` when the file or the key is
+/// absent or has an unexpected type.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SubagentMeta {
+    agent_type: Option<String>,
+    spawn_depth: Option<i64>,
+    tool_use_id: Option<String>,
+    finished: Option<bool>,
+}
+
+/// Read the sibling `meta.json` of a subagent transcript.
+///
+/// Never fails: a missing or malformed file, a missing `agentType` or
+/// `spawnDepth`, or a key of the wrong type logs one `warn` for the file and
+/// leaves the affected fields `None`. `toolUseId` and `finished` are optional
+/// because Claude Code omits them on some agents (for example `finished` on an
+/// agent that has not finished).
+fn read_subagent_meta(path: &Path) -> SubagentMeta {
+    use serde_json::Value;
+
+    if !SessionFile::from_path(path).is_subagent {
+        return SubagentMeta::default();
+    }
+    let meta_path = path.with_extension("meta.json");
+    let obj = match std::fs::read(&meta_path)
+        .map_err(anyhow::Error::from)
+        .and_then(|bytes| Ok(serde_json::from_slice::<Value>(&bytes)?))
+    {
+        Ok(Value::Object(obj)) => obj,
+        Ok(_) => {
+            warn!(path = %meta_path.display(), "subagent meta.json is not a JSON object");
+            return SubagentMeta::default();
+        }
+        Err(e) => {
+            warn!(path = %meta_path.display(), %e, "subagent meta.json missing or unreadable");
+            return SubagentMeta::default();
+        }
+    };
+
+    let meta = SubagentMeta {
+        agent_type: obj
+            .get("agentType")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        spawn_depth: obj.get("spawnDepth").and_then(Value::as_i64),
+        tool_use_id: obj
+            .get("toolUseId")
+            .and_then(Value::as_str)
+            .map(String::from),
+        finished: obj.get("finished").and_then(Value::as_bool),
+    };
+    let unexpected: Vec<&str> = [
+        ("agentType", meta.agent_type.is_none()),
+        ("spawnDepth", meta.spawn_depth.is_none()),
+        (
+            "toolUseId",
+            obj.contains_key("toolUseId") && meta.tool_use_id.is_none(),
+        ),
+        (
+            "finished",
+            obj.contains_key("finished") && meta.finished.is_none(),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(key, bad)| bad.then_some(key))
+    .collect();
+    if !unexpected.is_empty() {
+        warn!(
+            path = %meta_path.display(),
+            fields = ?unexpected,
+            "subagent meta.json has missing or unexpected fields"
+        );
+    }
+    meta
+}
+
+/// Stop-hook outcomes and permission decisions of one segment.
+///
+/// Holds counts and hook command names only. Hook output and `stopReason` text
+/// are never read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct HookStats {
+    runs: i64,
+    errors: i64,
+    prevented_continuations: i64,
+    /// Redacted `hookInfos[].command` values, distinct and sorted.
+    names: BTreeSet<String>,
+    /// `permissionDecision` value -> number of `user` records carrying it.
+    decisions: BTreeMap<String, i64>,
+}
+
+impl HookStats {
+    /// Fold one `system` record. Records other than `stop_hook_summary` are
+    /// ignored. A field of the wrong type contributes nothing and sets `*bad`.
+    fn observe_system(
+        &mut self,
+        entry: &serde_json::Value,
+        redaction: &RedactionEngine,
+        bad: &mut bool,
+    ) {
+        if entry.get("subtype").and_then(|v| v.as_str()) != Some("stop_hook_summary") {
+            return;
+        }
+        match entry.get("hookCount") {
+            None => {}
+            Some(v) => match json_whole(v).filter(|n| *n >= 0) {
+                Some(n) => self.runs = self.runs.saturating_add(n),
+                None => *bad = true,
+            },
+        }
+        match entry.get("hookErrors") {
+            None => {}
+            Some(serde_json::Value::Array(a)) => self.errors += a.len() as i64,
+            Some(_) => *bad = true,
+        }
+        match entry.get("preventedContinuation") {
+            None => {}
+            Some(serde_json::Value::Bool(b)) => self.prevented_continuations += i64::from(*b),
+            Some(_) => *bad = true,
+        }
+        match entry.get("hookInfos") {
+            None => {}
+            Some(serde_json::Value::Array(infos)) => {
+                for info in infos {
+                    match info.get("command").and_then(|v| v.as_str()) {
+                        Some(c) if !c.trim().is_empty() => {
+                            self.names.insert(redaction.redact(c).text);
+                        }
+                        _ => *bad = true,
+                    }
+                }
+            }
+            Some(_) => *bad = true,
+        }
+    }
+
+    /// Count the decision of one `user` record's `permissionDecision`.
+    /// Current transcripts carry an object `{decision, source, reasonType}`
+    /// and the key is `decision`; older ones carry a bare string. `source` and
+    /// `reasonType` are ignored.
+    fn observe_user(&mut self, entry: &serde_json::Value, bad: &mut bool) {
+        let decision = match entry.get("permissionDecision") {
+            None | Some(serde_json::Value::Null) => return,
+            Some(serde_json::Value::String(d)) => Some(d.as_str()),
+            Some(serde_json::Value::Object(o)) => o.get("decision").and_then(|v| v.as_str()),
+            Some(_) => None,
+        };
+        match decision {
+            Some(d) if !d.is_empty() => *self.decisions.entry(d.to_string()).or_insert(0) += 1,
+            _ => *bad = true,
+        }
+    }
+
+    fn names_json(&self) -> String {
+        serde_json::to_string(&self.names).unwrap_or_else(|_| "[]".into())
+    }
+
+    fn decisions_json(&self) -> String {
+        serde_json::to_string(&self.decisions).unwrap_or_else(|_| "{}".into())
+    }
+}
+
+/// One `pr-link` record. `url` is redacted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct PrLink {
+    number: Option<i64>,
+    repo: Option<String>,
+    url: Option<String>,
+}
+
+/// Session-level facts from `cost-state`, `pr-link`, `ai-title`, and the last
+/// assistant `version`. Metadata only: never part of `content_hash`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct SessionFacts {
+    cost_usd: Option<f64>,
+    duration_ms: Option<i64>,
+    tool_duration_ms: Option<i64>,
+    lines_added: Option<i64>,
+    lines_removed: Option<i64>,
+    /// Redacted last `aiTitle`.
+    title: Option<String>,
+    cli_version: Option<String>,
+    /// Distinct `pr-link` records in file order.
+    pr_links: Vec<PrLink>,
+}
+
+/// A JSON number as whole milliseconds or a count. Floats round to the nearest
+/// integer; non-finite or out-of-range values yield `None`.
+fn json_whole(v: &serde_json::Value) -> Option<i64> {
+    v.as_i64().or_else(|| {
+        v.as_f64()
+            .filter(|f| f.is_finite() && f.abs() < 9.0e15)
+            .map(|f| f.round() as i64)
+    })
+}
+
+/// Fold one `cost-state`, `pr-link`, or `ai-title` record into `facts`.
+/// A missing or mistyped field stays `None` and logs one `warn` per file.
+fn observe_fact_record(
+    path: &Path,
+    facts: &mut SessionFacts,
+    entry_type: &str,
+    entry: &serde_json::Value,
+    redaction: &RedactionEngine,
+    warned: &mut bool,
+) {
+    let mut bad = |what: &str| {
+        if !*warned {
+            *warned = true;
+            warn!(
+                path = %path.display(),
+                "{entry_type} record has a missing or unexpected {what}; stored as NULL"
+            );
+        }
+    };
+    match entry_type {
+        "cost-state" => {
+            let mut whole = |key: &str| {
+                let v = entry.get(key).and_then(json_whole);
+                if v.is_none() {
+                    bad(key);
+                }
+                v
+            };
+            let (duration, tool, added, removed) = (
+                whole("totalDuration"),
+                whole("totalToolDuration"),
+                whole("totalLinesAdded"),
+                whole("totalLinesRemoved"),
+            );
+            facts.duration_ms = duration;
+            facts.tool_duration_ms = tool;
+            facts.lines_added = added;
+            facts.lines_removed = removed;
+            facts.cost_usd = entry
+                .get("totalCostUSD")
+                .and_then(|v| v.as_f64())
+                .filter(|f| f.is_finite());
+            if facts.cost_usd.is_none() {
+                bad("totalCostUSD");
+            }
+        }
+        "ai-title" => match entry.get("aiTitle").and_then(|v| v.as_str()) {
+            Some(t) if !t.trim().is_empty() => {
+                facts.title = Some(redaction.redact(t.trim()).text);
+            }
+            _ => bad("aiTitle"),
+        },
+        "pr-link" => {
+            let link = PrLink {
+                number: entry.get("prNumber").and_then(json_whole),
+                repo: entry
+                    .get("prRepository")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                url: entry
+                    .get("prUrl")
+                    .and_then(|v| v.as_str())
+                    .map(|u| redaction.redact(u).text),
+            };
+            if link.number.is_none() && link.url.is_none() {
+                bad("prNumber and prUrl");
+            } else if !facts.pr_links.contains(&link) {
+                facts.pr_links.push(link);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -403,70 +683,68 @@ pub(crate) fn compute_segment_content_hash(seg: &SessionSegment) -> String {
         .collect()
 }
 
-/// Describes how a JSONL path decomposes into the fields the `claude_sessions`
+/// Describes how a JSONL path decomposes into the fields the `agentic_sessions`
 /// row needs. We derive these from the filesystem layout Claude Code uses:
 ///
 /// ```text
-/// <projects-root>/<project-encoded>/<session-uuid>.jsonl              (main)
-/// <projects-root>/<project-encoded>/<parent-uuid>/subagents/<id>.jsonl (subagent)
+/// <projects-root>/<project-encoded>/<session-uuid>.jsonl                               (main)
+/// <projects-root>/<project-encoded>/<parent-uuid>/subagents/<id>.jsonl                 (subagent)
+/// <projects-root>/<project-encoded>/<parent-uuid>/subagents/workflows/<wf>/<id>.jsonl  (workflow subagent)
 /// ```
+///
+/// This is the single definition of "subagent transcript": the nearest
+/// `subagents` ancestor decides, and its parent directory is the parent
+/// session. Workflow `journal.jsonl` files sit under `subagents/` too, but
+/// they are orchestration journals, not transcripts.
 ///
 /// `project_dir` is the encoded project directory name (e.g.
 /// `-Users-carpenter-projects-hippo`). We keep the encoded form because the
-/// Python ingester uses the same value — mixing encodings between paths would
+/// Python ingester uses the same value; mixing encodings between paths would
 /// make dedupe-by-(session_id, segment_index) lookups miss.
-struct SessionFile<'a> {
+pub(crate) struct SessionFile<'a> {
     path: &'a Path,
-    project_dir: String,
+    pub(crate) project_dir: String,
     session_id: String,
-    is_subagent: bool,
-    parent_session_id: Option<String>,
+    pub(crate) is_subagent: bool,
+    pub(crate) parent_session_id: Option<String>,
 }
 
 impl<'a> SessionFile<'a> {
-    fn from_path(path: &'a Path) -> Self {
-        let session_id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        // Detect `<project>/<parent-uuid>/subagents/<id>.jsonl`.
-        let parent = path.parent();
-        let is_subagent =
-            parent.and_then(|p| p.file_name()).and_then(|n| n.to_str()) == Some("subagents");
-
-        let (project_dir, parent_session_id) = if is_subagent {
-            // parent = <project>/<parent-uuid>/subagents
-            // grandparent = <project>/<parent-uuid>
-            // great-grandparent = <project>
-            let grandparent = parent.and_then(|p| p.parent());
-            let project = grandparent.and_then(|p| p.parent());
-            let parent_uuid = grandparent
-                .and_then(|p| p.file_name())
+    pub(crate) fn from_path(path: &'a Path) -> Self {
+        let name = |p: Option<&Path>| {
+            p.and_then(Path::file_name)
                 .and_then(|n| n.to_str())
-                .map(|s| s.to_string());
-            let project_name = project
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            (project_name, parent_uuid)
-        } else {
+                .map(str::to_string)
+        };
+        let is_journal = path.file_name() == Some(std::ffi::OsStr::new("journal.jsonl"));
+        let subagents_dir = path
+            .ancestors()
+            .skip(1)
+            .find(|dir| dir.file_name() == Some(std::ffi::OsStr::new("subagents")))
+            .filter(|_| !is_journal);
+
+        let (project_dir, parent_session_id) = match subagents_dir {
+            // subagents_dir = <project>/<parent-uuid>/subagents
+            Some(dir) => {
+                let parent_uuid_dir = dir.parent();
+                (
+                    name(parent_uuid_dir.and_then(Path::parent)).unwrap_or_default(),
+                    name(parent_uuid_dir),
+                )
+            }
             // parent = <project>
-            let project_name = parent
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            (project_name, None)
+            None => (name(path.parent()).unwrap_or_default(), None),
         };
 
         Self {
             path,
             project_dir,
-            session_id,
-            is_subagent,
+            session_id: path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string(),
+            is_subagent: subagents_dir.is_some(),
             parent_session_id,
         }
     }
@@ -511,13 +789,23 @@ fn extract_tool_summary(block: &serde_json::Value) -> Option<ToolCallSummary> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        "Agent" => inp
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .chars()
-            .take(100)
-            .collect::<String>(),
+        "Agent" => {
+            let description: String = inp
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .chars()
+                .take(100)
+                .collect();
+            match inp
+                .get("subagent_type")
+                .and_then(|v| v.as_str())
+                .filter(|t| !t.is_empty())
+            {
+                Some(subagent_type) => format!("{subagent_type}: {description}"),
+                None => description,
+            }
+        }
         _ => {
             // Generic: stringify first key=value pair, trimmed to 80 chars.
             if let Some(obj) = inp.as_object()
@@ -622,6 +910,54 @@ fn extract_assistant_content(msg: &serde_json::Value) -> (Vec<String>, Vec<ToolC
     (texts, tools)
 }
 
+/// Record the model, requested model, and effort of one `assistant` record.
+fn observe_assistant_meta(
+    usage: &mut SegmentUsage,
+    entry: &serde_json::Value,
+    msg: &serde_json::Value,
+) {
+    if let Some(model) = msg.get("model").and_then(|v| v.as_str()) {
+        usage.observe_model(model);
+    }
+    if let Some(model) = entry.get("requestedModel").and_then(|v| v.as_str()) {
+        usage.observe_requested_model(model);
+    }
+    if let Some(effort) = entry.get("effort").and_then(|v| v.as_str()) {
+        usage.observe_effort(effort);
+    }
+}
+
+/// Parse `message.usage` of one `assistant` record into its `message.id` and
+/// token counts. `user` records carry no `usage`. A missing or non-object
+/// `usage` yields `None`; a non-numeric field counts as 0.
+fn parse_assistant_usage(
+    path: &Path,
+    msg: &serde_json::Value,
+    warned: &mut bool,
+) -> Option<(Option<String>, UsageTotals)> {
+    let raw = msg.get("usage")?;
+    let Some(raw) = raw.as_object() else {
+        if !*warned {
+            *warned = true;
+            warn!(
+                path = %path.display(),
+                "assistant message.usage is not an object; token counts left at 0"
+            );
+        }
+        return None;
+    };
+    let field = |key: &str| raw.get(key).and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+    Some((
+        msg.get("id").and_then(|v| v.as_str()).map(String::from),
+        UsageTotals {
+            input_tokens: field("input_tokens"),
+            output_tokens: field("output_tokens"),
+            cache_read_tokens: field("cache_read_input_tokens"),
+            cache_creation_tokens: field("cache_creation_input_tokens"),
+        },
+    ))
+}
+
 /// Stream a session JSONL and split it into task-boundary segments.
 ///
 /// This is the Rust port of `extract_segments` in
@@ -637,6 +973,17 @@ fn extract_segments(
     session_file: &SessionFile<'_>,
     redaction: &RedactionEngine,
 ) -> Result<Vec<SessionSegment>> {
+    extract_segments_and_facts(session_file, redaction).map(|(segments, _)| segments)
+}
+
+/// `extract_segments` plus the session-level facts of the same pass.
+///
+/// `cost-state`, `pr-link`, and `ai-title` records feed the facts only. They
+/// never start a segment, split one, or count toward `message_count`.
+fn extract_segments_and_facts(
+    session_file: &SessionFile<'_>,
+    redaction: &RedactionEngine,
+) -> Result<(Vec<SessionSegment>, SessionFacts)> {
     let file = std::fs::File::open(session_file.path)
         .with_context(|| format!("failed to open {}", session_file.path.display()))?;
     let reader = std::io::BufReader::new(file);
@@ -645,6 +992,12 @@ fn extract_segments(
     let mut current: Option<SessionSegment> = None;
     let mut current_chars: usize = 0;
     let mut last_user_time_ms: i64 = 0;
+    let mut warned_usage = false;
+    let mut warned_facts = false;
+    let mut bad_hooks = false;
+    let mut facts = SessionFacts::default();
+    // `message.id` -> index in `segments` of the segment that owns the turn.
+    let mut usage_owner: HashMap<String, usize> = HashMap::new();
 
     for line_result in reader.lines() {
         let line = match line_result {
@@ -662,12 +1015,26 @@ fn extract_segments(
 
         let entry_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-        // Skip noise entries that Python filters out. Keep this list in
-        // sync with the Python `extract_segments` skip list.
+        // Skip noise entries. This list matches the Python `extract_segments`
+        // skip list, but Python does not skip `cost-state`, `pr-link`, or
+        // `ai-title` (handled just below), so Python's `message_count` is
+        // higher than Rust's for the same file.
         if matches!(
             entry_type,
             "file-history-snapshot" | "progress" | "queue-operation" | "last-prompt"
         ) {
+            continue;
+        }
+
+        if matches!(entry_type, "cost-state" | "pr-link" | "ai-title") {
+            observe_fact_record(
+                session_file.path,
+                &mut facts,
+                entry_type,
+                &entry,
+                redaction,
+                &mut warned_facts,
+            );
             continue;
         }
 
@@ -707,10 +1074,12 @@ fn extract_segments(
                 assistant_texts: Vec::new(),
                 tool_calls: Vec::new(),
                 message_count: 0,
-                token_count: 0,
+                usage: SegmentUsage::default(),
+                hooks: HookStats::default(),
                 source_file: session_file.path.to_string_lossy().into_owned(),
                 is_subagent: session_file.is_subagent,
                 parent_session_id: session_file.parent_session_id.clone(),
+                subagent: SubagentMeta::default(),
             });
         }
 
@@ -748,10 +1117,12 @@ fn extract_segments(
                         assistant_texts: Vec::new(),
                         tool_calls: Vec::new(),
                         message_count: 0,
-                        token_count: 0,
+                        usage: SegmentUsage::default(),
+                        hooks: HookStats::default(),
                         source_file: session_file.path.to_string_lossy().into_owned(),
                         is_subagent: session_file.is_subagent,
                         parent_session_id: session_file.parent_session_id.clone(),
+                        subagent: SubagentMeta::default(),
                     });
                     current_chars = 0;
                 }
@@ -772,7 +1143,10 @@ fn extract_segments(
             seg.cwd = cwd;
         }
 
-        if entry_type == "user" {
+        if entry_type == "system" {
+            seg.hooks.observe_system(&entry, redaction, &mut bad_hooks);
+        } else if entry_type == "user" {
+            seg.hooks.observe_user(&entry, &mut bad_hooks);
             if ts_ms > 0 {
                 last_user_time_ms = ts_ms;
             }
@@ -784,11 +1158,6 @@ fn extract_segments(
                 let truncated: String = text.chars().take(500).collect();
                 current_chars += truncated.len();
                 seg.user_prompts.push(redaction.redact(&truncated).text);
-            }
-            if let Some(usage) = msg.get("usage")
-                && let Some(input_tokens) = usage.get("input_tokens").and_then(|v| v.as_i64())
-            {
-                seg.token_count += input_tokens;
             }
         } else if entry_type == "assistant" {
             let msg = entry.get("message").cloned().unwrap_or_default();
@@ -804,12 +1173,39 @@ fn extract_segments(
                     summary: redaction.redact(&t.summary).text,
                 });
             }
-            if let Some(usage) = msg.get("usage")
-                && let Some(output_tokens) = usage.get("output_tokens").and_then(|v| v.as_i64())
+            observe_assistant_meta(&mut seg.usage, &entry, &msg);
+            if let Some(v) = entry.get("version").and_then(|v| v.as_str()) {
+                facts.cli_version = Some(v.to_string());
+            }
+            // Claude streams one API turn as several records sharing
+            // `message.id`, and a segment split can fall between them. The
+            // turn belongs to the segment where its id first appeared; later
+            // records update that segment's maximum.
+            if let Some((id, tokens)) =
+                parse_assistant_usage(session_file.path, &msg, &mut warned_usage)
             {
-                seg.token_count += output_tokens;
+                match id {
+                    Some(id) => match usage_owner.get(&id).copied() {
+                        Some(idx) if idx < segments.len() => {
+                            segments[idx].usage.record_message(Some(&id), tokens)
+                        }
+                        Some(_) => seg.usage.record_message(Some(&id), tokens),
+                        None => {
+                            usage_owner.insert(id.clone(), segments.len());
+                            seg.usage.record_message(Some(&id), tokens);
+                        }
+                    },
+                    None => seg.usage.record_message(None, tokens),
+                }
             }
         }
+    }
+
+    if bad_hooks {
+        warn!(
+            path = %session_file.path.display(),
+            "stop_hook_summary or permissionDecision has a field of the wrong type; it contributed nothing"
+        );
     }
 
     // Finalize trailing segment if it has any content.
@@ -821,7 +1217,7 @@ fn extract_segments(
         segments.push(last);
     }
 
-    Ok(collapse_adjacent_identical_segments(segments))
+    Ok((collapse_adjacent_identical_segments(segments), facts))
 }
 
 /// Verify that the current semantic contents of a Claude transcript are
@@ -997,9 +1393,21 @@ fn decide_enqueue(
 /// The upsert uses `ON CONFLICT (session_id, harness, segment_index) DO UPDATE` so
 /// every watcher reparse keeps the DB in sync with the latest file content.
 /// `last_enriched_content_hash` is NOT touched here — only the brain sets it.
+#[cfg(test)]
 fn insert_segments(
     conn: &Connection,
     segments: &[SessionSegment],
+) -> rusqlite::Result<(usize, usize)> {
+    insert_segments_with_facts(conn, segments, None)
+}
+
+/// `insert_segments` plus the session facts row, written in the same
+/// transaction. `facts` also supplies `agentic_sessions.title` for every
+/// segment. A segment's title is never overwritten with an empty one.
+fn insert_segments_with_facts(
+    conn: &Connection,
+    segments: &[SessionSegment],
+    facts: Option<&SessionFacts>,
 ) -> rusqlite::Result<(usize, usize)> {
     let mut inserted = 0usize;
     let mut skipped = 0usize;
@@ -1059,10 +1467,13 @@ fn insert_segments(
         let prior_queue_status = prior.as_ref().and_then(|(_, _, _, s)| s.as_deref());
 
         // T-A.3 step 3: upsert with ON CONFLICT DO UPDATE.
-        // Identity columns (session_id, segment_index, project_dir, source_file,
-        // cwd, is_subagent, parent_session_id, start_time, created_at) are NOT
-        // updated on conflict — they describe what the segment is, not what it
-        // contains. Content columns are always refreshed to the latest reparse.
+        // Identity columns (session_id, segment_index, source_file, cwd,
+        // start_time, created_at) are NOT updated on conflict: they describe
+        // what the segment is, not what it contains. The path-derived identity
+        // (`is_subagent`, `parent_session_id`, `project_dir`) IS refreshed so a
+        // reparse repairs rows written by an older `SessionFile::from_path`
+        // (workflow subagents were once stored as main sessions). Content
+        // columns are always refreshed to the latest reparse.
         // `last_enriched_content_hash` is intentionally omitted — only the brain
         // writes that (T-A.5).
         tx.execute(
@@ -1071,17 +1482,42 @@ fn insert_segments(
                  git_branch, slug, title, parent_session_id, is_subagent, summary_text,
                  tool_calls_json, user_prompts_json, source_file, snapshot_diffs_json,
                  commit_messages_json, message_count, token_count, start_time, end_time,
-                 content_hash, created_at)
-             VALUES (?1, 'claude-code', ?2, '', '', ?3, ?4, ?5, '', '', ?6, ?7, ?8,
-                     ?9, ?10, ?11, 'null', '[]', ?12, ?13, ?14, ?15, ?16, ?17)
+                 content_hash, created_at, requested_model, effort, input_tokens,
+                 output_tokens, cache_read_tokens, cache_creation_tokens, spawn_depth,
+                 parent_tool_use_id, subagent_finished, hook_runs, hook_errors,
+                 prevented_continuations, hook_names_json, permission_decisions_json)
+             VALUES (?1, 'claude-code', ?2, ?22, ?18, ?3, ?4, ?5, '', ?29, ?6, ?7, ?8,
+                     ?9, ?10, ?11, 'null', '[]', ?12, ?13, ?14, ?15, ?16, ?17,
+                     ?23, ?24, ?25, ?26, ?27, ?28, ?19, ?20, ?21, ?30, ?31, ?32, ?33, ?34)
              ON CONFLICT (session_id, harness, segment_index) DO UPDATE SET
-                 end_time          = excluded.end_time,
-                 summary_text      = excluded.summary_text,
-                 tool_calls_json   = excluded.tool_calls_json,
-                 user_prompts_json = excluded.user_prompts_json,
-                 message_count     = excluded.message_count,
-                 token_count       = excluded.token_count,
-                 content_hash      = excluded.content_hash",
+                 end_time                  = excluded.end_time,
+                 summary_text              = excluded.summary_text,
+                 tool_calls_json           = excluded.tool_calls_json,
+                 user_prompts_json         = excluded.user_prompts_json,
+                 message_count             = excluded.message_count,
+                 token_count               = excluded.token_count,
+                 content_hash              = excluded.content_hash,
+                 agent                     = excluded.agent,
+                 model                     = excluded.model,
+                 requested_model           = excluded.requested_model,
+                 effort                    = excluded.effort,
+                 input_tokens              = excluded.input_tokens,
+                 output_tokens             = excluded.output_tokens,
+                 cache_read_tokens         = excluded.cache_read_tokens,
+                 cache_creation_tokens     = excluded.cache_creation_tokens,
+                 spawn_depth               = excluded.spawn_depth,
+                 parent_tool_use_id        = excluded.parent_tool_use_id,
+                 subagent_finished         = excluded.subagent_finished,
+                 hook_runs                 = excluded.hook_runs,
+                 hook_errors               = excluded.hook_errors,
+                 prevented_continuations   = excluded.prevented_continuations,
+                 hook_names_json           = excluded.hook_names_json,
+                 permission_decisions_json = excluded.permission_decisions_json,
+                 title                     = CASE WHEN excluded.title <> ''
+                                             THEN excluded.title ELSE agentic_sessions.title END,
+                 is_subagent               = excluded.is_subagent,
+                 parent_session_id         = excluded.parent_session_id,
+                 project_dir               = excluded.project_dir",
             params![
                 seg.session_id,
                 seg.segment_index,
@@ -1095,11 +1531,28 @@ fn insert_segments(
                 user_prompts_json,
                 seg.source_file,
                 seg.message_count,
-                seg.token_count,
+                seg.usage.token_count(),
                 seg.start_time,
                 seg.end_time,
                 content_hash,
                 now_ms,
+                seg.subagent.agent_type.as_deref().unwrap_or(""),
+                seg.subagent.spawn_depth,
+                seg.subagent.tool_use_id,
+                seg.subagent.finished.map(i64::from),
+                seg.usage.model().unwrap_or(""),
+                seg.usage.requested_model(),
+                seg.usage.effort(),
+                seg.usage.totals().input_tokens,
+                seg.usage.totals().output_tokens,
+                seg.usage.totals().cache_read_tokens,
+                seg.usage.totals().cache_creation_tokens,
+                facts.and_then(|f| f.title.as_deref()).unwrap_or(""),
+                seg.hooks.runs,
+                seg.hooks.errors,
+                seg.hooks.prevented_continuations,
+                seg.hooks.names_json(),
+                seg.hooks.decisions_json(),
             ],
         )?;
 
@@ -1135,7 +1588,14 @@ fn insert_segments(
             && seg.tool_calls.is_empty()
             && seg.assistant_texts.is_empty();
 
+        // Unchanged content already waiting in the queue: rewriting the row
+        // would only bump `updated_at`, so a metadata-only reparse leaves the
+        // queue untouched.
+        let already_pending =
+            prior.is_some() && !hash_changed && prior_queue_status == Some("pending");
+
         if !is_empty
+            && !already_pending
             && decide_enqueue(
                 was_insert,
                 &content_hash,
@@ -1191,14 +1651,69 @@ fn insert_segments(
         }
     }
 
+    if let Some(facts) = facts
+        && let Some(first) = segments.first()
+    {
+        upsert_session_facts(&tx, &first.session_id, facts, now_ms)?;
+    }
+
     tx.commit()?;
     Ok((inserted, skipped))
 }
 
+/// Upsert the `(session_id, 'claude-code')` facts row. A resumed session's
+/// later file wins on the fields it carries: a NULL field (no `cost-state`,
+/// no `ai-title`, no assistant `version`) or an empty `pr-link` list keeps the
+/// stored value instead of erasing it.
+fn upsert_session_facts(
+    conn: &Connection,
+    session_id: &str,
+    facts: &SessionFacts,
+    now_ms: i64,
+) -> rusqlite::Result<()> {
+    let pr_links_json = serde_json::to_string(&facts.pr_links).unwrap_or_else(|_| "[]".into());
+    conn.execute(
+        "INSERT INTO agentic_session_facts
+            (session_id, harness, cost_usd, duration_ms, tool_duration_ms, lines_added,
+             lines_removed, title, cli_version, pr_links_json, updated_at)
+         VALUES (?1, 'claude-code', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT (session_id, harness) DO UPDATE SET
+             cost_usd         = COALESCE(excluded.cost_usd, cost_usd),
+             duration_ms      = COALESCE(excluded.duration_ms, duration_ms),
+             tool_duration_ms = COALESCE(excluded.tool_duration_ms, tool_duration_ms),
+             lines_added      = COALESCE(excluded.lines_added, lines_added),
+             lines_removed    = COALESCE(excluded.lines_removed, lines_removed),
+             title            = COALESCE(excluded.title, title),
+             cli_version      = COALESCE(excluded.cli_version, cli_version),
+             pr_links_json    = CASE WHEN excluded.pr_links_json <> '[]'
+                                THEN excluded.pr_links_json ELSE pr_links_json END,
+             updated_at       = excluded.updated_at",
+        params![
+            session_id,
+            facts.cost_usd,
+            facts.duration_ms,
+            facts.tool_duration_ms,
+            facts.lines_added,
+            facts.lines_removed,
+            facts.title,
+            facts.cli_version,
+            pr_links_json,
+            now_ms,
+        ],
+    )?;
+    Ok(())
+}
+
 /// Insert segments with a single SQLITE_BUSY retry. Shared by the FS watcher
 /// (`ingest_session_file`) and batch CLI (`write_session_segments`).
-fn try_insert_segments(conn: &Connection, segments: &[SessionSegment]) -> (usize, usize, usize) {
-    match crate::with_busy_retry("claude_session_insert", || insert_segments(conn, segments)) {
+fn try_insert_segments(
+    conn: &Connection,
+    segments: &[SessionSegment],
+    facts: Option<&SessionFacts>,
+) -> (usize, usize, usize) {
+    match crate::with_busy_retry("claude_session_insert", || {
+        insert_segments_with_facts(conn, segments, facts)
+    }) {
         Ok((inserted, skipped)) => (inserted, skipped, 0),
         Err(e) => {
             if crate::is_sqlite_busy(&e) {
@@ -1214,14 +1729,86 @@ fn try_insert_segments(conn: &Connection, segments: &[SessionSegment]) -> (usize
     }
 }
 
+/// Repair subagent identity on rows whose transcript may no longer be on
+/// disk. Recomputes `is_subagent`, `parent_session_id`, and `project_dir` from
+/// the stored `source_file` with `SessionFile::from_path` for claude-code rows
+/// under `subagents/` still marked as main sessions. Returns the rows updated.
+pub(crate) fn repair_subagent_identity(conn: &Connection) -> rusqlite::Result<usize> {
+    repair_subagent_identity_in_batches(conn, REPAIR_BATCH_SIZE)
+}
+
+/// Rows per repair write transaction: short enough that the watcher's own
+/// writes wait at most one batch.
+const REPAIR_BATCH_SIZE: usize = 500;
+
+fn repair_subagent_identity_in_batches(
+    conn: &Connection,
+    batch_size: usize,
+) -> rusqlite::Result<usize> {
+    // Read-only scan outside any transaction, so no read snapshot is later
+    // upgraded to a write (which fails with SQLITE_BUSY_SNAPSHOT, ignoring
+    // busy_timeout, if another writer committed in between).
+    let fixes: Vec<(i64, Option<String>, String)> = conn
+        .prepare(
+            "SELECT id, source_file FROM agentic_sessions
+             WHERE harness = 'claude-code'
+               AND source_file LIKE '%/subagents/%'
+               AND is_subagent = 0",
+        )?
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .filter_map(|row| match row {
+            Ok((id, source_file)) => {
+                let identity = SessionFile::from_path(Path::new(&source_file));
+                identity
+                    .is_subagent
+                    .then(|| Ok((id, identity.parent_session_id, identity.project_dir)))
+            }
+            Err(e) => Some(Err(e)),
+        })
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut repaired = 0usize;
+    for batch in fixes.chunks(batch_size.max(1)) {
+        // IMMEDIATE takes the write lock up front, so busy_timeout applies.
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+        for (id, parent_session_id, project_dir) in batch {
+            // `is_subagent = 0` again: a concurrent re-ingest may have fixed it.
+            repaired += tx.execute(
+                "UPDATE agentic_sessions
+                 SET is_subagent = 1, parent_session_id = ?2, project_dir = ?3
+                 WHERE id = ?1 AND is_subagent = 0",
+                params![id, parent_session_id, project_dir],
+            )?;
+        }
+        tx.commit()?;
+    }
+    Ok(repaired)
+}
+
+/// Extract redacted segments and attach the subagent `meta.json` fields.
+///
+/// Only the ingest paths read `meta.json`; the probe and doctor callers of
+/// `extract_segments` compare content hashes and timestamps, which the
+/// metadata never affects.
+fn extract_segments_for_ingest(path: &Path) -> Result<(Vec<SessionSegment>, SessionFacts)> {
+    let redaction = RedactionEngine::builtin();
+    let (mut segments, facts) =
+        extract_segments_and_facts(&SessionFile::from_path(path), &redaction)?;
+    let subagent = read_subagent_meta(path);
+    for seg in &mut segments {
+        seg.subagent = subagent.clone();
+    }
+    Ok((segments, facts))
+}
+
 /// Extract segments from a JSONL session file and insert them into the given
 /// connection. Used by the FS watcher (per-event invocation in a `spawn_blocking`
 /// task with its own connection). Returns `(inserted, skipped, errors)`.
 pub fn ingest_session_file(conn: &Connection, path: &Path) -> (usize, usize, usize) {
-    let redaction = RedactionEngine::builtin();
-    let session_file = SessionFile::from_path(path);
-
-    let segments = match extract_segments(&session_file, &redaction) {
+    let (segments, facts) = match extract_segments_for_ingest(path) {
         Ok(s) => s,
         Err(e) => {
             warn!(path = %path.display(), %e, "failed to extract session segments");
@@ -1233,14 +1820,11 @@ pub fn ingest_session_file(conn: &Connection, path: &Path) -> (usize, usize, usi
         return (0, 0, 0);
     }
 
-    try_insert_segments(conn, &segments)
+    try_insert_segments(conn, &segments, Some(&facts))
 }
 
 fn write_session_segments(db_path: &Path, path: &Path) -> (usize, usize, usize) {
-    let redaction = RedactionEngine::builtin();
-    let session_file = SessionFile::from_path(path);
-
-    let segments = match extract_segments(&session_file, &redaction) {
+    let (segments, facts) = match extract_segments_for_ingest(path) {
         Ok(s) => s,
         Err(e) => {
             warn!(path = %path.display(), %e, "failed to extract session segments");
@@ -1260,7 +1844,7 @@ fn write_session_segments(db_path: &Path, path: &Path) -> (usize, usize, usize) 
         }
     };
 
-    try_insert_segments(&conn, &segments)
+    try_insert_segments(&conn, &segments, Some(&facts))
 }
 
 /// Run the importer in batch mode: read all lines, send all events, exit.
@@ -2020,10 +2604,12 @@ mod tests {
             assistant_texts: vec![],
             tool_calls: vec![],
             message_count: 0,
-            token_count: 0,
+            usage: SegmentUsage::default(),
+            hooks: HookStats::default(),
             source_file: "/test/session.jsonl".to_string(),
             is_subagent: false,
             parent_session_id: None,
+            subagent: SubagentMeta::default(),
         }
     }
 
@@ -2178,6 +2764,16 @@ mod tests {
         conn
     }
 
+    fn usage_with_tokens(total: i64) -> SegmentUsage {
+        let mut usage = SegmentUsage::default();
+        usage.add(UsageTotals {
+            input_tokens: total - total / 2,
+            output_tokens: total / 2,
+            ..UsageTotals::default()
+        });
+        usage
+    }
+
     fn make_test_segment(session_id: &str, segment_index: i64) -> SessionSegment {
         SessionSegment {
             session_id: session_id.to_string(),
@@ -2194,11 +2790,583 @@ mod tests {
                 summary: "cargo build".to_string(),
             }],
             message_count: 3,
-            token_count: 100,
+            usage: usage_with_tokens(100),
+            hooks: HookStats::default(),
             source_file: "/test/session.jsonl".to_string(),
             is_subagent: false,
             parent_session_id: None,
+            subagent: SubagentMeta::default(),
         }
+    }
+
+    // ─── HIPO-59: subagent meta.json + Agent summary ────────────────────────
+
+    #[test]
+    fn agent_summary_prefixes_subagent_type_and_truncates_description() {
+        let long = "d".repeat(150);
+        let block = serde_json::json!({
+            "type": "tool_use",
+            "name": "Agent",
+            "input": {"subagent_type": "rust-implementer", "description": long},
+        });
+        let summary = extract_tool_summary(&block).unwrap().summary;
+        assert_eq!(summary, format!("rust-implementer: {}", "d".repeat(100)));
+
+        let no_type = serde_json::json!({
+            "name": "Agent",
+            "input": {"description": "find TODOs", "subagent_type": ""},
+        });
+        assert_eq!(
+            extract_tool_summary(&no_type).unwrap().summary,
+            "find TODOs"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+        type Writer = LogBuf;
+        fn make_writer(&'a self) -> LogBuf {
+            self.clone()
+        }
+    }
+
+    /// Run `f` under a thread-local subscriber and count the WARN lines it logs.
+    fn count_warns<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        let buf = LogBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        let out = tracing::subscriber::with_default(subscriber, f);
+        let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        (out, logs.lines().filter(|l| l.contains("WARN")).count())
+    }
+
+    fn subagent_path(root: &Path) -> std::path::PathBuf {
+        let dir = root.join("-proj/parent-uuid/subagents");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("agent-a1.jsonl")
+    }
+
+    #[test]
+    fn read_subagent_meta_parses_all_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = subagent_path(tmp.path());
+        std::fs::write(
+            path.with_extension("meta.json"),
+            r#"{"agentType":"Explore","description":"x","toolUseId":"toolu_1","spawnDepth":2,"finished":true}"#,
+        )
+        .unwrap();
+        let (meta, warns) = count_warns(|| read_subagent_meta(&path));
+        assert_eq!(
+            meta,
+            SubagentMeta {
+                agent_type: Some("Explore".into()),
+                spawn_depth: Some(2),
+                tool_use_id: Some("toolu_1".into()),
+                finished: Some(true),
+            }
+        );
+        assert_eq!(warns, 0);
+    }
+
+    #[test]
+    fn read_subagent_meta_optional_keys_absent_is_silent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = subagent_path(tmp.path());
+        std::fs::write(
+            path.with_extension("meta.json"),
+            r#"{"agentType":"Explore","spawnDepth":1}"#,
+        )
+        .unwrap();
+        let (meta, warns) = count_warns(|| read_subagent_meta(&path));
+        assert_eq!(meta.tool_use_id, None);
+        assert_eq!(meta.finished, None);
+        assert_eq!(warns, 0);
+    }
+
+    #[test]
+    fn read_subagent_meta_degrades_to_null_with_one_warn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = subagent_path(tmp.path());
+        let meta_path = path.with_extension("meta.json");
+        let cases = [
+            None,
+            Some("{not json"),
+            Some("[1, 2]"),
+            Some(r#"{"agentType":7,"spawnDepth":"deep","toolUseId":3,"finished":"yes"}"#),
+        ];
+        for case in cases {
+            match case {
+                Some(body) => std::fs::write(&meta_path, body).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(&meta_path);
+                }
+            }
+            let (meta, warns) = count_warns(|| read_subagent_meta(&path));
+            assert_eq!(meta, SubagentMeta::default(), "case {case:?}");
+            assert_eq!(warns, 1, "exactly one warn for case {case:?}");
+        }
+    }
+
+    #[test]
+    fn read_subagent_meta_ignores_main_sessions_and_finds_workflow_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("-proj/session.jsonl");
+        let (meta, warns) = count_warns(|| read_subagent_meta(&main));
+        assert_eq!((meta, warns), (SubagentMeta::default(), 0));
+
+        let wf = tmp.path().join("-proj/parent/subagents/workflows/wf_1");
+        std::fs::create_dir_all(&wf).unwrap();
+        let path = wf.join("agent-w1.jsonl");
+        std::fs::write(
+            path.with_extension("meta.json"),
+            r#"{"agentType":"workflow-subagent","spawnDepth":1}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_subagent_meta(&path).agent_type.as_deref(),
+            Some("workflow-subagent")
+        );
+
+        let journal = wf.join("journal.jsonl");
+        let (meta, warns) = count_warns(|| read_subagent_meta(&journal));
+        assert_eq!((meta, warns), (SubagentMeta::default(), 0));
+    }
+
+    #[test]
+    fn from_path_derives_identity_for_every_layout() {
+        let identity = |p: &str| {
+            let f = SessionFile::from_path(Path::new(p));
+            (
+                f.session_id.clone(),
+                f.is_subagent,
+                f.project_dir.clone(),
+                f.parent_session_id.clone(),
+            )
+        };
+        assert_eq!(
+            identity("/root/-proj/sess-1.jsonl"),
+            ("sess-1".into(), false, "-proj".into(), None)
+        );
+        assert_eq!(
+            identity("/root/-proj/parent-1/subagents/agent-a1.jsonl"),
+            (
+                "agent-a1".into(),
+                true,
+                "-proj".into(),
+                Some("parent-1".into())
+            )
+        );
+        assert_eq!(
+            identity("/root/-proj/parent-1/subagents/workflows/wf_1/agent-w1.jsonl"),
+            (
+                "agent-w1".into(),
+                true,
+                "-proj".into(),
+                Some("parent-1".into())
+            )
+        );
+        // Orchestration journals are not transcripts.
+        assert!(
+            !SessionFile::from_path(Path::new(
+                "/root/-proj/parent-1/subagents/workflows/wf_1/journal.jsonl"
+            ))
+            .is_subagent
+        );
+    }
+
+    /// Rows written by the old `from_path` stored workflow subagents as main
+    /// sessions. Re-ingesting the file must repair the identity columns.
+    #[test]
+    fn reingest_repairs_mislabeled_workflow_subagent_row() {
+        use crate::watch_claude_sessions::make_test_jsonl_line;
+
+        let conn = open_test_db();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("-proj/parent-1/subagents/workflows/wf_1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent-w1.jsonl");
+        std::fs::write(
+            &path,
+            [
+                make_test_jsonl_line("agent-w1", 0, "user", "workflow step"),
+                make_test_jsonl_line("agent-w1", 2, "assistant", "doing the workflow step now"),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        assert_eq!(ingest_session_file(&conn, &path).2, 0);
+        conn.execute(
+            "UPDATE agentic_sessions
+             SET is_subagent = 0, parent_session_id = NULL, project_dir = 'wf_1'",
+            [],
+        )
+        .unwrap();
+
+        let (_, _, errors) = ingest_session_file(&conn, &path);
+        assert_eq!(errors, 0);
+        let row: (i64, Option<String>, String) = conn
+            .query_row(
+                "SELECT is_subagent, parent_session_id, project_dir
+                 FROM agentic_sessions WHERE session_id = 'agent-w1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (1, Some("parent-1".into()), "-proj".into()));
+    }
+
+    /// 1,001 candidates with a batch size of 500 cross two batch boundaries
+    /// and end in the same table state as one large batch.
+    #[test]
+    fn repair_subagent_identity_batches_match_single_pass() {
+        let seed = |conn: &Connection| {
+            for i in 0..1001 {
+                conn.execute(
+                    "INSERT INTO agentic_sessions
+                        (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                         source_file, is_subagent, start_time, end_time)
+                     VALUES (?1, 'claude-code', 0, 'wf_x', '/p', 's', ?2, 0, 1, 2)",
+                    params![
+                        format!("agent-{i}"),
+                        format!("/gone/-proj/parent-{i}/subagents/workflows/wf_x/agent-{i}.jsonl")
+                    ],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO agentic_sessions
+                    (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                     source_file, is_subagent, start_time, end_time)
+                 VALUES ('main', 'claude-code', 0, '-proj', '/p', 's', '/gone/-proj/main.jsonl',
+                         0, 1, 2)",
+                [],
+            )
+            .unwrap();
+        };
+        let snapshot = |conn: &Connection| -> Vec<(String, i64, Option<String>, String)> {
+            conn.prepare(
+                "SELECT session_id, is_subagent, parent_session_id, project_dir
+                 FROM agentic_sessions ORDER BY session_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+
+        let batched = open_test_db();
+        seed(&batched);
+        assert_eq!(
+            repair_subagent_identity_in_batches(&batched, 500).unwrap(),
+            1001
+        );
+
+        let single = open_test_db();
+        seed(&single);
+        assert_eq!(
+            repair_subagent_identity_in_batches(&single, 10_000).unwrap(),
+            1001
+        );
+
+        assert_eq!(snapshot(&batched), snapshot(&single));
+        assert!(
+            snapshot(&batched)
+                .iter()
+                .filter(|r| r.0 != "main")
+                .all(|r| r.1 == 1 && r.3 == "-proj"),
+            "every workflow row repaired"
+        );
+        assert_eq!(
+            repair_subagent_identity_in_batches(&batched, 500).unwrap(),
+            0
+        );
+    }
+
+    /// The database-side pass repairs rows whose transcript is gone, and
+    /// leaves main sessions, journals, and correct rows alone.
+    #[test]
+    fn repair_subagent_identity_fixes_rows_from_stored_source_file() {
+        let conn = open_test_db();
+        let insert = |session_id: &str, source_file: &str, is_subagent: i64, project: &str| {
+            conn.execute(
+                "INSERT INTO agentic_sessions
+                    (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                     source_file, is_subagent, start_time, end_time)
+                 VALUES (?1, 'claude-code', 0, ?4, '/p', 's', ?2, ?3, 1, 2)",
+                params![session_id, source_file, is_subagent, project],
+            )
+            .unwrap();
+        };
+        insert(
+            "agent-gone",
+            "/deleted/-proj/parent-9/subagents/workflows/wf_9/agent-gone.jsonl",
+            0,
+            "wf_9",
+        );
+        insert("main-1", "/deleted/-proj/main-1.jsonl", 0, "-proj");
+        insert(
+            "agent-ok",
+            "/deleted/-proj/parent-9/subagents/agent-ok.jsonl",
+            1,
+            "-proj",
+        );
+
+        assert_eq!(repair_subagent_identity(&conn).unwrap(), 1);
+        assert_eq!(repair_subagent_identity(&conn).unwrap(), 0, "idempotent");
+
+        let rows: Vec<(String, i64, Option<String>, String)> = conn
+            .prepare(
+                "SELECT session_id, is_subagent, parent_session_id, project_dir
+                 FROM agentic_sessions ORDER BY session_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "agent-gone".into(),
+                    1,
+                    Some("parent-9".into()),
+                    "-proj".into()
+                ),
+                ("agent-ok".into(), 1, None, "-proj".into()),
+                ("main-1".into(), 0, None, "-proj".into()),
+            ]
+        );
+    }
+
+    /// Metadata columns are refreshed on conflict but never feed
+    /// `content_hash`, so a metadata-only change does not re-enqueue.
+    #[test]
+    fn metadata_only_change_updates_row_without_requeue() {
+        let conn = open_test_db();
+        let seg = make_test_segment("session-meta-001", 0);
+        insert_segments(&conn, std::slice::from_ref(&seg)).unwrap();
+        conn.execute(
+            "UPDATE agentic_enrichment_queue SET status = 'done', updated_at = 1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE agentic_sessions SET last_enriched_content_hash = content_hash",
+            [],
+        )
+        .unwrap();
+
+        let with_meta = SessionSegment {
+            subagent: SubagentMeta {
+                agent_type: Some("Explore".into()),
+                spawn_depth: Some(1),
+                tool_use_id: Some("toolu_9".into()),
+                finished: Some(false),
+            },
+            ..seg.clone()
+        };
+        assert_eq!(
+            compute_segment_content_hash(&seg),
+            compute_segment_content_hash(&with_meta)
+        );
+        let (inserted, skipped) = insert_segments(&conn, &[with_meta]).unwrap();
+        assert_eq!((inserted, skipped), (0, 1));
+
+        let row: (String, Option<i64>, Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT agent, spawn_depth, parent_tool_use_id, subagent_finished
+                 FROM agentic_sessions WHERE session_id = 'session-meta-001'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            ("Explore".into(), Some(1), Some("toolu_9".into()), Some(0))
+        );
+        let queue: (String, i64) = conn
+            .query_row(
+                "SELECT status, updated_at FROM agentic_enrichment_queue",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(queue, ("done".into(), 1), "queue row must be untouched");
+    }
+
+    /// Two models in one segment, two records sharing one `message.id`.
+    /// Usage counts once per id, and the winners are the most frequent values.
+    #[test]
+    fn usage_dedups_by_message_id_and_picks_most_frequent_model() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "tests/fixtures/claude/-projects-demo/aaaaaaaa-2222-4333-8444-555555555555.jsonl",
+        );
+        let redaction = RedactionEngine::builtin();
+        let segments = extract_segments(&SessionFile::from_path(&path), &redaction).unwrap();
+        assert_eq!(segments.len(), 1);
+        let usage = &segments[0].usage;
+        // msg_a counts once at its maximum (output 20 then 50 -> 50), plus msg_b
+        // and msg_c; the user record's usage and the synthetic record are ignored.
+        assert_eq!(
+            usage.totals(),
+            UsageTotals {
+                input_tokens: 100 + 40 + 7,
+                output_tokens: 50 + 20 + 9,
+                cache_read_tokens: 1000 + 400,
+                cache_creation_tokens: 200 + 30,
+            }
+        );
+        assert_eq!(usage.token_count(), 147 + 79);
+        // The sonnet record comes first, so "most frequent" and "first seen"
+        // disagree for model and effort. `<synthetic>` never votes.
+        assert_eq!(usage.model(), Some("claude-opus-5"));
+        // requestedModel ties 2 to 2 (sonnet first, opus second): first seen wins.
+        assert_eq!(usage.requested_model(), Some("claude-sonnet-5"));
+        assert_eq!(usage.effort(), Some("high"));
+    }
+
+    /// One `message.id` split across a segment boundary counts once, in the
+    /// segment where the id first appeared, at its maximum.
+    #[test]
+    fn usage_for_an_id_spanning_a_segment_split_counts_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("-proj").join("split-session.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let asst = |t: &str, id: &str, out: i64, text: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"{t}","cwd":"/p","message":{{"id":"{id}","model":"claude-opus-5","role":"assistant","content":[{{"type":"text","text":"{text}"}}],"usage":{{"input_tokens":10,"output_tokens":{out},"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+            )
+        };
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-10-01T10:00:00.000Z","cwd":"/p","message":{"role":"user","content":"first task"}}"#.to_string(),
+            asst("2026-10-01T10:00:01.000Z", "msg_x", 5, "part one of the long reply"),
+            // A tool_result user record after a gap above 5 minutes splits here.
+            r#"{"type":"user","timestamp":"2026-10-01T10:06:00.000Z","cwd":"/p","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#.to_string(),
+            asst("2026-10-01T10:06:01.000Z", "msg_x", 9, "part two of the long reply"),
+            asst("2026-10-01T10:06:02.000Z", "msg_y", 4, "the next turn of the reply"),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let segs =
+            extract_segments(&SessionFile::from_path(&path), &RedactionEngine::builtin()).unwrap();
+
+        assert_eq!(segs.len(), 2, "the tool_result record must split");
+        // msg_x belongs to segment 0 at its max (9); msg_y belongs to segment 1.
+        assert_eq!(segs[0].usage.totals().output_tokens, 9);
+        assert_eq!(segs[0].usage.totals().input_tokens, 10);
+        assert_eq!(segs[1].usage.totals().output_tokens, 4);
+        assert_eq!(segs[1].usage.totals().input_tokens, 10);
+    }
+
+    #[test]
+    fn usage_is_persisted_and_metadata_change_does_not_requeue() {
+        let conn = open_test_db();
+        let mut seg = make_test_segment("session-usage-001", 0);
+        seg.usage = usage_with_tokens(0);
+        seg.usage.observe_model("claude-opus-5");
+        seg.usage.observe_requested_model("claude-opus-5");
+        seg.usage.observe_effort("medium");
+        seg.usage.add(UsageTotals {
+            input_tokens: 11,
+            output_tokens: 22,
+            cache_read_tokens: 33,
+            cache_creation_tokens: 44,
+        });
+        insert_segments(&conn, std::slice::from_ref(&seg)).unwrap();
+        conn.execute(
+            "UPDATE agentic_enrichment_queue SET status = 'done', updated_at = 1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE agentic_sessions SET last_enriched_content_hash = content_hash",
+            [],
+        )
+        .unwrap();
+
+        // Re-ingest with a different model and larger usage: metadata only.
+        let mut changed = seg.clone();
+        changed.usage = SegmentUsage::default();
+        changed.usage.observe_model("claude-sonnet-5");
+        changed.usage.add(UsageTotals {
+            input_tokens: 111,
+            output_tokens: 222,
+            cache_read_tokens: 333,
+            cache_creation_tokens: 444,
+        });
+        assert_eq!(
+            compute_segment_content_hash(&seg),
+            compute_segment_content_hash(&changed)
+        );
+        assert_eq!(insert_segments(&conn, &[changed]).unwrap(), (0, 1));
+
+        type Row = (
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        );
+        let row: Row = conn
+            .query_row(
+                "SELECT model, requested_model, effort, input_tokens, output_tokens,
+                        cache_read_tokens, cache_creation_tokens, token_count
+                 FROM agentic_sessions WHERE session_id = 'session-usage-001'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "claude-sonnet-5".into(),
+                None,
+                None,
+                111,
+                222,
+                333,
+                444,
+                333
+            )
+        );
+        let queue: (String, i64) = conn
+            .query_row(
+                "SELECT status, updated_at FROM agentic_enrichment_queue",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(queue, ("done".into(), 1), "queue row must be untouched");
     }
 
     #[test]
@@ -2389,7 +3557,7 @@ mod tests {
                 "[]",
                 seg.source_file,
                 seg.message_count,
-                seg.token_count,
+                seg.usage.token_count(),
                 seg.start_time,
                 seg.end_time,
                 now_ms,
@@ -2565,7 +3733,8 @@ mod tests {
 
         barrier.wait();
         let start = Instant::now();
-        let (inserted, _skipped, errors) = try_insert_segments(&conn, std::slice::from_ref(&seg));
+        let (inserted, _skipped, errors) =
+            try_insert_segments(&conn, std::slice::from_ref(&seg), None);
         let elapsed = start.elapsed();
         holder.join().unwrap();
 

@@ -48,12 +48,71 @@ The Rust migration runner at `storage.rs::open_db` walks every version from the 
 | **v21** | Auto-memory watcher source_health identity. | Seeds `source_health.source = 'auto-memory-watcher'` via `INSERT OR IGNORE`. | Watcher liveness for the auto-memory ingest path joins the capture-health family. |
 | **v22** | Watcher resume-state rename (SNUG-115 Phase A). | Creates `agentic_session_offsets` (same columns as legacy `claude_session_offsets`) and `INSERT OR IGNORE` copies existing rows. **Does not drop** legacy tables. | Claude FS watcher and backfill CLI read/write `agentic_session_offsets`. Legacy `claude_session_offsets` remains frozen on upgraded DBs until Phase B. |
 | **v26** | Event payload expiry and deletion receipts (HIPO-13). | Adds `events.payload_expiry`, an insert trigger and expiry index, and append-only `deletion_receipts`. No event table rebuild or bulk backfill. | Explicit payload GC retains event metadata and joins. See [Event payload retention](#event-payload-retention). |
+| **v28** | Agent-evaluation metadata, Phase 1 (HIPO-57). | Additive: 14 `agentic_sessions` columns via `add_column_if_missing` (no rebuild), partial indexes `idx_agentic_sessions_agent` (`WHERE agent <> ''`) and `idx_agentic_sessions_model` (`WHERE model <> ''`), and the per-session `agentic_session_facts` table. Index and table DDL lives in [`schema/agentic_eval.sql`](../crates/hippo-core/src/schema/agentic_eval.sql), shared by fresh installs and the migration. Existing rows take the column defaults. | Lets evaluation queries key on subagent type, model, tokens, and hook outcomes. See [Agent-evaluation columns](#agent-evaluation-columns-v28). |
 
 The v24-to-v25 migration adds optional classification state without rewriting
 knowledge content or vectors. Its authoritative DDL is
 [`schema/classification.sql`](../crates/hippo-core/src/schema/classification.sql),
 with fresh-install parity covered by the storage migration tests. Operational
 usage is in [Jev decisions](jev-decisions.md).
+
+## Agent-evaluation columns (v28)
+
+All metadata columns below sit outside `content_hash`, so a change that touches only them never re-enqueues enrichment. The Claude Code writer (`claude_session.rs::insert_segments_with_facts`) sets them, and the Codex writer (`codex_session.rs::upsert_segment_tx`) sets the model, effort, and token columns. Other harnesses leave the defaults.
+
+| Column | Type / default | Meaning |
+|---|---|---|
+| `agent` (existing) | `TEXT DEFAULT ''` | Claude Code: `agentType` from the subagent's sibling `meta.json`; `''` for main sessions and when `meta.json` is missing or malformed. |
+| `model` (existing) | `TEXT DEFAULT ''` | Served model id. Claude Code: the most frequent `message.model` among the segment's assistant records (ties: first seen). Codex: the most frequent `turn_context.model` among the segment's turns. A new segment counts the context in effect at its first prompt; a later `turn_context` counts for the segment of the next prompt, decided after that prompt's 5-minute gap check, or for the open segment when no prompt follows. `''` when none was recorded. |
+| `requested_model` | `TEXT`, NULL | Claude Code: the most frequent top-level `requestedModel` of the segment's assistant records (ties: first seen). NULL when absent. Codex rollouts carry no requested-model field, so it stays NULL. |
+| `effort` | `TEXT`, NULL | Reasoning effort. Claude Code: most frequent top-level `effort` of the assistant records. Codex: most frequent `turn_context.effort`, attributed like `model`. Ties: first seen. NULL when absent. |
+| `token_count` (existing) | `INTEGER` | Token total for the segment; the definition depends on the writer. Claude Code via the daemon: `input_tokens + output_tokens` (cache reads and creation excluded). Codex: the same, with cached input removed from `input_tokens`. Claude Code via the Xcode Python ingester (`scripts/hippo-ingest-claude.py`, `claude_sessions.py`): legacy value (input read from user records that carry none, output summed per content block), with `model = ''` and zero usage columns until that extractor is ported. opencode: the reported `total`, or the sum of all token fields including cache. Pi: `input + output`; its cache handling is not verified. Cursor: 0. |
+| `input_tokens` | `INTEGER NOT NULL DEFAULT 0` | Uncached input tokens for the segment. |
+| `output_tokens` | `INTEGER NOT NULL DEFAULT 0` | Output tokens for the segment (Codex: includes reasoning tokens). |
+| `cache_read_tokens` | `INTEGER NOT NULL DEFAULT 0` | Prompt-cache read tokens for the segment. |
+| `cache_creation_tokens` | `INTEGER NOT NULL DEFAULT 0` | Prompt-cache creation tokens for the segment. |
+| `spawn_depth` | `INTEGER`, NULL | Claude Code subagent nesting depth (`spawnDepth` in `meta.json`). |
+| `parent_tool_use_id` | `TEXT`, NULL | `toolUseId` of the parent's `Agent` call that spawned this subagent. |
+| `subagent_finished` | `INTEGER`, NULL | `finished` from `meta.json` as 0/1; NULL when absent. |
+| `hook_runs` | `INTEGER NOT NULL DEFAULT 0` | Claude Code: sum of `hookCount` over the segment's `system` records with `subtype = "stop_hook_summary"`. |
+| `hook_errors` | `INTEGER NOT NULL DEFAULT 0` | Claude Code: total length of the `hookErrors` arrays of those records. The error text is not stored. |
+| `prevented_continuations` | `INTEGER NOT NULL DEFAULT 0` | Claude Code: number of those records with `preventedContinuation == true`. `stopReason` text is not stored. |
+| `hook_names_json` | `TEXT NOT NULL DEFAULT '[]'` | Claude Code: JSON array of the distinct `hookInfos[].command` values of those records, each passed through redaction, sorted. Names only: hook output is never stored. |
+| `permission_decisions_json` | `TEXT NOT NULL DEFAULT '{}'` | Claude Code: JSON object mapping each permission decision to its count over the segment's `user` records, for example `{"accept":2,"reject":1}`. The key is `permissionDecision.decision`; an older bare-string `permissionDecision` is used as the key directly. `source`, `reasonType`, and `permissionMode` are ignored, as is the field on any non-`user` record. |
+
+Token accounting rules:
+
+- Claude Code writes one `assistant` record per content block. Records of one API turn share `message.id`. Streamed records of a turn repeat every usage field except `output_tokens`, which grows, so the turn counts once at the field-wise maximum of its records. A turn belongs to the segment where its `message.id` first appears, even when a segment split falls between its records. `user` records carry no `usage`. Records with model `<synthetic>` do not vote for `model`. Before HIPO-60 the extractor read `input_tokens` from `user` records, so `token_count` held output tokens only.
+- Codex reports a cumulative `total_token_usage` in `token_count` events. The writer adds the growth since the previous event, so repeated events add nothing. Codex counts cached tokens inside `input_tokens`; the writer subtracts `cached_input_tokens` so the four columns do not overlap. Tokens reported before a segment opens are not attributed to any segment.
+- A missing or malformed usage field counts as 0.
+
+Hook and permission rules (Claude Code only; other harnesses keep the defaults):
+
+- A `stop_hook_summary` record is still a `system` record, so it starts and counts in segments exactly as before. The hook columns never enter `content_hash`.
+- A field of the wrong type (for example a string `hookCount`, a non-array `hookErrors`, a non-string `command` or `permissionDecision`) contributes nothing, logs one `warn` for the file, and never drops a segment. A missing field also contributes nothing.
+- A trailing segment that is identical in content to its predecessor is collapsed, and its hook counts go with it.
+
+`agentic_session_facts` holds one row per `(session_id, harness)` for totals a harness reports for the whole session. Only Claude Code writes it today (`claude_session.rs::upsert_session_facts`), once per ingest of a transcript file, in the same transaction as the segments. Facts never enter `content_hash`, so a facts-only change never re-enqueues enrichment. The key is the `session_id` of the file (its name stem), not the `sessionId` inside the records.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `session_id`, `harness` | `TEXT NOT NULL`, primary key | Same keys as `agentic_sessions`; `harness = 'claude-code'`. |
+| `cost_usd` | `REAL` | `totalCostUSD` of the last `cost-state` record in the file. |
+| `duration_ms` | `INTEGER` | `totalDuration` of the last `cost-state` record (ms). |
+| `tool_duration_ms` | `INTEGER` | `totalToolDuration` of the last `cost-state` record (ms). |
+| `lines_added`, `lines_removed` | `INTEGER` | `totalLinesAdded` and `totalLinesRemoved` of the last `cost-state` record. |
+| `title` | `TEXT` | Last `aiTitle` of the file, redacted. NULL when the file has none. |
+| `cli_version` | `TEXT` | Top-level `version` of the last `assistant` record. |
+| `pr_links_json` | `TEXT NOT NULL DEFAULT '[]'` | JSON array of `{"number", "repo", "url"}` from `prNumber`, `prRepository`, and `prUrl` (redacted), one entry per distinct `pr-link` record, in file order. |
+| `updated_at` | `INTEGER NOT NULL` | Time of the last ingest that wrote the row, epoch ms. |
+
+A missing or mistyped field is stored as NULL and logs one `warn` per file. `cost-state`, `pr-link`, and `ai-title` records never start or split a segment and do not count toward `message_count`.
+
+Resumed sessions: when a later file continues a `session_id`, the upsert is per column. A column the later file carries replaces the stored value. A NULL column (no `cost-state`, no `aiTitle`, no assistant `version`) or an empty `pr-link` list keeps the stored value, so a resume never erases a known cost. `pr_links_json` is replaced as a whole by the later file's list, not merged.
+
+`agentic_sessions.title` holds the same redacted last `aiTitle` on every segment of the file. `''` when the file has none; a reparse never replaces a stored title with `''`.
+
+`hippo ingest claude-session-backfill <glob>` first repairs subagent identity in the database: claude-code rows whose stored `source_file` is under `subagents/` but carry `is_subagent = 0` (workflow subagents written before v28) get `is_subagent`, `parent_session_id`, and `project_dir` recomputed from that path, even when the transcript is gone, and the count prints as `Subagent rows repaired`. It then re-reads `meta.json` for transcripts still on disk and prints `Subagent agent coverage: <filled> / <rows>`, counting the processed files' `is_subagent = 1` rows by `(session_id, harness)`. The first run after v28 also re-enqueues about 1,300 segments (counted on the development database) whose `Agent` tool-call summaries changed format, because those summaries are part of `content_hash`; later runs re-enqueue nothing for metadata-only changes. The live watcher also re-ingests a subagent transcript when its sibling `meta.json` changes, so `subagent_finished` no longer waits for a backfill. The 30 s reconciliation pass also compares the `meta.json` mtime with `agentic_session_offsets.updated_at` (the start of the last successful ingest), so a `meta.json` write whose filesystem event was dropped, or that landed while the watcher was stopped, is picked up within one pass. These re-ingests change metadata only and enqueue nothing. The first pass after an upgrade re-ingests each subagent transcript whose `meta.json` is newer than its stored offset once.
 
 ## Event payload retention
 
@@ -135,7 +194,8 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 | `events` | Shell commands and Claude tool-use events. `source_kind` distinguishes; `probe_tag` marks synthetic. | `storage.rs::insert_event_at` |
 | `sessions` | One row per zsh session (start time, hostname, shell, user). | Daemon at session start |
 | `agentic_sessions` | Live session store. Supported harnesses and uniqueness constraints are defined in `schema.sql`. Holds segment-derived summary, tool calls / user prompts JSON, message count, content hashes. | Daemon session ingesters; brain enrichment writers |
-| `agentic_session_offsets` | Per-file FS-watcher resume state (byte_offset, inode, device). | `watch_claude_sessions.rs::process_file` |
+| `agentic_session_facts` | One row per `(session_id, harness)`: session-level cost, duration, line counts, title, CLI version, PR links (v28). | `claude_session.rs::upsert_session_facts` (Claude Code only) |
+| `agentic_session_offsets` | Per-file FS-watcher resume state (byte_offset, inode, device). `updated_at` is the start of the last successful ingest; reconciliation re-ingests a subagent whose sibling `meta.json` is at least that new. | `watch_claude_sessions.rs::process_file` |
 | `browser_events` | Firefox-extension visits with Readability-extracted main text, dwell, scroll depth. | `storage.rs::insert_browser_event` |
 | `workflow_runs` / `_jobs` / `_annotations` / `_log_excerpts` | GitHub Actions ingest. | `gh_poll.rs::run_once` |
 | `sha_watchlist` | Per-(repo, sha) follow flag for in-flight CI runs. Drives the gh-poller's "wait for this SHA's runs to settle" loop. | `gh_poll.rs` |

@@ -100,7 +100,7 @@ crates/hippo-daemon/src/claude_session.rs::extract_segments
        |  -- Python port for batch / non-watcher ingest paths:
        |     brain/src/hippo_brain/claude_sessions.py::extract_segments
        v
-crates/hippo-daemon/src/claude_session.rs::insert_segments
+crates/hippo-daemon/src/claude_session.rs::insert_segments_with_facts
        |  -- INSERT ... ON CONFLICT(session_id, segment_index) DO UPDATE SET
        |       (mutable cols) -- AP-12: NOT "OR IGNORE"; the segment grows
        |  -- content_hash compared with last_enriched_content_hash

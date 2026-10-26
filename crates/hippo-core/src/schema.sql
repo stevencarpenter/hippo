@@ -524,6 +524,22 @@ CREATE TABLE IF NOT EXISTS agentic_sessions (
     -- AP-6: synthetic probe rows carry a non-NULL sentinel; every user-facing
     -- query must add `AND probe_tag IS NULL`. NULL on all real sessions.
     probe_tag                   TEXT,
+    -- v28 (agent evaluation, Phase 1): appended in migration order so a fresh
+    -- table and a migrated table have identical columns.
+    requested_model             TEXT,
+    effort                      TEXT,
+    input_tokens                INTEGER NOT NULL DEFAULT 0,
+    output_tokens               INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens           INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens       INTEGER NOT NULL DEFAULT 0,
+    spawn_depth                 INTEGER,
+    parent_tool_use_id          TEXT,
+    subagent_finished           INTEGER,
+    hook_runs                   INTEGER NOT NULL DEFAULT 0,
+    hook_errors                 INTEGER NOT NULL DEFAULT 0,
+    prevented_continuations     INTEGER NOT NULL DEFAULT 0,
+    hook_names_json             TEXT    NOT NULL DEFAULT '[]',
+    permission_decisions_json   TEXT    NOT NULL DEFAULT '{}',
     UNIQUE (session_id, harness, segment_index)
 );
 
@@ -668,5 +684,5 @@ CREATE INDEX IF NOT EXISTS idx_events_payload_expiry
 ON events (COALESCE(payload_expiry, created_at + 7776000000), id)
 WHERE stdout IS NOT NULL OR stderr IS NOT NULL OR env_snapshot_id IS NOT NULL;
 
-PRAGMA user_version = 27;
+PRAGMA user_version = 28;
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_project ON knowledge_nodes (project_id);
