@@ -352,3 +352,143 @@ fn line_anchored_operator_patterns_still_apply() {
     let text = std::fs::read_to_string(out.join("f-f1.json")).unwrap();
     assert!(!text.contains("hunter2"), "{text}");
 }
+
+/// One accepted finding on line 2 of a fresh repo; returns (tmp, repo, conn).
+fn accepted_setup() -> (tempfile::TempDir, PathBuf, Connection) {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, bad, good) = repo_with_fix(tmp.path(), DEFECTIVE);
+    let mut conn = db(tmp.path());
+    load(
+        &mut conn,
+        &[
+            run(&repo, &bad),
+            finding("f1", &repo, "+", 2, "    if user.is_admin or True:"),
+            verdict("v1", "f1", "accepted", false, Some(&good), 6),
+        ],
+    );
+    (tmp, repo, conn)
+}
+
+#[test]
+fn parent_dir_components_are_refused_before_anything_is_created() {
+    let (tmp, _repo, conn) = accepted_setup();
+    // `missing/..` would hide the checkout from the nearest-ancestor walk.
+    let out = tmp
+        .path()
+        .join("missing")
+        .join("..")
+        .join("repo")
+        .join("cases");
+    let err = export_bench_cases(&conn, &out, &[RedactionEngine::builtin()], 0, None).unwrap_err();
+    assert!(err.to_string().contains("'..'"), "{err}");
+    assert!(!tmp.path().join("missing").exists());
+    assert!(!tmp.path().join("repo/cases").exists());
+}
+
+#[test]
+fn symlink_into_a_checkout_is_refused() {
+    let (tmp, repo, conn) = accepted_setup();
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&repo, &link).unwrap();
+    let err = export_bench_cases(
+        &conn,
+        &link.join("cases"),
+        &[RedactionEngine::builtin()],
+        0,
+        None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("inside a git checkout"), "{err}");
+    assert!(!repo.join("cases").exists());
+}
+
+#[test]
+fn ceiling_directories_cannot_hide_a_checkout() {
+    let (tmp, repo, _conn) = accepted_setup();
+    std::fs::create_dir(repo.join("sub")).unwrap();
+    // With the ceiling at the repo, plain discovery from `sub` stops before it.
+    let out = Command::new(env!("CARGO_BIN_EXE_hippo"))
+        .args(["eval", "export-bench-cases", "--out"])
+        .arg(repo.join("sub/cases"))
+        .env("GIT_CEILING_DIRECTORIES", &repo)
+        .env("XDG_DATA_HOME", tmp.path().join("data"))
+        .env("XDG_CONFIG_HOME", tmp.path().join("config"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("inside a git checkout"), "{stderr}");
+    assert!(!repo.join("sub/cases").exists());
+}
+
+#[test]
+fn foreign_non_empty_directory_is_refused_and_left_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, _repo, conn) = accepted_setup();
+    let out = tmp.path().join("notes");
+    std::fs::create_dir(&out).unwrap();
+    std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(out.join("todo.txt"), "x").unwrap();
+    let err = export_bench_cases(&conn, &out, &[RedactionEngine::builtin()], 0, None).unwrap_err();
+    assert!(err.to_string().contains("no f-*.json or e-*.json"), "{err}");
+    let mode = std::fs::metadata(&out).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o755);
+}
+
+#[test]
+fn stale_cases_are_removed() {
+    let (tmp, _repo, mut conn) = accepted_setup();
+    let out = tmp.path().join("cases");
+    assert_eq!(export(&conn, &out).written, 1);
+    std::fs::write(out.join("e-old.json"), "{}").unwrap();
+    std::fs::write(out.join("keep.txt"), "x").unwrap();
+    // A later human verdict replaces `accepted`.
+    load(
+        &mut conn,
+        &[verdict("v9", "f1", "false-positive", false, None, 7)],
+    );
+    let summary = export(&conn, &out);
+    assert_eq!((summary.written, summary.removed), (0, 2), "{summary:?}");
+    assert!(!out.join("f-f1.json").exists());
+    assert!(out.join("keep.txt").exists());
+}
+
+#[test]
+fn since_and_repo_filters_select_records() {
+    let (tmp, repo, conn) = accepted_setup();
+    let out = tmp.path().join("cases");
+    let engines = [RedactionEngine::builtin()];
+    let run = |since: i64, repo: Option<&str>| {
+        export_bench_cases(&conn, &out, &engines, since, repo)
+            .unwrap()
+            .written
+    };
+    // The fixture finding has logged_at 3.
+    assert_eq!(run(4, None), 0);
+    assert_eq!(run(3, None), 1);
+    assert_eq!(run(0, Some("/elsewhere/repo")), 0);
+    assert_eq!(run(0, Some(repo.to_str().unwrap())), 1);
+}
+
+#[test]
+fn finding_without_line_hash_is_anchor_not_found() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, bad, good) = repo_with_fix(tmp.path(), DEFECTIVE);
+    let mut conn = db(tmp.path());
+    let mut f = finding("f1", &repo, "+", 2, "unused");
+    f.as_object_mut().unwrap().remove("line_text");
+    load(
+        &mut conn,
+        &[
+            run(&repo, &bad),
+            f,
+            verdict("v1", "f1", "accepted", false, Some(&good), 6),
+        ],
+    );
+    let summary = export(&conn, &tmp.path().join("cases"));
+    assert_eq!(
+        summary.skipped.get("anchor_not_found"),
+        Some(&1),
+        "{summary:?}"
+    );
+}

@@ -18,10 +18,11 @@ use serde_json::{Value as Json, json};
 
 use crate::agent_eval::line_hash;
 
-/// Cases written and cases skipped per reason.
+/// Cases written, stale case files removed, and cases skipped per reason.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ExportSummary {
     pub written: usize,
+    pub removed: usize,
     pub skipped: BTreeMap<&'static str, usize>,
 }
 
@@ -77,8 +78,10 @@ FROM eval_escapes
 WHERE recorded_at >= ?1 AND (?2 IS NULL OR repo = ?2)
 ORDER BY escape_id";
 
-/// Write one `<case id>.json` per exportable finding or escape into `out`.
-/// `since_ms` bounds `logged_at` (findings) and `recorded_at` (escapes).
+/// Write one `<case id>.json` per exportable finding or escape into `out`,
+/// then remove every other `f-*.json` and `e-*.json` there, so `out` is a
+/// snapshot of this run. `since_ms` bounds `logged_at` (findings) and
+/// `recorded_at` (escapes); a filtered run produces the filtered snapshot.
 pub fn export_bench_cases(
     conn: &Connection,
     out: &Path,
@@ -86,8 +89,17 @@ pub fn export_bench_cases(
     since_ms: i64,
     repo: Option<&str>,
 ) -> anyhow::Result<ExportSummary> {
+    anyhow::ensure!(
+        !out.components()
+            .any(|c| c == std::path::Component::ParentDir),
+        "the output directory must not contain '..': {}",
+        out.display()
+    );
     refuse_inside_checkout(out)?;
+    refuse_foreign_dir(out)?;
     hippo_core::storage::ensure_private_dir(out)?;
+    // A symlink or a race could still land the directory in a checkout.
+    refuse_inside_checkout(&out.canonicalize()?)?;
     let mut summary = ExportSummary::default();
     let skip = |summary: &mut ExportSummary, reason| {
         *summary.skipped.entry(reason).or_default() += 1;
@@ -151,35 +163,93 @@ pub fn export_bench_cases(
         });
     }
 
+    let mut written = std::collections::BTreeSet::new();
     for candidate in &candidates {
         match build_case(candidate, redaction) {
             Ok(case) => {
-                let path = out.join(format!("{}.json", candidate.case_id));
+                let name = format!("{}.json", candidate.case_id);
+                let path = out.join(&name);
                 std::fs::write(&path, serde_json::to_string_pretty(&case)? + "\n")
                     .with_context(|| format!("writing {}", path.display()))?;
+                written.insert(name);
                 summary.written += 1;
             }
             Err(reason) => skip(&mut summary, reason),
         }
     }
+    // A finding no longer accepted, or now skipped, must leave the corpus.
+    for name in case_files(out)? {
+        if !written.contains(&name) {
+            std::fs::remove_file(out.join(&name))
+                .with_context(|| format!("removing stale case {name}"))?;
+            summary.removed += 1;
+        }
+    }
     Ok(summary)
+}
+
+/// File names in `dir` that this export owns: `f-*.json` and `e-*.json`.
+fn case_files(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if (name.starts_with("f-") || name.starts_with("e-")) && name.ends_with(".json") {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
+/// Refuse an existing, non-empty `out` that holds no case files, so the
+/// export never takes over (and chmods) an unrelated directory.
+fn refuse_foreign_dir(out: &Path) -> anyhow::Result<()> {
+    if !out.is_dir() {
+        return Ok(());
+    }
+    let empty = std::fs::read_dir(out)?.next().is_none();
+    anyhow::ensure!(
+        empty || !case_files(out)?.is_empty(),
+        "refusing to use a non-empty directory with no f-*.json or e-*.json case files: {}",
+        out.display()
+    );
+    Ok(())
 }
 
 /// Refuse an `out` inside a git checkout, so a private case cannot be
 /// committed by accident. The check runs on the nearest existing ancestor,
-/// before the directory is created.
+/// before the directory is created. It fails closed: only git's "not a git
+/// repository" answer lets the export proceed.
 fn refuse_inside_checkout(out: &Path) -> anyhow::Result<()> {
     let absolute = std::path::absolute(out)?;
     let existing = absolute
         .ancestors()
         .find(|p| p.exists())
         .context("no existing ancestor of the output directory")?;
-    if git(existing, &["rev-parse", "--is-inside-work-tree"]).is_some() {
+    let result = Command::new("git")
+        .arg("-C")
+        .arg(existing)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_CEILING_DIRECTORIES")
+        .env("GIT_DISCOVERY_ACROSS_FILESYSTEM", "1")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .output()
+        .context("running git to check for a checkout around the output directory")?;
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    if result.status.success() {
         anyhow::bail!(
             "refusing to write private bench cases inside a git checkout: {}",
             absolute.display()
         );
     }
+    anyhow::ensure!(
+        stderr.contains("not a git repository"),
+        "cannot confirm that {} is outside a git checkout: {}",
+        absolute.display(),
+        stderr.trim()
+    );
     Ok(())
 }
 

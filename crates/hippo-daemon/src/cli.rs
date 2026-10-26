@@ -392,8 +392,11 @@ pub enum EvalAction {
     /// file (the review's `head_sha`, or the parent of `fix_commit`), and the trap is
     /// the flagged line as an added row. File text, claims, and notes pass through the
     /// ingest redaction engines. Case ids are `f-<finding id>` and `e-<escape id>`, so
-    /// a rerun overwrites the same files. Refuses an output directory inside a git
-    /// checkout. Prints the case count and the skips per reason.
+    /// a rerun overwrites the same files. Other `f-*.json` and `e-*.json` files in the
+    /// directory are removed, so it is a snapshot of this run (filtered by `--since` and
+    /// `--repo` when given). Refuses an output directory inside a git checkout, with a
+    /// `..` component, or non-empty without case files. Prints the case count, the
+    /// removed count, and the skips per reason.
     ExportBenchCases {
         /// Output directory, outside every git checkout (created with mode 0700)
         #[arg(long)]

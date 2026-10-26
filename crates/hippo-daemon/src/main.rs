@@ -1305,6 +1305,7 @@ async fn run() -> Result<()> {
                 repo.as_deref(),
             )?;
             println!("wrote {} case(s) to {}", summary.written, out.display());
+            println!("removed {}", summary.removed);
             let skipped: usize = summary.skipped.values().sum();
             println!("skipped {skipped}");
             for (reason, n) in &summary.skipped {
