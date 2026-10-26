@@ -487,17 +487,25 @@ start second counts once, as the start. A line
 that never appears in the walked history (fixed before its
 first commit, or fixed on a branch before a squash merge, which is the
 default hippo flow) is gone at `HEAD`, so `likely-addressed` holds. The job
-attributes it to the first walked commit that touches `path` and sets the
+attributes it to the first walked commit that touches `path` with a committer
+time at or after the review's `started_at` (an earlier mainline edit is not
+evidence of the fix), and sets the
 verdict `note` to the fixed marker
 `inferred: line absent at walk start; first commit touching the path`, so
 scorecards and humans can separate inferred commits from observed ones. An
 observed fix (the line present at the start, then absent) keeps a NULL
-note. When no walked commit touches `path`, the finding stays open. When
+note. When no walked commit touches `path`, or only commits from before the
+review start do, the finding stays open. When
 `HEAD` does not contain `head_sha`, inference also requires the reviewed
 branch to be gone: no ref under `refs/heads` or `refs/remotes` contains
 `head_sha`. Otherwise the finding stays open with reason
 `reviewed branch still exists; not merged`, because the line may still be
-unmerged work, and an automatic verdict cannot be withdrawn. A resolved PR
+unmerged work, and an automatic verdict cannot be withdrawn. Every inference
+also requires that no ref tip under `refs/heads` or `refs/remotes` still holds
+the line (`git cat-file blob <ref>:<path>`, hashed as above); otherwise the
+finding stays open with reason `flagged line still present on <refname>`. This
+covers a review of uncommitted changes whose `head_sha` is on main and whose
+line was later committed only on an unmerged branch. A resolved PR
 from the opt-in `gh` lookup is stored in the automatic verdict's `note` as
 `PR <url>, ...`, after the `inferred:` marker and `; ` when both apply. It is redacted and expires with the note, and the job asks
 only when the chain in steps 1 and 2 finds nothing. Operation and limits:

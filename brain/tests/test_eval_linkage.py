@@ -658,7 +658,87 @@ def test_observed_fix_never_runs_the_branch_guard(db, repo, tmp_path, monkeypatc
         raise AssertionError("branch guard ran for an observed fix")
 
     monkeypatch.setattr(eval_linkage, "_inference_blocked", forbidden)
+    monkeypatch.setattr(eval_linkage, "_line_on_a_ref", forbidden)
 
     run(db_path, tmp_path)
 
     assert [(row[3], row[4]) for row in verdicts(conn)] == [(fixed, None)]
+
+
+def test_line_committed_on_an_unmerged_branch_blocks_inference(db, repo, tmp_path):
+    """Review of uncommitted changes at the main tip; the line lands only on a branch."""
+    conn, db_path = db
+    head = repo.commit({"src/app.py": BASE}, "base")
+    repo.git("checkout", "-q", "-b", "feat")
+    repo.commit({"src/app.py": ORIGINAL}, "commit the reviewed change on feat")
+    repo.git("checkout", "-q", "main")
+    touch = repo.commit({"src/app.py": [*BASE, "y = 1"]}, "unrelated edit on main")
+    add_finding(conn, repo.path, head)
+
+    run(db_path, tmp_path)
+
+    assert verdicts(conn) == []
+    notes = json.loads((tmp_path / "eval-linkage-notes.json").read_text())
+    assert notes == {"f1": "flagged line still present on refs/heads/feat"}
+
+    repo.git("branch", "-q", "-D", "feat")
+    run(db_path, tmp_path)
+
+    assert [(row[3], row[4]) for row in verdicts(conn)] == [(touch, INFERRED)]
+
+
+def test_line_on_a_remote_tracking_ref_blocks_inference(db, repo, tmp_path):
+    conn, db_path = db
+    head = repo.commit({"src/app.py": BASE}, "base")
+    repo.git("checkout", "-q", "-b", "feat")
+    pushed = repo.commit({"src/app.py": ORIGINAL}, "commit the reviewed change on feat")
+    repo.git("update-ref", "refs/remotes/origin/feat", pushed)
+    repo.git("checkout", "-q", "main")
+    repo.git("branch", "-q", "-D", "feat")
+    repo.commit({"src/app.py": [*BASE, "y = 1"]}, "unrelated edit on main")
+    add_finding(conn, repo.path, head)
+
+    run(db_path, tmp_path)
+
+    assert verdicts(conn) == []
+    notes = json.loads((tmp_path / "eval-linkage-notes.json").read_text())
+    assert notes == {"f1": "flagged line still present on refs/remotes/origin/feat"}
+
+
+def test_squash_inference_skips_a_mainline_edit_before_the_review(db, repo, tmp_path):
+    conn, db_path = db
+    repo.commit({"src/app.py": BASE}, "base")
+    repo.git("branch", "-q", "feat")
+    repo.commit({"src/app.py": [*BASE, "y = 1"]}, "mainline edit before the review")
+    repo.git("checkout", "-q", "feat")
+    head = repo.commit({"src/app.py": ORIGINAL}, "add check")
+    started_at = int(repo.git("log", "-1", "--format=%ct", head)) * 1000
+    repo.commit({"src/app.py": FIXED}, "fix on feat")
+    repo.git("checkout", "-q", "main")
+    repo.git("merge", "-q", "--squash", "feat")
+    repo.git("commit", "-q", "-m", "squash feat")
+    squash = repo.git("rev-parse", "HEAD")
+    repo.git("branch", "-q", "-D", "feat")
+    add_finding(conn, repo.path, head, started_at=started_at)
+
+    run(db_path, tmp_path)
+
+    assert [(row[3], row[4]) for row in verdicts(conn)] == [(squash, INFERRED)]
+
+
+def test_only_pre_review_touches_stay_open(db, repo, tmp_path):
+    """A discarded review: the only commit touching the file predates the review."""
+    conn, db_path = db
+    head = repo.commit({"src/app.py": BASE, "README": ["x"]}, "base")
+    touch = repo.commit({"src/app.py": [*BASE, "y = 1"]}, "edit before the review")
+    started_at = (int(repo.git("log", "-1", "--format=%ct", touch)) + 1) * 1000
+    repo.commit({"README": ["y"]}, "unrelated after the review")
+    add_finding(conn, repo.path, head, started_at=started_at)
+
+    run(db_path, tmp_path)
+
+    assert verdicts(conn) == []
+    notes = json.loads((tmp_path / "eval-linkage-notes.json").read_text())
+    assert notes == {
+        "f1": "line absent at walk start; only commits before the review touch the path"
+    }

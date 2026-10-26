@@ -177,8 +177,42 @@ def _inference_blocked(repo: Path, head_sha: str) -> str | None:
     return "reviewed branch still exists; not merged" if refs.stdout.strip() else None
 
 
+RefLines = dict[tuple[Path, str, str], frozenset[str]]
+
+
+def _line_on_a_ref(repo: Path, path: str, wanted: str, cache: RefLines) -> str | None:
+    """Why the flagged line may still be unmerged work: the first ref tip holding it.
+
+    ``cache`` keeps each ``(repo, ref, path)`` line-hash set for one pass.
+    """
+    refs = _git(
+        repo,
+        "for-each-ref",
+        "--format=%(if)%(symref)%(then)%(else)%(refname)%(end)",  # skip origin/HEAD
+        "refs/heads",
+        "refs/remotes",
+        check=False,
+    )
+    if refs.returncode != 0:
+        return f"git for-each-ref failed (exit {refs.returncode})"
+    for ref in refs.stdout.decode().split():
+        key = (repo, ref, path)
+        if key not in cache:
+            blob = _blob(repo, ref, path)
+            lines = [] if blob is None else blob.split(b"\n")
+            cache[key] = frozenset(line_hash(line) for line in lines)
+        if wanted in cache[key]:
+            return f"flagged line still present on {ref}"
+    return None
+
+
 def find_change(
-    repo: Path, head_sha: str, path: str, wanted: str, started_at_ms: int = 0
+    repo: Path,
+    head_sha: str,
+    path: str,
+    wanted: str,
+    started_at_ms: int = 0,
+    ref_lines: RefLines | None = None,
 ) -> Outcome:
     """First commit after the review whose file no longer holds the flagged line.
 
@@ -188,8 +222,9 @@ def find_change(
     from the start commit or, for a line reviewed before it was committed, from
     the first later commit that contains it. A line that never appears in that
     history (fixed before its first commit, or fixed on a branch before a squash
-    merge) is attributed to the first walked commit that touches the path, with
-    ``INFERRED_NOTE``.
+    merge) is attributed to the first walked commit committed at or after the
+    review start that touches the path, with ``INFERRED_NOTE``, and only when no
+    local or remote-tracking ref tip still holds the line.
     """
     current = _blob(repo, "HEAD", path)
     if current is None:
@@ -200,14 +235,28 @@ def find_change(
     if isinstance(walk, str):
         return Outcome(None, walk)
     start, revs, guarded = walk
-    commits = _git(repo, "rev-list", "--reverse", "--topo-order", *revs, "--", path).stdout.split()
+    listed = _git(
+        repo,
+        "rev-list",
+        "--reverse",
+        "--topo-order",
+        "--no-commit-header",
+        "--format=%H %ct",
+        *revs,
+        "--",
+        path,
+    ).stdout.decode()
     seen = _contains(_blob(repo, start, path), wanted)
+    touched = False
     first_touch: str | None = None
-    for commit in (c.decode() for c in commits):
+    for commit, committed in (row.split() for row in listed.splitlines()):
         blob = _blob(repo, commit, path)
         if blob is None:
             continue  # deleted here; a later re-creation decides
-        first_touch = first_touch or commit
+        touched = True
+        # An inferred fix must come after the review started (seconds vs milliseconds).
+        if not first_touch and int(committed) * 1000 >= started_at_ms:
+            first_touch = commit
         if _contains(blob, wanted):
             seen = True
         elif seen:
@@ -217,11 +266,16 @@ def find_change(
     # The line never reached the walked history (fixed before its first commit, or
     # on a branch before a squash merge). It is gone at HEAD, so the status holds;
     # the commit is a guess, and the note says so.
-    if not first_touch:
+    if not touched:
         return Outcome(None, "line absent at walk start and no later commit touches the path")
+    if not first_touch:
+        return Outcome(
+            None, "line absent at walk start; only commits before the review touch the path"
+        )
     # Checked only here, so a ref lookup failure never costs an observed fix.
-    blocked = _inference_blocked(repo, head_sha) if guarded else None
-    if blocked:
+    if guarded and (blocked := _inference_blocked(repo, head_sha)):
+        return Outcome(None, blocked)
+    if blocked := _line_on_a_ref(repo, path, wanted, {} if ref_lines is None else ref_lines):
         return Outcome(None, blocked)
     return Outcome(first_touch, None, INFERRED_NOTE)
 
@@ -312,13 +366,14 @@ def run_once(
         findings = conn.execute(_OPEN_FINDINGS).fetchall()
         links: list[tuple[str, str, str | None]] = []
         reasons: dict[str, str] = {}
+        ref_lines: RefLines = {}
         for finding_id, repo, slug, path, wanted, head_sha, started_at in findings:
             root = Path(repo)
             if not (root / ".git").exists():
                 reasons[finding_id] = "repository missing"
                 continue
             try:
-                outcome = find_change(root, head_sha, path, wanted, started_at)
+                outcome = find_change(root, head_sha, path, wanted, started_at, ref_lines)
             except (OSError, subprocess.SubprocessError) as exc:
                 outcome = Outcome(None, f"git failed: {type(exc).__name__}")
             if outcome.reason:
