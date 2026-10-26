@@ -211,7 +211,16 @@ WHERE rn = 1;
 
 Index: `idx_eval_escapes_repo_path (repo, path)`.
 
-`eval_bench_runs`: one row per recorded benchmark run. Insert once, never updated, never expired. No column is redacted; bench data is synthetic.
+**Bench case export.** `hippo eval export-bench-cases --out DIR [--since 90d] [--repo PATH]` (`crates/hippo-daemon/src/eval_export.rs`) turns accepted findings and escapes into private cases for the agents repository's blind-review bench (`bench.py run --cases-dir DIR`). It reads these tables and the repositories in `repo`; it writes nothing to the database.
+
+- Findings: the effective verdict (the query above) is `accepted`, `side` is `+`, and a fix commit is known: the accepted verdict's `commit_sha`, else the latest automatic `likely-addressed` `commit_sha`. Escapes: `fix_commit` is set.
+- Each case is `<DIR>/f-<finding_id>.json` or `<DIR>/e-<escape_id>.json`, so a rerun overwrites the same files. `base` holds `path` at the fix commit, `head` holds `path` at the defective revision (the run's `head_sha`, or the parent of `fix_commit`), and the single `bug` trap anchors the flagged line as an added row (`["+", line]`), with `claim` or `note` as `why` plus `category` and, for findings, `severity`.
+- A finding's anchor is the line whose raw-line hash equals `line_hash`: the recorded line when it matches, else the only matching line (the review may have seen uncommitted edits). An escape's `line` is read in the defective revision. The anchor must be an added row of `git diff --histogram -U0 <fix> <defective> -- path`.
+- File text (line by line, so line numbers hold), `claim`, and `note` pass through the builtin patterns and the operator's `redact.toml`, the same engines as ingest.
+- Skip reasons, printed with counts: `removed_line_finding`, `no_linked_commit`, `repo_missing`, `file_missing_at_revision`, `anchor_not_found`, `anchor_not_changed_by_fix`, `redaction_changed_anchor` (redaction would alter the flagged line, so the case would not show the defect).
+- `DIR` is created with mode 0700. The command refuses a `DIR` whose nearest existing ancestor is inside a git checkout (`git rev-parse --is-inside-work-tree` succeeds), so private cases cannot be committed to the public repository.
+
+`eval_bench_runs`: one row per recorded benchmark run. Insert once, never updated, never expired. No column is redacted: a row holds scores and case ids, no code text. `bench` separates the public synthetic corpus (`blind-review-mechanical`) from runs on an exported private corpus (`blind-review-private`).
 
 | Column | Type / default | Meaning |
 |---|---|---|

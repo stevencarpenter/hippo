@@ -28,6 +28,7 @@ local LLMs.
     hippo config edit         # Edit runtime config
     hippo ask "<question>"    # RAG query: synthesized answer from knowledge base
     hippo enrichment pause|resume|status   # Operator pause of LLM enrichment (state in <data_dir>/enrichment-state.json)
+    hippo eval export-bench-cases --out DIR   # Private blind-review bench cases from accepted findings and escapes (DIR outside any git checkout)
 
 ### Rust (daemon + CLI)
 

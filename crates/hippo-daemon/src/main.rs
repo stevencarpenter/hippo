@@ -10,7 +10,7 @@ use hippo_daemon::{
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
-    AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, IngestSource,
+    AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, EvalAction, IngestSource,
     RedactAction, SendEventSource, WatchdogAction,
 };
 use hippo_core::config::HippoConfig;
@@ -1281,6 +1281,36 @@ async fn run() -> Result<()> {
                 commands::handle_redact_test(&config, &input);
             }
         },
+        Commands::Eval {
+            action: EvalAction::ExportBenchCases { out, since, repo },
+        } => {
+            let since_ms = match since.as_deref() {
+                None => 0,
+                Some(s) => commands::parse_duration_to_since_ms(s)
+                    .with_context(|| format!("invalid --since {s:?}; use e.g. 90d"))?,
+            };
+            // The stored repo is the producer's resolved absolute path.
+            let repo = repo
+                .map(|r| std::fs::canonicalize(&r).map_or(r, |p| p.to_string_lossy().into_owned()));
+            let redaction = [
+                hippo_core::redaction::RedactionEngine::builtin(),
+                hippo_daemon::load_redaction_engine(&config),
+            ];
+            let conn = hippo_core::storage::open_db(&config.db_path())?;
+            let summary = hippo_daemon::eval_export::export_bench_cases(
+                &conn,
+                &out,
+                &redaction,
+                since_ms,
+                repo.as_deref(),
+            )?;
+            println!("wrote {} case(s) to {}", summary.written, out.display());
+            let skipped: usize = summary.skipped.values().sum();
+            println!("skipped {skipped}");
+            for (reason, n) in &summary.skipped {
+                println!("  {reason}: {n}");
+            }
+        }
         Commands::Ingest { source } => match source {
             IngestSource::ClaudeSession {
                 path,
