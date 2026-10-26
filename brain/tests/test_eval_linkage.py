@@ -590,3 +590,54 @@ async def test_brain_loop_survives_a_failing_pass(tmp_db, tmp_path, monkeypatch)
         await server.stop_enrichment()
 
     assert len(calls) >= 2
+
+
+def test_unmerged_branch_stays_open_until_the_branch_is_deleted(db, repo, tmp_path):
+    """A checkout without the reviewed branch must not infer a mainline commit."""
+    conn, db_path = db
+    repo.commit({"src/app.py": BASE}, "base")
+    repo.git("checkout", "-q", "-b", "feat")
+    head = repo.commit({"src/app.py": ORIGINAL}, "add check")
+    repo.git("checkout", "-q", "main")
+    touch = repo.commit({"src/app.py": [*BASE, "y = 1"]}, "mainline touches the file")
+    add_finding(conn, repo.path, head)
+
+    run(db_path, tmp_path)
+
+    assert verdicts(conn) == []
+    notes = json.loads((tmp_path / "eval-linkage-notes.json").read_text())
+    assert notes == {"f1": "reviewed branch still exists; not merged"}
+
+    repo.git("branch", "-q", "-D", "feat")
+    run(db_path, tmp_path)
+
+    assert [(row[3], row[4]) for row in verdicts(conn)] == [(touch, INFERRED)]
+
+
+def test_pruned_head_sha_excludes_a_commit_in_the_review_start_second(db, repo, tmp_path):
+    conn, db_path = db
+    repo.commit({"src/app.py": ORIGINAL}, "early")
+    same_second = repo.commit({"src/app.py": BASE}, "committed in the review's start second")
+    started_at = int(repo.git("log", "-1", "--format=%ct", same_second)) * 1000 + 500
+    add_finding(conn, repo.path, "ab" * 20, started_at=started_at)
+
+    run(db_path, tmp_path)
+
+    assert verdicts(conn) == []
+    notes = json.loads((tmp_path / "eval-linkage-notes.json").read_text())
+    assert notes == {"f1": "line absent at walk start and no later commit touches the path"}
+
+
+def test_unrelated_history_stays_open_with_a_reason(db, repo, tmp_path):
+    conn, db_path = db
+    repo.commit({"src/app.py": BASE}, "base")
+    repo.git("checkout", "-q", "--orphan", "other")
+    head = repo.commit({"src/app.py": ORIGINAL}, "unrelated root")
+    repo.git("checkout", "-q", "main")
+    add_finding(conn, repo.path, head)
+
+    run(db_path, tmp_path)
+
+    assert verdicts(conn) == []
+    notes = json.loads((tmp_path / "eval-linkage-notes.json").read_text())
+    assert notes == {"f1": "HEAD shares no history with head_sha"}

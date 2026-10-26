@@ -481,7 +481,9 @@ which is `head_sha` itself unless the reviewed branch was squash-merged; when
 `head_sha` was pruned, the start is HEAD's last commit before `started_at`
 and the walk uses `--since=<started_at>`. `git log -L` is not used because
 the finding's line number refers to the reviewed working tree, not to
-`HEAD`. A line that never appears in the walked history (fixed before its
+`HEAD`. After a pruned `head_sha`, the walk is
+`--ancestry-path <start>..HEAD`, which excludes the start commit. A line
+that never appears in the walked history (fixed before its
 first commit, or fixed on a branch before a squash merge, which is the
 default hippo flow) is gone at `HEAD`, so `likely-addressed` holds. The job
 attributes it to the first walked commit that touches `path` and sets the
@@ -489,7 +491,12 @@ verdict `note` to the fixed marker
 `inferred: line absent at walk start; first commit touching the path`, so
 scorecards and humans can separate inferred commits from observed ones. An
 observed fix (the line present at the start, then absent) keeps a NULL
-note. When no walked commit touches `path`, the finding stays open. A resolved PR
+note. When no walked commit touches `path`, the finding stays open. When
+`HEAD` does not contain `head_sha`, inference also requires the reviewed
+branch to be gone: no ref under `refs/heads` or `refs/remotes` contains
+`head_sha`. Otherwise the finding stays open with reason
+`reviewed branch still exists; not merged`, because the line may still be
+unmerged work, and an automatic verdict cannot be withdrawn. A resolved PR
 from the opt-in `gh` lookup is stored in the automatic verdict's `note` as
 `PR <url>, ...`, after the `inferred:` marker and `; ` when both apply. It is redacted and expires with the note, and the job asks
 only when the chain in steps 1 and 2 finds nothing. Operation and limits:
