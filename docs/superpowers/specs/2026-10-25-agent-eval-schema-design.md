@@ -532,13 +532,17 @@ write transaction, once per distinct `repo` value.
    exists and its compared fields equal the record, the line counts as
    **skipped (id exists)**. If a row exists and a compared field differs,
    the line is rejected with reason `id_conflict`.
-   - The compared fields are every JSON field of the record (section 4.3)
-     except the redacted ones: `claim`, `line_text`, and `note`. Redacted
+   - The compared fields are every column-backed field of the record
+     (section 4.3) except the redacted ones: `claim`, `line_text`, and
+     `note`. `schema_version` and `type` have no columns and are not
+     compared. Fields map to columns as in sections 3.4 and 3.7: `commit` is
+     stored in `commit_sha`, and `auto` is stored as INTEGER 0 or 1. Redacted
      fields are left out because a later `redact.toml` change alters their
      stored form.
    - An optional field that the record omits compares as its column default.
    - `scores`, `per_case`, and `model_ids` compare as parsed JSON values, not
-     as strings.
+     as strings. Numbers inside those values compare by `f64` value, so `1`
+     and `1.0` are equal.
    - Columns that hippo generates or derives are never compared:
      `ingested_at`, `payload_expiry`, `line_hash`, and `repo_identity`.
      `repo_identity` changes when the `origin` remote changes, and the other
@@ -805,7 +809,7 @@ Producer changes the contract needs:
 | Run id and finding id redefined; finding id includes the run id | A stable run id needs stored times. The old finding id collapsed findings across runs. |
 | Added `eval_bench_runs.bench`; scores stay JSON | A second benchmark needs no new table, and two rows do not justify per-score columns. |
 | Effective verdict prefers human over automatic | Plain "latest wins" lets a heuristic override a human judgment. |
-| `payload_expiry` on findings and verdicts; accepted findings pinned; escapes never expire | HIPO-13 alignment, and HIPO-68 needs the pinned text. |
+| `payload_expiry` on findings and verdicts; accepted findings and their verdicts pinned; escapes never expire | HIPO-13 alignment, and HIPO-68 needs the pinned text. |
 | Each record carries an explicit `id`; the ledger itself holds v1 records | Ids are the idempotency key. One format lets the ledger be re-ingested. |
 | Ingest checks the id before the insert and rejects a differing duplicate | `ON CONFLICT DO NOTHING` hid differing rows, and it cannot pass the `no_replace` trigger. |
 | No PR column anywhere | `workflow_runs` has no PR data. Attribution goes through branch and session PR links, or an opt-in `gh` lookup. |
