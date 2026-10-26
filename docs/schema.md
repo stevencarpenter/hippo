@@ -78,7 +78,7 @@ All metadata columns below sit outside `content_hash`, so a change that touches 
 | `hook_errors` | `INTEGER NOT NULL DEFAULT 0` | Claude Code: total length of the `hookErrors` arrays of those records. The error text is not stored. |
 | `prevented_continuations` | `INTEGER NOT NULL DEFAULT 0` | Claude Code: number of those records with `preventedContinuation == true`. `stopReason` text is not stored. |
 | `hook_names_json` | `TEXT NOT NULL DEFAULT '[]'` | Claude Code: JSON array of the distinct `hookInfos[].command` values of those records, each passed through redaction, sorted. Names only: hook output is never stored. |
-| `permission_decisions_json` | `TEXT NOT NULL DEFAULT '{}'` | Claude Code: JSON object mapping each `permissionDecision` value found on the segment's `user` records to its count, for example `{"allow":2,"deny":1}`. `permissionMode` is ignored. |
+| `permission_decisions_json` | `TEXT NOT NULL DEFAULT '{}'` | Claude Code: JSON object mapping each permission decision to its count over the segment's `user` records, for example `{"accept":2,"reject":1}`. The key is `permissionDecision.decision`; an older bare-string `permissionDecision` is used as the key directly. `source`, `reasonType`, and `permissionMode` are ignored, as is the field on any non-`user` record. |
 
 Token accounting rules:
 

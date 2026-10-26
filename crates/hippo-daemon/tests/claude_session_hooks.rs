@@ -108,7 +108,10 @@ fn hooks_and_permission_decisions_are_recorded_per_segment() {
         "hook command must be redacted: {names:?}"
     );
     assert_eq!(names[1], "/opt/fixture/stop-check.sh");
-    assert_eq!(json(decisions), serde_json::json!({"allow": 1, "deny": 1}));
+    assert_eq!(
+        json(decisions),
+        serde_json::json!({"accept": 2, "reject": 1})
+    );
 
     let (runs, errs, prevented, names, decisions) = &rows[1];
     assert_eq!((*runs, *errs, *prevented), (3, 0, 0));

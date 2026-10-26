@@ -513,14 +513,20 @@ impl HookStats {
         }
     }
 
-    /// Count the `permissionDecision` of one `user` record, if present.
+    /// Count the decision of one `user` record's `permissionDecision`.
+    /// Current transcripts carry an object `{decision, source, reasonType}`
+    /// and the key is `decision`; older ones carry a bare string. `source` and
+    /// `reasonType` are ignored.
     fn observe_user(&mut self, entry: &serde_json::Value, bad: &mut bool) {
-        match entry.get("permissionDecision") {
-            None | Some(serde_json::Value::Null) => {}
-            Some(serde_json::Value::String(d)) if !d.is_empty() => {
-                *self.decisions.entry(d.clone()).or_insert(0) += 1;
-            }
-            Some(_) => *bad = true,
+        let decision = match entry.get("permissionDecision") {
+            None | Some(serde_json::Value::Null) => return,
+            Some(serde_json::Value::String(d)) => Some(d.as_str()),
+            Some(serde_json::Value::Object(o)) => o.get("decision").and_then(|v| v.as_str()),
+            Some(_) => None,
+        };
+        match decision {
+            Some(d) if !d.is_empty() => *self.decisions.entry(d.to_string()).or_insert(0) += 1,
+            _ => *bad = true,
         }
     }
 
