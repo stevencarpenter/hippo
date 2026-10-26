@@ -2541,35 +2541,6 @@ mod tests {
         assert!(inserted > 0);
     }
 
-    #[test]
-    fn test_try_insert_segments_waits_out_transient_busy() {
-        use std::sync::{Arc, Barrier};
-        use std::time::Duration;
-
-        let conn = open_test_db();
-        let db_path = std::path::PathBuf::from(conn.path().unwrap());
-        let seg = make_test_segment("busy-shared-session-001", 0);
-
-        let barrier = Arc::new(Barrier::new(2));
-        let db_path_lock = db_path.clone();
-        let barrier_holder = barrier.clone();
-
-        let holder = std::thread::spawn(move || {
-            let locker = hippo_core::storage::open_db(&db_path_lock).unwrap();
-            locker.execute_batch("BEGIN IMMEDIATE").unwrap();
-            barrier_holder.wait();
-            std::thread::sleep(Duration::from_millis(50));
-            locker.execute_batch("COMMIT").unwrap();
-        });
-
-        barrier.wait();
-        let (inserted, _skipped, errors) = try_insert_segments(&conn, std::slice::from_ref(&seg));
-        holder.join().unwrap();
-
-        assert_eq!(errors, 0);
-        assert_eq!(inserted, 1);
-    }
-
     /// HIPO-58: a writer holding the lock for far longer than the 100 ms retry
     /// sleep must be waited out by `busy_timeout`, not failed at the read-to-write
     /// upgrade. Uses the default 5000 ms `busy_timeout` from `open_db`.
