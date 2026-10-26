@@ -206,14 +206,15 @@ def _line_on_a_ref(repo: Path, path: str, wanted: str, cache: RefLines) -> str |
     return None
 
 
-def _parent_holds(repo: Path, commit: str, path: str, wanted: str) -> bool:
-    """Whether a true parent of ``commit`` holds the line, so ``commit`` removed it.
+def _parent_blobs(repo: Path, commit: str, path: str) -> list[bytes]:
+    """``path`` in each true parent of ``commit`` that has it.
 
     The walk is flattened history, so a sibling-branch commit can follow the one
-    that added the line without descending from it.
+    that added the line without descending from it; only a true parent shows
+    what a commit changed.
     """
     parents = _git(repo, "rev-parse", f"{commit}^@").stdout.decode().split()
-    return any(_contains(_blob(repo, parent, path), wanted) for parent in parents)
+    return [blob for parent in parents if (blob := _blob(repo, parent, path)) is not None]
 
 
 def find_change(
@@ -228,7 +229,8 @@ def find_change(
 
     The line counts as changed only once it is absent from HEAD, so a line that
     moved but stayed byte-identical stays open. An observed fix is a commit
-    without the line whose true parent has it. Commits that descend from the
+    without the line whose true parent has it, or that recreates the deleted
+    file without it; from the merge-base, it must come after the review started. Commits that descend from the
     start commit and touch ``path`` are walked oldest first; the line is tracked
     from the start commit or, for a line reviewed before it was committed, from
     the first later commit that contains it. A line that never appears in that
@@ -270,8 +272,19 @@ def find_change(
             first_touch = commit
         if _contains(blob, wanted):
             seen = True
-        elif seen and _parent_holds(repo, commit, path, wanted):
-            return Outcome(commit, None)
+            continue
+        if not seen:
+            continue
+        parents = _parent_blobs(repo, commit, path)
+        # No parent has the file: recreated after a deletion, without the line.
+        if parents and not any(_contains(parent, wanted) for parent in parents):
+            continue
+        if guarded and int(committed) * 1000 < started_at_ms:
+            # Divergent history: a mainline removal before the review is not the fix.
+            # The reviewed branch still held the line, so judge it as never seen.
+            seen = False
+            continue
+        return Outcome(commit, None)
     if seen:
         return Outcome(None, "no walked commit removed the line")
     # The line never reached the walked history (fixed before its first commit, or

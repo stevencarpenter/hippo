@@ -760,3 +760,37 @@ def test_sibling_branch_edit_is_not_the_observed_fix(db, repo, tmp_path):
     run(db_path, tmp_path)
 
     assert [(row[3], row[4]) for row in verdicts(conn)] == [(merge, None)]
+
+
+def test_mainline_removal_before_the_review_is_not_the_fix(db, repo, tmp_path):
+    """The fork point holds the line; main drops it before the branch review; squash."""
+    conn, db_path = db
+    repo.commit({"src/app.py": ORIGINAL}, "base with the line")
+    repo.git("branch", "-q", "feat")
+    repo.commit({"src/app.py": FIXED}, "mainline removal before the review")
+    repo.git("checkout", "-q", "feat")
+    head = repo.commit({"src/app.py": [*ORIGINAL, "z = 2"]}, "branch work")
+    started_at = int(repo.git("log", "-1", "--format=%ct", head)) * 1000 + 1000
+    repo.commit({"src/app.py": [*FIXED, "z = 2"]}, "fix on feat")
+    repo.git("checkout", "-q", "main")
+    repo.git("merge", "-q", "--squash", "-X", "theirs", "feat")
+    repo.git("commit", "-q", "-m", "squash feat")
+    squash = repo.git("rev-parse", "HEAD")
+    repo.git("branch", "-q", "-D", "feat")
+    add_finding(conn, repo.path, head, started_at=started_at)
+
+    run(db_path, tmp_path)
+
+    assert [(row[3], row[4]) for row in verdicts(conn)] == [(squash, INFERRED)]
+
+
+def test_file_deleted_then_recreated_without_the_line_links_the_recreation(db, repo, tmp_path):
+    conn, db_path = db
+    head = repo.commit({"src/app.py": ORIGINAL}, "add check")
+    repo.commit({"src/app.py": None}, "delete the file")
+    recreated = repo.commit({"src/app.py": FIXED}, "recreate without the line")
+    add_finding(conn, repo.path, head)
+
+    run(db_path, tmp_path)
+
+    assert [(row[3], row[4]) for row in verdicts(conn)] == [(recreated, None)]

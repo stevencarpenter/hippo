@@ -494,7 +494,8 @@ verdict `note` to the fixed marker
 `inferred: line absent at walk start; first commit touching the path`, so
 scorecards and humans can separate inferred commits from observed ones. An
 observed fix (the line present at the start, then absent in a commit whose
-parent holds it) keeps a NULL
+parent holds it or that recreates the deleted file; from the merge-base, only
+after the review start) keeps a NULL
 note. When no walked commit touches `path`, or only commits from before the
 review start do, the finding stays open. When
 `HEAD` does not contain `head_sha`, inference also requires the reviewed
