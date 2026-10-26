@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS eval_review_runs (
     repo_identity         TEXT,
     base                  TEXT    NOT NULL,
     base_sha              TEXT    NOT NULL,
-    head_sha              TEXT,
+    head_sha              TEXT    NOT NULL,
     input_sha256          TEXT    NOT NULL,
     units_total           INTEGER NOT NULL DEFAULT 0,
     units_failed          INTEGER NOT NULL DEFAULT 0,
@@ -169,9 +169,11 @@ CREATE INDEX IF NOT EXISTS idx_eval_review_runs_repo_identity_started_at
   `mechanical_review.py` writes per unit. The column names match the Phase 1
   `agentic_sessions` columns.
 - `base` is the ref name the review used. `base_sha` is that ref resolved at
-  review start. `head_sha` is `HEAD` at review start, NULL when the repo has
-  no commits. The reviewed tree can hold uncommitted changes on top of
-  `head_sha`. Commit linkage looks only at commits after `head_sha`.
+  review start. `head_sha` is `HEAD` at review start. Both are required: a
+  repository with no commits is not reviewable, and `mechanical_review.py`
+  refuses to run when either SHA does not resolve. The reviewed tree can hold
+  uncommitted changes on top of `head_sha`. Commit linkage looks only at
+  commits after `head_sha`.
 - `input_sha256` is the SHA-256 of the sorted per-unit `input_sha256` values.
 - `units_failed` keeps a failed review distinct from a clean one with zero
   findings. `review_log.py log` already treats that difference as an error.
@@ -401,8 +403,9 @@ this join describe the orchestrator. Reviewer values come from
 finding (automatic `likely-addressed`) or that a human cites. The JSON field
 is `commit`. The column is `commit_sha` because `COMMIT` is an SQL keyword.
 `eval_escapes.fix_commit` holds the commit that fixed an escape. Both are
-full 40-hex SHAs. A short SHA that a user types for `escape --commit` is
-resolved by the producer with `git rev-parse` before it is written.
+full 40-hex SHAs. A short SHA that a user types for `mark --commit` or
+`escape --commit` is resolved by the producer with `git rev-parse` before it
+is written.
 
 **Raw-line hash.** Commit linkage (HIPO-66) and `review_log.py reconcile`
 match a finding against later file contents on `(repo, path)` plus
@@ -498,7 +501,7 @@ missed.
 
 | `type` | Required | Optional | Table |
 |---|---|---|---|
-| `review_run` | `id`, `agent`, `mode`, `repo`, `base`, `base_sha`, `input_sha256`, `started_at`, `finished_at` | `requested_model`, `model_id`, `effort`, `cli_version`, `head_sha`, `units_total`, `units_failed`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `session_id`, `harness` | `eval_review_runs` |
+| `review_run` | `id`, `agent`, `mode`, `repo`, `base`, `base_sha`, `head_sha`, `input_sha256`, `started_at`, `finished_at` | `requested_model`, `model_id`, `effort`, `cli_version`, `units_total`, `units_failed`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `session_id`, `harness` | `eval_review_runs` |
 | `finding` | `id`, `run_id`, `repo`, `path`, `side`, `line`, `severity`, `confidence`, `claim`, `logged_at` | `line_text`, `category` | `eval_findings` |
 | `verdict` | `id`, `finding_id`, `verdict`, `auto`, `decided_at` | `commit`, `note` | `eval_verdicts` |
 | `escape` | `id`, `repo`, `path`, `line`, `note`, `recorded_at` | `fix_commit` | `eval_escapes` |
@@ -526,11 +529,24 @@ write transaction, once per distinct `repo` value.
 1. Lines are processed in file order.
 2. For each record, the command selects the row with the same id inside the
    write transaction. If no row exists, it runs a plain `INSERT`. If a row
-   exists and its non-redacted columns equal the record, the line counts as
-   **skipped (id exists)**. If a row exists and those columns differ, the
-   line is rejected with reason `id_conflict`. Redacted columns are left out
-   of the comparison, because a later `redact.toml` change alters their
-   stored form.
+   exists and its compared fields equal the record, the line counts as
+   **skipped (id exists)**. If a row exists and a compared field differs,
+   the line is rejected with reason `id_conflict`.
+   - The compared fields are every JSON field of the record (section 4.3)
+     except the redacted ones: `claim`, `line_text`, and `note`. Redacted
+     fields are left out because a later `redact.toml` change alters their
+     stored form.
+   - An optional field that the record omits compares as its column default.
+   - `scores`, `per_case`, and `model_ids` compare as parsed JSON values, not
+     as strings.
+   - Columns that hippo generates or derives are never compared:
+     `ingested_at`, `payload_expiry`, `line_hash`, and `repo_identity`.
+     `repo_identity` changes when the `origin` remote changes, and the other
+     three are not record fields.
+   - Producers re-ingest the whole ledger after every write, so the
+     acceptance tests must include a rerun: ingest the same file twice and
+     expect `written 0`, `skipped N`, `rejected 0` on the second pass, where
+     N is the count of non-blank lines.
 3. This check replaces `ON CONFLICT DO NOTHING`. It makes a differing record
    visible instead of silently dropping it, and it works with the
    `eval_verdicts_no_replace` trigger, which aborts any insert of an existing
@@ -643,15 +659,17 @@ exemptions that HIPO-68 needs. The structured facts stay.
 
 - **Swept:** at `payload_expiry` (ingest time plus 90 days), GC sets
   `eval_findings.line_text`, `eval_findings.claim`, and `eval_verdicts.note`
-  to NULL.
+  to NULL, except on pinned rows.
 - **Pinned findings:** GC skips every finding whose effective verdict
   (section 3.4) is `accepted`. This uses the in-tree pin mechanism:
   `storage.rs::event_payload_pins` derives the set of pinned event ids inside
   each GC transaction, and `gc_event_payloads` skips those ids. HIPO-64 adds
   `eval_payload_pins(tx)`, which derives the pinned finding ids from
-  `eval_verdicts` in the same transaction. No pin table is stored, so a later
-  human verdict that replaces `accepted` removes the pin at the next sweep.
-  A finding accepted after its text expired stays without text.
+  `eval_verdicts` in the same transaction. The pin also covers every verdict
+  of a pinned finding, so the `note` that holds the human rationale stays
+  with the corpus case. No pin table is stored, so a later human verdict that
+  replaces `accepted` removes the pin at the next sweep. A finding accepted
+  after its text expired stays without text.
 - **Pinned escapes:** every escape is pinned. This is the case where the pin
   set is the whole table, so `eval_escapes` has no `payload_expiry` and GC
   does not visit it. HIPO-68 needs the escape `note`, and an escape without
@@ -696,8 +714,10 @@ database. It is modeled on the HIPO-8 capture canary.
    that an FTS `MATCH` for the token prefix returns no rows.
 6. Run `PRAGMA wal_checkpoint(TRUNCATE)`. Read the bytes of the database file
    and of any `-wal` file, and assert that the token bytes are absent.
-7. Run the ingest again. Assert `written 0, skipped 3, rejected 0` and exit
-   code 0.
+7. Run the ingest again on the same file. Assert `written 0, skipped 3,
+   rejected 0` and exit code 0. This is the rerun acceptance test from
+   section 4.5. A second fixture with all five record types gets the same
+   two-pass assertion.
 
 A brain-side test, `brain/tests/test_eval_isolation.py`, loads the same
 fixture database and runs every claim function in `ENRICHMENT_SOURCES`. It
@@ -734,7 +754,9 @@ Producer changes the contract needs:
    `cache_read_tokens`, and `cache_creation_tokens` (from the `usage` keys
    `input_tokens`, `output_tokens`, `cache_read_input_tokens`, and
    `cache_creation_input_tokens`). `head_sha` read later at `log` time can
-   point to a later commit, so `log` must not read it.
+   point to a later commit, so `log` must not read it. If `base` or `HEAD`
+   does not resolve to a SHA, `mechanical_review.py` refuses to run, so
+   `run.json` always holds both SHAs.
 2. **`log`** reads `run.json`, so a second `log` of the same out dir
    produces identical records. The run id is the first 16 hex characters of
    `sha256(repo | base_sha | head_sha | input_sha256 | started_at)`. All of
@@ -750,7 +772,9 @@ Producer changes the contract needs:
    repeated claims across runs are expected). Within one run each unit is
    reviewed once, so the new key identifies one reviewer output.
 4. **`mark`.** Writes a `verdict` with a random UUID `id`. The id is written
-   once into the ledger, so a re-ingest reads the same id.
+   once into the ledger, so a re-ingest reads the same id. An optional
+   `--commit` argument is resolved to a full SHA with `git rev-parse` before
+   it is written as `commit`, the same rule as `escape --commit`.
 5. **`reconcile`.** Compares raw to raw by `line_hash`. It reads the current
    file, hashes every line with the `normalize` and SHA-256 definition from
    section 3.7, and writes `likely-addressed` when the finding's hash is
