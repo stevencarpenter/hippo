@@ -61,8 +61,9 @@ v27→v28 adds agent-evaluation columns on agentic_sessions (all nullable or
 defaulted) and the agentic_session_facts table. Brain reads stay valid on v24
 through v27 because no brain query depends on the new columns.
 v28→v29 adds the agent-evaluation record tables eval_review_runs,
-eval_findings, eval_verdicts, eval_escapes and eval_bench_runs. The brain never
-reads them (AP-14), so reads stay valid on v24 through v28.
+eval_findings, eval_verdicts, eval_escapes and eval_bench_runs. Only the
+eval_linkage job reads them, and it does nothing when they are absent, so reads
+stay valid on v24 through v28. No enrichment or index path reads them (AP-14).
 """
 
 from __future__ import annotations

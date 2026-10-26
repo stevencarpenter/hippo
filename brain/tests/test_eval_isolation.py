@@ -25,8 +25,8 @@ FIXTURE = REPO / "crates" / "hippo-daemon" / "tests" / "fixtures" / "agent_eval"
 
 EVAL_TABLE = re.compile(r"\beval_(review_runs|findings|verdicts|escapes|bench_runs)\b")
 # Modules allowed to name the eval tables, relative to brain/src/hippo_brain.
-# HIPO-66 (linkage job) and HIPO-67 (scorecard queries) add theirs here.
-ALLOWLIST = frozenset({"schema_version.py"})
+# HIPO-67 (scorecard queries) adds its module here.
+ALLOWLIST = frozenset({"schema_version.py", "eval_linkage.py"})
 
 TABLES = {
     "review_run": ("eval_review_runs", "run_id"),

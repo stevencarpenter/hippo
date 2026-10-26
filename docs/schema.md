@@ -49,7 +49,7 @@ The Rust migration runner at `storage.rs::open_db` walks every version from the 
 | **v22** | Watcher resume-state rename (SNUG-115 Phase A). | Creates `agentic_session_offsets` (same columns as legacy `claude_session_offsets`) and `INSERT OR IGNORE` copies existing rows. **Does not drop** legacy tables. | Claude FS watcher and backfill CLI read/write `agentic_session_offsets`. Legacy `claude_session_offsets` remains frozen on upgraded DBs until Phase B. |
 | **v26** | Event payload expiry and deletion receipts (HIPO-13). | Adds `events.payload_expiry`, an insert trigger and expiry index, and append-only `deletion_receipts`. No event table rebuild or bulk backfill. | Explicit payload GC retains event metadata and joins. See [Event payload retention](#event-payload-retention). |
 | **v28** | Agent-evaluation metadata, Phase 1 (HIPO-57). | Additive: 14 `agentic_sessions` columns via `add_column_if_missing` (no rebuild), partial indexes `idx_agentic_sessions_agent` (`WHERE agent <> ''`) and `idx_agentic_sessions_model` (`WHERE model <> ''`), and the per-session `agentic_session_facts` table. Index and table DDL lives in [`schema/agentic_eval.sql`](../crates/hippo-core/src/schema/agentic_eval.sql), shared by fresh installs and the migration. Existing rows take the column defaults. | Lets evaluation queries key on subagent type, model, tokens, and hook outcomes. See [Agent-evaluation columns](#agent-evaluation-columns-v28). |
-| **v29** | Agent-evaluation records (HIPO-64). | Additive: creates `eval_review_runs`, `eval_findings`, `eval_verdicts` (with four append-only triggers), `eval_escapes`, `eval_bench_runs`, and their indexes. DDL lives in [`schema/agent_eval.sql`](../crates/hippo-core/src/schema/agent_eval.sql), shared by fresh installs and the migration. No existing table changes. | `hippo ingest agent-eval` writes the tables; payload GC clears their expired free text. No brain path reads them (AP-14). See [Agent-evaluation records](#agent-evaluation-records-v29). |
+| **v29** | Agent-evaluation records (HIPO-64). | Additive: creates `eval_review_runs`, `eval_findings`, `eval_verdicts` (with four append-only triggers), `eval_escapes`, `eval_bench_runs`, and their indexes. DDL lives in [`schema/agent_eval.sql`](../crates/hippo-core/src/schema/agent_eval.sql), shared by fresh installs and the migration. No existing table changes. | `hippo ingest agent-eval` writes the tables; payload GC clears their expired free text. The brain's hourly linkage job reads findings and writes automatic verdicts; no enrichment, embedding, or retrieval path reads them (AP-14). See [Agent-evaluation records](#agent-evaluation-records-v29). |
 
 The v24-to-v25 migration adds optional classification state without rewriting
 knowledge content or vectors. Its authoritative DDL is
@@ -117,7 +117,7 @@ Resumed sessions: when a later file continues a `session_id`, the upsert is per 
 
 ## Agent-evaluation records (v29)
 
-`hippo ingest agent-eval <file.jsonl>` is the only writer, apart from the payload GC. The record contract (fields, id rules, rejection reasons, exit codes) is in [`docs/superpowers/specs/2026-10-25-agent-eval-schema-design.md`](superpowers/specs/2026-10-25-agent-eval-schema-design.md) section 4. Conventions for all five tables:
+`hippo ingest agent-eval <file.jsonl>` is the only writer, apart from the payload GC and the brain linkage job, which inserts automatic `eval_verdicts` rows. The record contract (fields, id rules, rejection reasons, exit codes) is in [`docs/superpowers/specs/2026-10-25-agent-eval-schema-design.md`](superpowers/specs/2026-10-25-agent-eval-schema-design.md) section 4. Conventions for all five tables:
 
 - The primary key is the producer's record `id`, the idempotency key. A rerun skips an existing id whose stored fields equal the record and rejects a differing one as `id_conflict`. The comparison leaves out the redacted columns and the hippo-generated ones (`ingested_at`, `payload_expiry`, `line_hash`, `repo_identity`).
 - Times are epoch milliseconds. `ingested_at` is the time hippo wrote the row.
@@ -183,6 +183,8 @@ Indexes: `idx_eval_verdicts_finding_id_decided_at (finding_id, decided_at)`, `id
 Triggers (the `deletion_receipts` pattern): `eval_verdicts_no_delete` aborts every `DELETE`; `eval_verdicts_no_update` aborts an `UPDATE` of any column except `note`; `eval_verdicts_note_clear_only` aborts an `UPDATE` that sets `note` to a non-NULL value; `eval_verdicts_no_replace` aborts an insert of an existing `verdict_id`, which covers `INSERT OR REPLACE` and `INSERT ... ON CONFLICT DO NOTHING`. Ingest therefore checks for the id before it inserts.
 
 The effective verdict of a finding is the latest human verdict, else the latest automatic one, ordered by `decided_at` and then `verdict_id`. A finding with no verdict is open.
+
+Automatic `likely-addressed` verdicts come from two writers: the producer's `review_log.py reconcile` (through ingest) and the brain linkage job `hippo_brain.eval_linkage` (hourly, HIPO-66). The linkage job considers only findings with no verdict at all, so it never adds a verdict after a human one. It matches `line_hash` against raw lines of `path` in the commits after the run's `head_sha` and records the first commit whose file no longer contains the line, with `auto = 1`, that `commit_sha`, and `verdict_id = auto-` + the first 16 hex characters of `sha256(finding_id|commit_sha|likely-addressed)`. Rules, skip reasons, and limits: [`docs/brain-watchdog.md`](brain-watchdog.md#agent-eval-commit-linkage).
 
 ```sql
 SELECT finding_id, verdict, auto, commit_sha
@@ -343,7 +345,7 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 | `knowledge_fts` | FTS5 virtual table over `knowledge_nodes.summary` / `embed_text` / `content`. | Triggers (auto-synced with `knowledge_nodes`) |
 | `knowledge_vectors` | sqlite-vec virtual table holding 768-dim embedding vectors. | `embeddings.py::embed_knowledge_node` (Python brain — Rust daemon doesn't load vec0) |
 | `embed_model_meta` | Single-row tracking table for the model that produced the corpus's vectors. | Same |
-| `eval_review_runs` / `eval_findings` / `eval_verdicts` / `eval_escapes` / `eval_bench_runs` | Agent-evaluation records: review runs, findings, append-only verdicts, escaped defects, benchmark runs (v29). Never read by the brain (AP-14). | `agent_eval.rs::ingest` (`hippo ingest agent-eval`); payload GC clears expired text |
+| `eval_review_runs` / `eval_findings` / `eval_verdicts` / `eval_escapes` / `eval_bench_runs` | Agent-evaluation records: review runs, findings, append-only verdicts, escaped defects, benchmark runs (v29). Never indexed or enriched (AP-14). | `agent_eval.rs::ingest` (`hippo ingest agent-eval`); `eval_linkage.py` inserts automatic verdicts; payload GC clears expired text |
 
 ### Foreign-key relationships (high level)
 

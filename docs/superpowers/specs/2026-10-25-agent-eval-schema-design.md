@@ -467,6 +467,22 @@ rows. Its `verdict_id` is deterministic:
 It checks for the id before the insert, as the ingest does, so a rerun
 inserts nothing new.
 
+**Linkage as implemented (HIPO-66).** `brain/src/hippo_brain/eval_linkage.py`
+runs hourly in the brain and once through
+`python -m hippo_brain.eval_linkage --once`. Three readings of this section
+are fixed there. First, "open" means a finding with no verdict row at all, so
+the job never adds a verdict after a human one. Second, the job links only
+side `+` findings: a side `-` line is not in the reviewed tree. Third, the
+flagged line counts as changed only when no line of `HEAD:path` carries its
+`line_hash`; the commit recorded is the first one after `head_sha`, in
+`git rev-list --reverse --topo-order` order over commits that touch `path`,
+whose file lacks the hash. `git log -L` is not used because the finding's
+line number refers to the reviewed working tree, not to `HEAD`. A resolved PR
+from the opt-in `gh` lookup is stored in the automatic verdict's `note` as
+`PR <url>, ...`. It is redacted and expires with the note, and the job asks
+only when the chain in steps 1 and 2 finds nothing. Operation and limits:
+`docs/brain-watchdog.md`.
+
 ## 4. Ingest contract: `hippo ingest agent-eval <file.jsonl>`
 
 ### 4.1 Command
@@ -633,7 +649,11 @@ the tool, which may be a cloud model. The HIPO-67 scorecard tool therefore
 returns aggregates and record ids by default. It does not return `claim`,
 `line_text`, or `note`. The CLI report (`hippo agents report`) runs locally
 and can show the text. The optional `gh` PR lookup (section 3.7) is the
-other outbound flow, and it is off by default.
+other outbound flow, and it is off by default. When
+`[eval_linkage] gh_pr_lookup = true`, it sends `repo_identity` and one
+commit SHA per new automatic verdict to GitHub (`gh api
+repos/<slug>/commits/<sha>/pulls`). It sends no eval text. The PR URLs it
+returns are stored in that verdict's `note`.
 
 ### 5.3 Enforcement in code
 
