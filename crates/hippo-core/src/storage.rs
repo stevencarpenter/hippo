@@ -442,6 +442,11 @@ pub fn open_db(path: &Path) -> Result<Connection> {
          PRAGMA busy_timeout=5000;
          PRAGMA secure_delete=ON;",
     )?;
+    // Every transaction opened through this connection takes the write lock at
+    // BEGIN. A deferred transaction that reads and then writes skips
+    // `busy_timeout` at the read-to-write upgrade and fails at once with
+    // SQLITE_BUSY (or SQLITE_BUSY_SNAPSHOT) under any concurrent writer.
+    conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
     // Migrate from v1 → v2: add envelope_id column for dedup

@@ -1186,7 +1186,7 @@ mod tests {
             let conn = open_db(&db_path_lock).unwrap();
             conn.execute_batch("BEGIN IMMEDIATE").unwrap();
             barrier_holder.wait();
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(1500));
             conn.execute_batch("COMMIT").unwrap();
         });
 

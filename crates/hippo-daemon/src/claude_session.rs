@@ -1009,8 +1009,9 @@ fn insert_segments(
     // Benefits:
     //   1. Performance: one fsync for N segments instead of N fsyncs.
     //   2. Atomicity: partial inserts on error are rolled back.
-    //   3. Race reduction: the write lock is held from SELECT through the queue
-    //      mutation, narrowing the I-1 race window.
+    //   3. Race reduction: the transaction begins IMMEDIATE (the `open_db`
+    //      default), so the write lock is held from the first SELECT through the
+    //      queue mutation and `busy_timeout` applies at BEGIN.
     // `unchecked_transaction` is used (rather than `transaction`) because
     // `conn` is borrowed from the caller as `&Connection`, not `&mut Connection`.
     let tx = conn.unchecked_transaction()?;
@@ -2509,7 +2510,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ingest_session_file_retries_transient_busy() {
+    fn test_ingest_session_file_waits_out_transient_busy() {
         use std::sync::{Arc, Barrier};
         use std::time::Duration;
 
@@ -2533,7 +2534,6 @@ mod tests {
 
         barrier.wait();
         let conn = hippo_core::storage::open_db(&db_path).unwrap();
-        conn.busy_timeout(Duration::from_millis(0)).unwrap();
         let (inserted, _skipped, errors) = ingest_session_file(&conn, &jsonl_path);
         holder.join().unwrap();
 
@@ -2541,33 +2541,47 @@ mod tests {
         assert!(inserted > 0);
     }
 
+    /// HIPO-58: a writer holding the lock for far longer than the 100 ms retry
+    /// sleep must be waited out by `busy_timeout`, not failed at the read-to-write
+    /// upgrade. Uses the default 5000 ms `busy_timeout` from `open_db`.
     #[test]
-    fn test_try_insert_segments_retries_transient_busy() {
+    fn insert_segments_waits_for_held_write_lock() {
         use std::sync::{Arc, Barrier};
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
 
         let conn = open_test_db();
         let db_path = std::path::PathBuf::from(conn.path().unwrap());
-        let seg = make_test_segment("busy-shared-session-001", 0);
+        let seg = make_test_segment("busy-wait-session-001", 0);
 
         let barrier = Arc::new(Barrier::new(2));
-        let db_path_lock = db_path.clone();
         let barrier_holder = barrier.clone();
-
         let holder = std::thread::spawn(move || {
-            let locker = hippo_core::storage::open_db(&db_path_lock).unwrap();
+            let locker = hippo_core::storage::open_db(&db_path).unwrap();
             locker.execute_batch("BEGIN IMMEDIATE").unwrap();
             barrier_holder.wait();
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(1500));
             locker.execute_batch("COMMIT").unwrap();
         });
 
         barrier.wait();
-        conn.busy_timeout(Duration::from_millis(0)).unwrap();
+        let start = Instant::now();
         let (inserted, _skipped, errors) = try_insert_segments(&conn, std::slice::from_ref(&seg));
+        let elapsed = start.elapsed();
         holder.join().unwrap();
 
         assert_eq!(errors, 0);
         assert_eq!(inserted, 1);
+        assert!(
+            elapsed >= Duration::from_millis(1400),
+            "returned after {elapsed:?}"
+        );
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agentic_sessions WHERE session_id = 'busy-wait-session-001'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 }

@@ -52,6 +52,10 @@ unfinished ingestion is recovered from persisted offsets on the next start.
 See `crates/hippo-daemon/src/watch_claude_sessions.rs` for the implementation
 and shared-database contention regressions.
 
+## Write transactions and `SQLITE_BUSY`
+
+`hippo_core::storage::open_db` sets the connection's transaction behavior to `IMMEDIATE`, so every transaction opened with rusqlite's transaction API (`transaction()`, `unchecked_transaction()`) on an `open_db` connection runs `BEGIN IMMEDIATE` and takes the write lock at the start. Raw `BEGIN;` statements in migration batches and connections opened outside `open_db` are not covered. `busy_timeout=5000` then applies. A deferred transaction that reads and then writes skips the busy wait at the read-to-write upgrade and fails at once with `SQLITE_BUSY` or `SQLITE_BUSY_SNAPSHOT` whenever any other connection writes, however briefly. A `SQLITE_BUSY` that survives the 5 s wait (and the single 100 ms retry in `with_busy_retry`) therefore means a real 5 s lock, and the ERROR log line for it stays. Do not run a long read-only scan inside a `Connection::transaction()` on an `open_db` connection, because it would hold the write lock. Use plain statements or a read-only connection.
+
 ## Tables
 
 ### `source_health`
