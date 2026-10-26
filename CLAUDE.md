@@ -58,12 +58,14 @@ Configure in your MCP config (e.g., `~/.claude/settings.json`):
     "hippo": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
+      "args": ["run", "--no-sync", "--project", "/path/to/home/.local/share/hippo-brain", "hippo-mcp"],
       "env": {"HIPPO_OTEL_ENABLED": "1"}
     }
   }
 }
 ```
+
+Point `--project` at the installed brain (`~/.local/share/hippo-brain`, written by `scripts/install.sh`), not at the git checkout, so a branch switch cannot change the MCP server and it stays the same version as the brain service. `--no-sync` matches the brain LaunchAgent and keeps the MCP launch from modifying the service environment. `hippo doctor` reports the `MCP server version` line: `[OK]` when the installed `hippo-mcp` package version equals the running brain version, `[WW]` when they differ, `[!!]` when `.venv/bin/hippo-mcp` is missing.
 
 The MCP server is a separate process from the brain daemon; OTel instrumentation (`hippo_brain_mcp_*` metrics) is only active when `HIPPO_OTEL_ENABLED=1` is set in the spawn environment. Without this env block the MCP process emits no telemetry even if the brain daemon has OTel enabled.
 

@@ -1536,6 +1536,13 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     // Jev classification queue and endpoint health (opt-in feature).
     fail_count += check_brain_classification(brain_json.as_ref(), explain);
 
+    // Installed hippo-mcp package version vs the running brain.
+    fail_count += check_mcp_server_version(
+        &hippo_core::config::default_brain_dir(),
+        brain_json.as_ref(),
+        explain,
+    );
+
     // Check GitHub CI-ingest configuration
     fail_count += check_github_source(config);
 
@@ -4694,6 +4701,164 @@ pub fn check_schema_version(
             println!("     DOC:    docs/capture/operator-runbook.md");
         }
         1
+    }
+}
+
+/// Package version of the `hippo_brain` install under `brain_dir`, resolved in
+/// the order the interpreter would import it: the build-stamped `_version.py`
+/// in site-packages (non-editable install), then in `src/` (editable install),
+/// then the `hippo_brain-<version>.dist-info` directory name.
+///
+/// The brain service reports the same string in `/health` (`get_version()` in
+/// `brain/src/hippo_brain/version.py`), so the two compare directly.
+fn installed_brain_version(brain_dir: &std::path::Path) -> Option<String> {
+    let site_packages = std::fs::read_dir(brain_dir.join(".venv/lib"))
+        .ok()
+        .and_then(|rd| {
+            rd.filter_map(Result::ok)
+                .map(|e| e.path().join("site-packages"))
+                .find(|p| p.is_dir())
+        });
+
+    let stamped = site_packages
+        .iter()
+        .map(|sp| sp.join("hippo_brain/_version.py"))
+        .chain(std::iter::once(
+            brain_dir.join("src/hippo_brain/_version.py"),
+        ))
+        .find_map(|path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            let (_, rest) = text.split_once("__version__")?;
+            let (_, rest) = rest.split_once('"')?;
+            let (version, _) = rest.split_once('"')?;
+            (!version.is_empty()).then(|| version.to_string())
+        });
+    if stamped.is_some() {
+        return stamped;
+    }
+
+    std::fs::read_dir(site_packages?)
+        .ok()?
+        .filter_map(Result::ok)
+        .find_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.strip_prefix("hippo_brain-")?
+                .strip_suffix(".dist-info")
+                .map(str::to_string)
+        })
+}
+
+/// Outcome of comparing the installed `hippo-mcp` version with the running brain.
+#[derive(Debug, PartialEq, Eq)]
+pub enum McpVersionStatus {
+    /// `<brain_dir>/.venv/bin/hippo-mcp` does not exist.
+    EntryPointMissing,
+    /// The entry point exists but no installed version could be read.
+    VersionUnreadable,
+    /// The brain `/health` response was absent or had no `version`.
+    BrainUnreachable {
+        installed: String,
+    },
+    Match {
+        installed: String,
+    },
+    Mismatch {
+        installed: String,
+        running: String,
+    },
+}
+
+/// Classify the installed `hippo-mcp` version against the running brain.
+///
+/// The MCP server runs from `brain_dir` (`uv run --project <brain_dir>
+/// hippo-mcp`), so its version is the installed package version.
+pub fn mcp_version_status(
+    brain_dir: &std::path::Path,
+    brain_json: Option<&serde_json::Value>,
+) -> McpVersionStatus {
+    if !brain_dir.join(".venv/bin/hippo-mcp").is_file() {
+        return McpVersionStatus::EntryPointMissing;
+    }
+    let Some(installed) = installed_brain_version(brain_dir) else {
+        return McpVersionStatus::VersionUnreadable;
+    };
+    let Some(running) = brain_json
+        .and_then(|j| j.get("version"))
+        .and_then(|v| v.as_str())
+    else {
+        return McpVersionStatus::BrainUnreachable { installed };
+    };
+    if installed == running {
+        McpVersionStatus::Match { installed }
+    } else {
+        McpVersionStatus::Mismatch {
+            installed,
+            running: running.to_string(),
+        }
+    }
+}
+
+/// Print the `MCP server version` doctor line and return the failure count.
+///
+/// A version mismatch is a warning, not a failure: both processes still serve
+/// requests. A missing entry point is a failure because the MCP server cannot
+/// start.
+pub fn check_mcp_server_version(
+    brain_dir: &std::path::Path,
+    brain_json: Option<&serde_json::Value>,
+    explain: bool,
+) -> u32 {
+    const LABEL: &str = "MCP server version";
+
+    match mcp_version_status(brain_dir, brain_json) {
+        McpVersionStatus::EntryPointMissing => {
+            println!(
+                "[!!] {:<29}  hippo-mcp not installed in {}",
+                LABEL,
+                brain_dir.display()
+            );
+            if explain {
+                println!("     CAUSE:  The installed brain has no hippo-mcp entry point");
+                println!("     FIX:    mise run install  (or: scripts/install.sh)");
+                println!("     DOC:    docs/mcp-reference.md");
+            }
+            1
+        }
+        McpVersionStatus::VersionUnreadable => {
+            println!(
+                "[WW] {:<29}  cannot read installed version under {}",
+                LABEL,
+                brain_dir.display()
+            );
+            0
+        }
+        McpVersionStatus::BrainUnreachable { installed } => {
+            println!(
+                "[--] {:<29}  {} (brain unreachable, cannot compare)",
+                LABEL, installed
+            );
+            0
+        }
+        McpVersionStatus::Match { installed } => {
+            println!("[OK] {:<29}  {}", LABEL, installed);
+            0
+        }
+        McpVersionStatus::Mismatch { installed, running } => {
+            println!(
+                "[WW] {:<29}  installed {}, running brain {}",
+                LABEL, installed, running
+            );
+            if explain {
+                println!(
+                    "     CAUSE:  The brain service was not restarted after the install, or the install is stale"
+                );
+                println!(
+                    "     FIX:    mise run restart  (new MCP sessions pick up the installed version)"
+                );
+                println!("     DOC:    docs/mcp-reference.md");
+            }
+            0
+        }
     }
 }
 

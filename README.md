@@ -241,13 +241,13 @@ Add to your Claude Code MCP config (e.g., `~/.claude/settings.json` or your MCP 
     "hippo": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"]
+      "args": ["run", "--no-sync", "--project", "/path/to/home/.local/share/hippo-brain", "hippo-mcp"]
     }
   }
 }
 ```
 
-Replace `/path/to/hippo` with the absolute path to your clone.
+Replace `/path/to/home` with your absolute home directory (MCP configs do not expand `~`). Point the server at the installed brain, not at a git checkout: a branch switch in a checkout then cannot change the server your agent sessions use, and the server stays the same version as the brain service. `mise run install` refreshes that copy, including the `hippo-mcp` entry point. `hippo doctor` warns when the installed `hippo-mcp` version differs from the running brain.
 
 The MCP server reads SQLite directly (vectors live in the same DB via sqlite-vec; no dependency on the brain HTTP server).
 
