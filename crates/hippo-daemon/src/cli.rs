@@ -48,7 +48,11 @@ pub enum Commands {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Destroy expired event outputs and unreferenced environment payloads
+    /// Destroy expired event outputs, unreferenced environment payloads, and expired agent-eval text
+    ///
+    /// Agent-eval text is `eval_findings.line_text` and `claim` and
+    /// `eval_verdicts.note`. Findings whose effective verdict is `accepted`,
+    /// their verdicts, and all escapes are pinned and keep their text.
     GcEventPayloads {
         /// Explicitly authorize this destructive sweep (ledger rows remain)
         #[arg(long, required = true)]
@@ -347,6 +351,16 @@ pub enum IngestSource {
         /// Wait up to N seconds for the file to appear before importing (default: 0 = no wait)
         #[arg(long, default_value_t = 0)]
         wait_for_file: u64,
+    },
+    /// Import agent-evaluation records (review runs, findings, verdicts, escapes, bench runs) from a v1 JSONL file
+    ///
+    /// Prints `written W, skipped S, rejected R` and one `line N: rejected: REASON`
+    /// per rejected line on stderr. Records whose id already exists with equal
+    /// fields are skipped, so re-ingesting a whole ledger is safe. Exits 1 when
+    /// no line was written or skipped.
+    AgentEval {
+        /// Path to the JSONL file
+        path: String,
     },
     /// Re-extract segments from previously-truncated session JSONL files (Bug A recovery).
     /// Also repairs subagent identity across the whole database, prints `Subagent agent coverage`,

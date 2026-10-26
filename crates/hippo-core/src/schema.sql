@@ -684,5 +684,5 @@ CREATE INDEX IF NOT EXISTS idx_events_payload_expiry
 ON events (COALESCE(payload_expiry, created_at + 7776000000), id)
 WHERE stdout IS NOT NULL OR stderr IS NOT NULL OR env_snapshot_id IS NOT NULL;
 
-PRAGMA user_version = 28;
+PRAGMA user_version = 29;
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_project ON knowledge_nodes (project_id);

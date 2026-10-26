@@ -93,8 +93,10 @@ hippo release cadence. Neither holds today.
 One additive migration in `crates/hippo-core/src/storage.rs`, the first free
 version after Phase 1 (v28 to v29 if Phase 1 lands first). It follows the
 crash-safe pattern: `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT
-EXISTS`, `CREATE TRIGGER IF NOT EXISTS`, `PRAGMA user_version` bump. The same
-DDL goes into `crates/hippo-core/src/schema.sql`. `EXPECTED_SCHEMA_VERSION`
+EXISTS`, `CREATE TRIGGER IF NOT EXISTS`, `PRAGMA user_version` bump. The
+DDL lives once in `crates/hippo-core/src/schema/agent_eval.sql`, which both the
+fresh-install `SCHEMA` and the migration include (the v28
+`schema/agentic_eval.sql` precedent), so the two cannot drift. `EXPECTED_SCHEMA_VERSION`
 and `ACCEPTED_READ_VERSIONS` in `brain/src/hippo_brain/schema_version.py`
 change in the same commit. No existing table changes.
 

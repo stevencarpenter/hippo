@@ -60,19 +60,22 @@ Older readable schemas retain their original project-filter behavior.
 v27→v28 adds agent-evaluation columns on agentic_sessions (all nullable or
 defaulted) and the agentic_session_facts table. Brain reads stay valid on v24
 through v27 because no brain query depends on the new columns.
+v28→v29 adds the agent-evaluation record tables eval_review_runs,
+eval_findings, eval_verdicts, eval_escapes and eval_bench_runs. The brain never
+reads them (AP-14), so reads stay valid on v24 through v28.
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-EXPECTED_SCHEMA_VERSION: int = 28
+EXPECTED_SCHEMA_VERSION: int = 29
 
 # The v25 table is optional and additive. Ordinary queries and enrichment remain
 # valid on v24; classification checks its table before reading or writing. Older
 # versions still lack mandatory writer contracts and remain unsupported. The
 # daemon handshake retains exact version equality before running migrations.
-ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({24, 25, 26, 27, EXPECTED_SCHEMA_VERSION})
+ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({24, 25, 26, 27, 28, EXPECTED_SCHEMA_VERSION})
 
 
 def require_accepted_schema(conn: sqlite3.Connection) -> None:

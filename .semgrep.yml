@@ -121,3 +121,31 @@ rules:
       exclude:
         - "*/tests/*"
         - "target/**"
+
+  - id: eval-table-in-derived-path
+    message: |
+      A string in an enrichment, embedding, classification, retrieval, RAG, or
+      MCP query module names an agent-eval table (eval_review_runs,
+      eval_findings, eval_verdicts, eval_escapes, eval_bench_runs). Eval rows
+      must never reach knowledge_nodes, knowledge_fts, knowledge_vectors, an
+      enrichment prompt, entity extraction, or an outbound flow (AP-14).
+
+      Read eval rows only from the allowlisted modules in
+      brain/tests/test_eval_isolation.py. That pytest guard is the control
+      that blocks a merge; this rule is a local and review aid.
+
+      See docs/capture/anti-patterns.md AP-14.
+    languages: [python]
+    severity: ERROR
+    patterns:
+      - pattern: '"..."'
+      - pattern-regex: "\\beval_(review_runs|findings|verdicts|escapes|bench_runs)\\b"
+    paths:
+      include:
+        - "**/brain/src/hippo_brain/enrichment*.py"
+        - "**/brain/src/hippo_brain/embeddings.py"
+        - "**/brain/src/hippo_brain/classification.py"
+        - "**/brain/src/hippo_brain/jev.py"
+        - "**/brain/src/hippo_brain/retrieval.py"
+        - "**/brain/src/hippo_brain/rag.py"
+        - "**/brain/src/hippo_brain/mcp_queries.py"
