@@ -21,6 +21,9 @@ const BATCH_LINES: usize = 100;
 const NOTE_CAP: usize = 4000;
 const LINE_TEXT_CAP: usize = 1000;
 const CATEGORY_CAP: usize = 64;
+/// Unknown key names are untrusted text; they are capped before logging.
+const KEY_NAME_CAP: usize = 64;
+const RECORD_TYPES: &[&str] = &["review_run", "finding", "verdict", "escape", "bench_run"];
 const LEVELS: &[&str] = &["high", "medium", "low"];
 const VERDICTS: &[&str] = &[
     "accepted",
@@ -133,8 +136,10 @@ pub fn ingest(
     }
     summary.rejections.sort_by_key(|(n, _)| *n);
     if !unknown_keys.is_empty() {
+        // Debug formatting escapes control characters in the untrusted names.
         let keys: Vec<&str> = unknown_keys.iter().map(String::as_str).collect();
         tracing::warn!(keys = ?keys, "agent-eval: ignored keys not defined for their record type");
+        eprintln!("warning: ignored keys not defined for their record type: {keys:?}");
     }
     summary
 }
@@ -394,6 +399,11 @@ fn prepare_line(
         Some(Json::String(kind)) => kind.as_str(),
         Some(_) => return Err(invalid("type")),
     };
+    // The type is checked before any field, so an unknown type is never
+    // reported as a missing field of some other type.
+    if !RECORD_TYPES.contains(&kind) {
+        return Err("unknown_type".into());
+    }
     let id = f.str("id")?;
     if !is_valid_id(&id) {
         return Err(invalid("id"));
@@ -408,7 +418,7 @@ fn prepare_line(
     use Compare::{Exact, Json as J, Never};
     let prepared = match kind {
         "review_run" => {
-            let repo = f.str("repo")?;
+            let repo = abs_repo(&mut f)?;
             let session_id = f.opt_str("session_id")?;
             let harness = f.opt_str("harness")?;
             if harness.as_deref().is_some_and(|h| !HARNESSES.contains(&h)) {
@@ -473,7 +483,7 @@ fn prepare_line(
         }
         "finding" => {
             let run_id = f.str("run_id")?;
-            let repo = f.str("repo")?;
+            let repo = abs_repo(&mut f)?;
             let line_text = f.opt_str("line_text")?;
             // The hash comes from the raw line; any producer hash is ignored.
             let hash = line_text.as_deref().map(line_hash);
@@ -538,7 +548,7 @@ fn prepare_line(
             }
         }
         "escape" => {
-            let repo = f.str("repo")?;
+            let repo = abs_repo(&mut f)?;
             Prepared {
                 table: "eval_escapes",
                 parent: None,
@@ -603,9 +613,20 @@ fn prepare_line(
     unknown_keys.extend(
         obj.keys()
             .filter(|k| !f.read.contains(&k.as_str()))
-            .map(|k| format!("{kind}.{k}")),
+            .map(|k| format!("{kind}.{}", cap(k.clone(), KEY_NAME_CAP))),
     );
     Ok(prepared)
+}
+
+/// `repo` must be absolute: `derive_git_repo` would resolve a relative path
+/// against the CLI's working directory and store the wrong `repo_identity`.
+fn abs_repo(f: &mut Fields<'_>) -> Field<String> {
+    let repo = f.str("repo")?;
+    if Path::new(&repo).is_absolute() {
+        Ok(repo)
+    } else {
+        Err(invalid("repo"))
+    }
 }
 
 /// Optional integer count; an omitted value takes the column default 0.

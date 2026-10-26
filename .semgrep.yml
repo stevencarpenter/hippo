@@ -125,7 +125,7 @@ rules:
   - id: eval-table-in-derived-path
     message: |
       A string in an enrichment, embedding, classification, retrieval, RAG, or
-      MCP query module names an agent-eval table (eval_review_runs,
+      MCP query module, or in a maintenance script, names an agent-eval table (eval_review_runs,
       eval_findings, eval_verdicts, eval_escapes, eval_bench_runs). Eval rows
       must never reach knowledge_nodes, knowledge_fts, knowledge_vectors, an
       enrichment prompt, entity extraction, or an outbound flow (AP-14).
@@ -149,3 +149,5 @@ rules:
         - "**/brain/src/hippo_brain/retrieval.py"
         - "**/brain/src/hippo_brain/rag.py"
         - "**/brain/src/hippo_brain/mcp_queries.py"
+        - "**/brain/scripts/*.py"
+        - "/scripts/*.py"

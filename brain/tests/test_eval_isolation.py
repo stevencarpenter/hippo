@@ -18,6 +18,8 @@ from hippo_brain.server import BrainServer
 
 REPO = Path(__file__).resolve().parents[2]
 BRAIN_SRC = REPO / "brain" / "src" / "hippo_brain"
+# Re-embedding and maintenance scripts sit on the same derived-index boundary.
+SCRIPT_DIRS = (REPO / "scripts", REPO / "brain" / "scripts")
 AGENT_EVAL_SCHEMA = REPO / "crates" / "hippo-core" / "src" / "schema" / "agent_eval.sql"
 FIXTURE = REPO / "crates" / "hippo-daemon" / "tests" / "fixtures" / "agent_eval" / "all_types.jsonl"
 
@@ -39,6 +41,19 @@ RENAMED = {
     "scores": "scores_json",
     "per_case": "per_case_json",
 }
+
+
+def test_no_script_names_an_eval_table():
+    scripts = sorted(
+        path for root in SCRIPT_DIRS for path in root.rglob("*") if path.suffix in {".py", ".sh"}
+    )
+    assert len(scripts) > 5
+    offenders = [
+        str(path.relative_to(REPO))
+        for path in scripts
+        if EVAL_TABLE.search(path.read_text(encoding="utf-8", errors="replace"))
+    ]
+    assert offenders == [], f"eval_* tables named in scripts: {offenders}"
 
 
 def test_no_brain_module_names_an_eval_table_outside_the_allowlist():

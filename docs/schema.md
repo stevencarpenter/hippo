@@ -122,7 +122,7 @@ Resumed sessions: when a later file continues a `session_id`, the upsert is per 
 - The primary key is the producer's record `id`, the idempotency key. A rerun skips an existing id whose stored fields equal the record and rejects a differing one as `id_conflict`. The comparison leaves out the redacted columns and the hippo-generated ones (`ingested_at`, `payload_expiry`, `line_hash`, `repo_identity`).
 - Times are epoch milliseconds. `ingested_at` is the time hippo wrote the row.
 - `base_sha`, `head_sha`, `commit_sha`, and `fix_commit` hold full 40-character lowercase hex SHAs; ingest rejects any other form.
-- `repo` is the local absolute path. `repo_identity` is derived at ingest by `git_repo.rs::derive_git_repo` (`owner/repo` from `origin`, else the top-level directory name, else NULL).
+- `repo` is the local absolute path; ingest rejects a relative one as `invalid_field:repo`. `repo_identity` is derived at ingest by `git_repo.rs::derive_git_repo` (`owner/repo` from `origin`, else the top-level directory name, else NULL).
 - Redacted columns pass through the builtin `RedactionEngine` patterns and then the operator's `redact.toml` before the insert. Ingest redacts first and then caps `claim` and `note` at 4,000 characters, `line_text` at 1,000, and `category` at 64.
 - `severity`, `confidence`, and `verdict` are validated by the ingest code, not by `CHECK`, so a new value needs a contract version and no table rebuild.
 - `payload_expiry = ingested_at + 7,776,000,000` (90 days), on `eval_findings` and `eval_verdicts` only. See [Event payload retention](#event-payload-retention).
@@ -224,8 +224,8 @@ Index: `idx_eval_escapes_repo_path (repo, path)`.
 | `reps`, `cases` | `INTEGER NOT NULL` | Repetitions and case count. |
 | `cases_sha256`, `brief_sha256` | `TEXT NOT NULL` | Hashes of the case set and the brief. |
 | `failed_reviews`, `tokens` | `INTEGER NOT NULL DEFAULT 0` | Failed reviews and total tokens. |
-| `scores_json` | `TEXT NOT NULL` | Producer score object as JSON (record field `scores`); read with `json_extract`. |
-| `per_case_json` | `TEXT NOT NULL DEFAULT '[]'` | Producer per-case array as JSON (record field `per_case`). |
+| `scores_json` | `TEXT NOT NULL` | Producer score object as JSON (record field `scores`), re-serialized with object keys in sorted order; read with `json_extract`. |
+| `per_case_json` | `TEXT NOT NULL DEFAULT '[]'` | Producer per-case array as JSON (record field `per_case`), re-serialized with object keys in sorted order. |
 
 Index: `idx_eval_bench_runs_bench_recorded_at (bench, recorded_at)`. The JSON columns compare as parsed JSON on a rerun, with numbers compared by value, so `1` and `1.0` are equal.
 

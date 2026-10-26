@@ -90,6 +90,11 @@ fn every_validation_reason_is_reported_per_line_and_processing_continues() {
         with(bench_run("b1"), "scores", json!([1])),
         without(bench_run("b2"), "scores"),
         with(finding("f4", "r1"), "line", json!("4")),
+        without(with(review_run("r10"), "type", json!("review")), "id"),
+        with(review_run("r11"), "repo", json!("example-repo")),
+        with(finding("f5", "r1"), "repo", json!("./example-repo")),
+        json!({"schema_version":1,"type":"escape","id":"e1","repo":"","path":"p",
+            "line":1,"note":"n","recorded_at":1}),
     ];
     let summary = run(&mut conn, &records);
     assert_eq!(summary.written, 1);
@@ -113,6 +118,10 @@ fn every_validation_reason_is_reported_per_line_and_processing_continues() {
             (16, "invalid_field:scores"),
             (17, "missing_field:scores"),
             (18, "invalid_field:line"),
+            (19, "unknown_type"),
+            (20, "invalid_field:repo"),
+            (21, "invalid_field:repo"),
+            (22, "invalid_field:repo"),
         ]
     );
 }

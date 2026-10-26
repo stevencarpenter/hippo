@@ -151,14 +151,15 @@ fn canary_token_is_redacted_hashed_raw_and_never_indexed() {
         .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
         .unwrap();
     assert_eq!(busy, 0);
-    for path in [env.db_path(), env.db_path().with_extension("db-wal")] {
-        if let Ok(bytes) = std::fs::read(&path) {
-            assert!(
-                !bytes.windows(token.len()).any(|w| w == token.as_bytes()),
-                "token bytes found in {}",
-                path.display()
-            );
-        }
+    // The main file must be read; the WAL may be absent after TRUNCATE.
+    let db_bytes = std::fs::read(env.db_path()).unwrap();
+    assert!(db_bytes.len() > 4096, "database file unexpectedly small");
+    let wal_bytes = std::fs::read(env.db_path().with_extension("db-wal")).unwrap_or_default();
+    for (name, bytes) in [("db", &db_bytes), ("wal", &wal_bytes)] {
+        assert!(
+            !bytes.windows(token.len()).any(|w| w == token.as_bytes()),
+            "token bytes found in the {name} file"
+        );
     }
 
     assert_ingest(&env.ingest(&file), "written 0, skipped 3, rejected 0");
@@ -243,4 +244,35 @@ fn exit_code_is_one_when_nothing_is_accepted() {
         stderr.contains("line 3: rejected: not_an_object"),
         "{stderr}"
     );
+}
+
+#[test]
+fn unknown_keys_are_reported_once_on_stderr_with_capped_names() {
+    let env = Env::new();
+    let long_key = format!("{}\nforged", "k".repeat(200));
+    let mut record: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(Path::new(FIXTURES).join("all_types.jsonl"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    record["extra_note"] = serde_json::json!(1);
+    record[long_key.as_str()] = serde_json::json!(2);
+    let file = env.root.join("unknown.jsonl");
+    std::fs::write(&file, format!("{record}\n")).unwrap();
+
+    let out = env.ingest(&file);
+    assert_ingest(&out, "written 1, skipped 0, rejected 0");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let warnings: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.starts_with("warning: ignored keys"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{stderr}");
+    assert!(warnings[0].contains("review_run.extra_note"), "{stderr}");
+    assert!(warnings[0].contains(&format!("review_run.{}", "k".repeat(64))));
+    assert!(!warnings[0].contains(&"k".repeat(65)), "{stderr}");
+    assert!(!stderr.lines().any(|l| l.starts_with("forged")), "{stderr}");
 }
