@@ -193,7 +193,6 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
     if current_size <= state.size_at_last_read && !state.meta_changed {
         return Ok(0);
     }
-    state.meta_changed = false;
 
     #[cfg(feature = "otel")]
     let start = Instant::now();
@@ -259,6 +258,8 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
         // `current_size <= size_at_last_read` will hold until more bytes arrive.
         state.byte_offset = current_size;
         state.size_at_last_read = current_size;
+        // Cleared only on success: a timeout or failed ingest must retry the meta update.
+        state.meta_changed = false;
         #[cfg(feature = "otel")]
         if inserted > 0 {
             crate::metrics::WATCHER_SEGMENTS_INGESTED.add(inserted as u64, &[]);
@@ -1254,6 +1255,30 @@ mod tests {
         );
         queue_event_path(sub_dir.join("notes.txt"), &mut states, &mut pending);
         assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn meta_changed_survives_a_failed_ingest() {
+        let dir = TempDir::new().unwrap();
+        let jsonl = dir.path().join("agent-bbb.jsonl");
+        std::fs::write(&jsonl, j("agent-bbb", 0, "user", "hello") + "\n").unwrap();
+        let good_db = dir.path().join("good.db");
+        open_db(&good_db).unwrap();
+
+        let mut state = FileState::default();
+        process_file(&jsonl, &mut state, &good_db).await.unwrap();
+        state.meta_changed = true;
+
+        // The DB cannot be opened: the ingest fails and the flag must stay.
+        let bad_db = dir.path().join("a-directory.db");
+        std::fs::create_dir(&bad_db).unwrap();
+        assert_eq!(process_file(&jsonl, &mut state, &bad_db).await.unwrap(), 0);
+        assert!(state.meta_changed, "failed ingest must keep the meta flag");
+        assert!(state.cooldown_until.is_some());
+
+        state.cooldown_until = None;
+        process_file(&jsonl, &mut state, &good_db).await.unwrap();
+        assert!(!state.meta_changed, "success clears the flag");
     }
 
     #[tokio::test]
