@@ -23,6 +23,7 @@ fn upsert_writes_agentic_session_and_enqueues() {
         tool_calls: vec![],
         message_count: 1,
         source_file: "/Users/x/.codex/sessions/2026/04/04/rollout-codex-1.jsonl".into(),
+        usage: Default::default(),
     };
     hippo_daemon::codex_session::upsert_segment(&conn, &seg).unwrap();
 
@@ -95,6 +96,7 @@ fn upsert_refreshes_cwd_and_project_dir_on_conflict() {
         tool_calls: vec![],
         message_count: 1,
         source_file: "/Users/x/.codex/sessions/rollout-cwd-test.jsonl".into(),
+        usage: Default::default(),
     };
     hippo_daemon::codex_session::upsert_segment(&conn, &seg).unwrap();
 
@@ -396,6 +398,7 @@ fn codex_state_coverage_reports_covered_missing_in_flight_and_log_only_threads()
         message_count: 1,
         // Use a canonical .codex/ path so read_hippo_session_ids picks it up.
         source_file: "/Users/me/.codex/sessions/rollout-covered.jsonl".into(),
+        usage: Default::default(),
     };
     hippo_daemon::codex_session::upsert_segment(&hippo_conn, &seg).unwrap();
 

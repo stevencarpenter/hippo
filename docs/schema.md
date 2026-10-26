@@ -58,15 +58,17 @@ usage is in [Jev decisions](jev-decisions.md).
 
 ## Agent-evaluation columns (v28)
 
-All metadata columns below sit outside `content_hash`, so a change that touches only them never re-enqueues enrichment. As of v28 only the Claude Code writer (`claude_session.rs::insert_segments`) sets them; other harnesses leave the defaults.
+All metadata columns below sit outside `content_hash`, so a change that touches only them never re-enqueues enrichment. The Claude Code writer (`claude_session.rs::insert_segments`) sets them, and the Codex writer (`codex_session.rs::upsert_segment_tx`) sets the model, effort, and token columns. Other harnesses leave the defaults.
 
 | Column | Type / default | Meaning |
 |---|---|---|
 | `agent` (existing) | `TEXT DEFAULT ''` | Claude Code: `agentType` from the subagent's sibling `meta.json`; `''` for main sessions and when `meta.json` is missing or malformed. |
-| `requested_model` | `TEXT`, NULL | Model alias the session requested (`requestedModel`). |
-| `effort` | `TEXT`, NULL | Requested reasoning effort (`effort`). |
-| `input_tokens` | `INTEGER NOT NULL DEFAULT 0` | Input tokens for the segment. |
-| `output_tokens` | `INTEGER NOT NULL DEFAULT 0` | Output tokens for the segment. |
+| `model` (existing) | `TEXT DEFAULT ''` | Served model id. Claude Code: the most frequent `message.model` among the segment's assistant records (ties: first seen). Codex: the most frequent `turn_context.model` in effect during the segment. `''` when none was recorded. |
+| `requested_model` | `TEXT`, NULL | Claude Code: the most frequent top-level `requestedModel` of the segment's assistant records (ties: first seen). NULL when absent. Codex rollouts carry no requested-model field, so it stays NULL. |
+| `effort` | `TEXT`, NULL | Reasoning effort. Claude Code: most frequent top-level `effort` of the assistant records. Codex: most frequent `turn_context.effort`. Ties: first seen. NULL when absent. |
+| `token_count` (existing) | `INTEGER` | `input_tokens + output_tokens` for the segment. Cache reads and cache creation are excluded; they have their own columns. |
+| `input_tokens` | `INTEGER NOT NULL DEFAULT 0` | Uncached input tokens for the segment. |
+| `output_tokens` | `INTEGER NOT NULL DEFAULT 0` | Output tokens for the segment (Codex: includes reasoning tokens). |
 | `cache_read_tokens` | `INTEGER NOT NULL DEFAULT 0` | Prompt-cache read tokens for the segment. |
 | `cache_creation_tokens` | `INTEGER NOT NULL DEFAULT 0` | Prompt-cache creation tokens for the segment. |
 | `spawn_depth` | `INTEGER`, NULL | Claude Code subagent nesting depth (`spawnDepth` in `meta.json`). |
@@ -78,7 +80,13 @@ All metadata columns below sit outside `content_hash`, so a change that touches 
 | `hook_names_json` | `TEXT NOT NULL DEFAULT '[]'` | JSON array of hook names that ran. |
 | `permission_decisions_json` | `TEXT NOT NULL DEFAULT '{}'` | JSON object counting permission decisions. |
 
-The token, hook, `requested_model`, and `effort` columns exist from v28 but hold their defaults until their writers land.
+Token accounting rules:
+
+- Claude Code writes one `assistant` record per content block. Records of one API turn share `message.id` and carry identical `message.usage`, so usage is summed once per distinct `message.id` within a segment. `user` records carry no `usage`. Before HIPO-60 the extractor read `input_tokens` from `user` records, so `token_count` held output tokens only.
+- Codex reports a cumulative `total_token_usage` in `token_count` events. The writer adds the growth since the previous event, so repeated events add nothing. Codex counts cached tokens inside `input_tokens`; the writer subtracts `cached_input_tokens` so the four columns do not overlap. Tokens reported before a segment opens are not attributed to any segment.
+- A missing or malformed usage field counts as 0.
+
+The hook columns exist from v28 but hold their defaults until their writer lands.
 
 `agentic_session_facts` holds one row per `(session_id, harness)` for totals a harness reports for the whole session:
 

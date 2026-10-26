@@ -87,7 +87,7 @@ fn subagent_meta_and_agent_summary_land_and_reingest_is_idempotent() {
         (0, String::new(), None, None, None)
     );
 
-    // Columns that later Phase 1 tasks populate hold their defaults today.
+    // Usage columns come from the transcript; hook columns are populated by a later task.
     let defaults: (Option<String>, Option<String>, i64, i64, String, String) = conn
         .query_row(
             "SELECT requested_model, effort, input_tokens, hook_runs,
@@ -108,7 +108,14 @@ fn subagent_meta_and_agent_summary_land_and_reingest_is_idempotent() {
         .unwrap();
     assert_eq!(
         defaults,
-        (None, None, 0, 0, "[]".to_string(), "{}".to_string())
+        (
+            Some("haiku".to_string()),
+            Some("low".to_string()),
+            50,
+            0,
+            "[]".to_string(),
+            "{}".to_string()
+        )
     );
 
     let tool_calls: String = conn

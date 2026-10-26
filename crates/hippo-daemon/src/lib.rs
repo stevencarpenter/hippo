@@ -23,6 +23,7 @@ mod probe_auto_memory;
 #[cfg(feature = "otel")]
 pub mod process_metrics;
 pub mod schema_handshake;
+pub mod segment_usage;
 mod shell_health;
 #[cfg(feature = "otel")]
 pub mod source_health_metric;

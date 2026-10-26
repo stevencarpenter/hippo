@@ -14,6 +14,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::commands::send_event_fire_and_forget;
+use crate::segment_usage::{SegmentUsage, UsageTotals};
 
 /// Maximum bytes to store in CapturedOutput
 const MAX_OUTPUT_BYTES: usize = 4096;
@@ -361,7 +362,8 @@ pub(crate) struct SessionSegment {
     pub(crate) assistant_texts: Vec<String>,
     pub(crate) tool_calls: Vec<ToolCallSummary>,
     message_count: i64,
-    token_count: i64,
+    /// Model, effort, and token usage. Metadata only: never part of `content_hash`.
+    usage: SegmentUsage,
     source_file: String,
     is_subagent: bool,
     parent_session_id: Option<String>,
@@ -722,6 +724,48 @@ fn extract_assistant_content(msg: &serde_json::Value) -> (Vec<String>, Vec<ToolC
 /// `redaction` — applied to `user_prompts`, `assistant_texts`, and each
 /// tool-call summary. Matches the Python `redact_segment_secrets` step; the
 /// builtin pattern set is shared with `hippo_brain.redaction`.
+/// Record model, effort, and token usage from one `assistant` record.
+///
+/// Claude Code writes one record per content block; records of one API turn
+/// share `message.id` and carry identical `message.usage`, so usage is counted
+/// once per distinct id within the segment. `user` records carry no `usage`.
+fn record_assistant_usage(
+    usage: &mut SegmentUsage,
+    entry: &serde_json::Value,
+    msg: &serde_json::Value,
+    warned: &mut bool,
+) {
+    if let Some(model) = msg.get("model").and_then(|v| v.as_str()) {
+        usage.observe_model(model);
+    }
+    if let Some(model) = entry.get("requestedModel").and_then(|v| v.as_str()) {
+        usage.observe_requested_model(model);
+    }
+    if let Some(effort) = entry.get("effort").and_then(|v| v.as_str()) {
+        usage.observe_effort(effort);
+    }
+    let Some(raw) = msg.get("usage") else {
+        return;
+    };
+    let Some(raw) = raw.as_object() else {
+        if !*warned {
+            *warned = true;
+            warn!("assistant message.usage is not an object; token counts left at 0");
+        }
+        return;
+    };
+    let field = |key: &str| raw.get(key).and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+    usage.add_once(
+        msg.get("id").and_then(|v| v.as_str()),
+        UsageTotals {
+            input_tokens: field("input_tokens"),
+            output_tokens: field("output_tokens"),
+            cache_read_tokens: field("cache_read_input_tokens"),
+            cache_creation_tokens: field("cache_creation_input_tokens"),
+        },
+    );
+}
+
 fn extract_segments(
     session_file: &SessionFile<'_>,
     redaction: &RedactionEngine,
@@ -734,6 +778,7 @@ fn extract_segments(
     let mut current: Option<SessionSegment> = None;
     let mut current_chars: usize = 0;
     let mut last_user_time_ms: i64 = 0;
+    let mut warned_usage = false;
 
     for line_result in reader.lines() {
         let line = match line_result {
@@ -796,7 +841,7 @@ fn extract_segments(
                 assistant_texts: Vec::new(),
                 tool_calls: Vec::new(),
                 message_count: 0,
-                token_count: 0,
+                usage: SegmentUsage::default(),
                 source_file: session_file.path.to_string_lossy().into_owned(),
                 is_subagent: session_file.is_subagent,
                 parent_session_id: session_file.parent_session_id.clone(),
@@ -838,7 +883,7 @@ fn extract_segments(
                         assistant_texts: Vec::new(),
                         tool_calls: Vec::new(),
                         message_count: 0,
-                        token_count: 0,
+                        usage: SegmentUsage::default(),
                         source_file: session_file.path.to_string_lossy().into_owned(),
                         is_subagent: session_file.is_subagent,
                         parent_session_id: session_file.parent_session_id.clone(),
@@ -876,11 +921,6 @@ fn extract_segments(
                 current_chars += truncated.len();
                 seg.user_prompts.push(redaction.redact(&truncated).text);
             }
-            if let Some(usage) = msg.get("usage")
-                && let Some(input_tokens) = usage.get("input_tokens").and_then(|v| v.as_i64())
-            {
-                seg.token_count += input_tokens;
-            }
         } else if entry_type == "assistant" {
             let msg = entry.get("message").cloned().unwrap_or_default();
             let (texts, tools) = extract_assistant_content(&msg);
@@ -895,11 +935,7 @@ fn extract_segments(
                     summary: redaction.redact(&t.summary).text,
                 });
             }
-            if let Some(usage) = msg.get("usage")
-                && let Some(output_tokens) = usage.get("output_tokens").and_then(|v| v.as_i64())
-            {
-                seg.token_count += output_tokens;
-            }
+            record_assistant_usage(&mut seg.usage, &entry, &msg, &mut warned_usage);
         }
     }
 
@@ -1169,9 +1205,9 @@ fn insert_segments(
                  output_tokens, cache_read_tokens, cache_creation_tokens, spawn_depth,
                  parent_tool_use_id, subagent_finished, hook_runs, hook_errors,
                  prevented_continuations, hook_names_json, permission_decisions_json)
-             VALUES (?1, 'claude-code', ?2, '', ?18, ?3, ?4, ?5, '', '', ?6, ?7, ?8,
+             VALUES (?1, 'claude-code', ?2, ?22, ?18, ?3, ?4, ?5, '', '', ?6, ?7, ?8,
                      ?9, ?10, ?11, 'null', '[]', ?12, ?13, ?14, ?15, ?16, ?17,
-                     NULL, NULL, 0, 0, 0, 0, ?19, ?20, ?21, 0, 0, 0, '[]', '{}')
+                     ?23, ?24, ?25, ?26, ?27, ?28, ?19, ?20, ?21, 0, 0, 0, '[]', '{}')
              ON CONFLICT (session_id, harness, segment_index) DO UPDATE SET
                  end_time                  = excluded.end_time,
                  summary_text              = excluded.summary_text,
@@ -1181,6 +1217,7 @@ fn insert_segments(
                  token_count               = excluded.token_count,
                  content_hash              = excluded.content_hash,
                  agent                     = excluded.agent,
+                 model                     = excluded.model,
                  requested_model           = excluded.requested_model,
                  effort                    = excluded.effort,
                  input_tokens              = excluded.input_tokens,
@@ -1211,7 +1248,7 @@ fn insert_segments(
                 user_prompts_json,
                 seg.source_file,
                 seg.message_count,
-                seg.token_count,
+                seg.usage.token_count(),
                 seg.start_time,
                 seg.end_time,
                 content_hash,
@@ -1220,6 +1257,13 @@ fn insert_segments(
                 seg.subagent.spawn_depth,
                 seg.subagent.tool_use_id,
                 seg.subagent.finished.map(i64::from),
+                seg.usage.model().unwrap_or(""),
+                seg.usage.requested_model(),
+                seg.usage.effort(),
+                seg.usage.totals().input_tokens,
+                seg.usage.totals().output_tokens,
+                seg.usage.totals().cache_read_tokens,
+                seg.usage.totals().cache_creation_tokens,
             ],
         )?;
 
@@ -2215,7 +2259,7 @@ mod tests {
             assistant_texts: vec![],
             tool_calls: vec![],
             message_count: 0,
-            token_count: 0,
+            usage: SegmentUsage::default(),
             source_file: "/test/session.jsonl".to_string(),
             is_subagent: false,
             parent_session_id: None,
@@ -2374,6 +2418,16 @@ mod tests {
         conn
     }
 
+    fn usage_with_tokens(total: i64) -> SegmentUsage {
+        let mut usage = SegmentUsage::default();
+        usage.add(UsageTotals {
+            input_tokens: total - total / 2,
+            output_tokens: total / 2,
+            ..UsageTotals::default()
+        });
+        usage
+    }
+
     fn make_test_segment(session_id: &str, segment_index: i64) -> SessionSegment {
         SessionSegment {
             session_id: session_id.to_string(),
@@ -2390,7 +2444,7 @@ mod tests {
                 summary: "cargo build".to_string(),
             }],
             message_count: 3,
-            token_count: 100,
+            usage: usage_with_tokens(100),
             source_file: "/test/session.jsonl".to_string(),
             is_subagent: false,
             parent_session_id: None,
@@ -2810,6 +2864,130 @@ mod tests {
         assert_eq!(queue, ("done".into(), 1), "queue row must be untouched");
     }
 
+    /// Two models in one segment, two records sharing one `message.id`.
+    /// Usage counts once per id, and the winners are the most frequent values.
+    #[test]
+    fn usage_dedups_by_message_id_and_picks_most_frequent_model() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "tests/fixtures/claude/-projects-demo/aaaaaaaa-2222-4333-8444-555555555555.jsonl",
+        );
+        let redaction = RedactionEngine::builtin();
+        let segments = extract_segments(&SessionFile::from_path(&path), &redaction).unwrap();
+        assert_eq!(segments.len(), 1);
+        let usage = &segments[0].usage;
+        // msg_a (counted once) + msg_b + msg_c; user record usage is ignored.
+        assert_eq!(
+            usage.totals(),
+            UsageTotals {
+                input_tokens: 100 + 40 + 7,
+                output_tokens: 50 + 20 + 9,
+                cache_read_tokens: 1000 + 400,
+                cache_creation_tokens: 200 + 30,
+            }
+        );
+        assert_eq!(usage.token_count(), 147 + 79);
+        // opus: msg_a x2 records + msg_b = 3 records; sonnet: 1 record.
+        assert_eq!(usage.model(), Some("claude-opus-5"));
+        // requestedModel: opus-5 x2, sonnet-5 x2 (tie), first seen wins.
+        assert_eq!(usage.requested_model(), Some("claude-opus-5"));
+        assert_eq!(usage.effort(), Some("high"));
+    }
+
+    #[test]
+    fn usage_is_persisted_and_metadata_change_does_not_requeue() {
+        let conn = open_test_db();
+        let mut seg = make_test_segment("session-usage-001", 0);
+        seg.usage = usage_with_tokens(0);
+        seg.usage.observe_model("claude-opus-5");
+        seg.usage.observe_requested_model("claude-opus-5");
+        seg.usage.observe_effort("medium");
+        seg.usage.add(UsageTotals {
+            input_tokens: 11,
+            output_tokens: 22,
+            cache_read_tokens: 33,
+            cache_creation_tokens: 44,
+        });
+        insert_segments(&conn, std::slice::from_ref(&seg)).unwrap();
+        conn.execute(
+            "UPDATE agentic_enrichment_queue SET status = 'done', updated_at = 1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE agentic_sessions SET last_enriched_content_hash = content_hash",
+            [],
+        )
+        .unwrap();
+
+        // Re-ingest with a different model and larger usage: metadata only.
+        let mut changed = seg.clone();
+        changed.usage = SegmentUsage::default();
+        changed.usage.observe_model("claude-sonnet-5");
+        changed.usage.add(UsageTotals {
+            input_tokens: 111,
+            output_tokens: 222,
+            cache_read_tokens: 333,
+            cache_creation_tokens: 444,
+        });
+        assert_eq!(
+            compute_segment_content_hash(&seg),
+            compute_segment_content_hash(&changed)
+        );
+        assert_eq!(insert_segments(&conn, &[changed]).unwrap(), (0, 1));
+
+        type Row = (
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        );
+        let row: Row = conn
+            .query_row(
+                "SELECT model, requested_model, effort, input_tokens, output_tokens,
+                        cache_read_tokens, cache_creation_tokens, token_count
+                 FROM agentic_sessions WHERE session_id = 'session-usage-001'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "claude-sonnet-5".into(),
+                None,
+                None,
+                111,
+                222,
+                333,
+                444,
+                333
+            )
+        );
+        let queue: (String, i64) = conn
+            .query_row(
+                "SELECT status, updated_at FROM agentic_enrichment_queue",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(queue, ("done".into(), 1), "queue row must be untouched");
+    }
+
     #[test]
     fn test_collapse_adjacent_identical_trailing_segment() {
         let first = make_test_segment("session-dup-001", 0);
@@ -2998,7 +3176,7 @@ mod tests {
                 "[]",
                 seg.source_file,
                 seg.message_count,
-                seg.token_count,
+                seg.usage.token_count(),
                 seg.start_time,
                 seg.end_time,
                 now_ms,
