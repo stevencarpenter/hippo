@@ -2,7 +2,7 @@
 //! segment extractors. These values are metadata: they never feed
 //! `content_hash`, so a change to them never re-enqueues enrichment.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 /// Token counts summed over one segment.
 ///
@@ -22,6 +22,13 @@ impl UsageTotals {
         self.output_tokens += other.output_tokens;
         self.cache_read_tokens += other.cache_read_tokens;
         self.cache_creation_tokens += other.cache_creation_tokens;
+    }
+
+    fn field_max(&mut self, other: UsageTotals) {
+        self.input_tokens = self.input_tokens.max(other.input_tokens);
+        self.output_tokens = self.output_tokens.max(other.output_tokens);
+        self.cache_read_tokens = self.cache_read_tokens.max(other.cache_read_tokens);
+        self.cache_creation_tokens = self.cache_creation_tokens.max(other.cache_creation_tokens);
     }
 }
 
@@ -52,8 +59,10 @@ impl Tally {
 /// Model, effort, and token usage observed within one segment.
 #[derive(Debug, Clone, Default)]
 pub struct SegmentUsage {
-    totals: UsageTotals,
-    seen_message_ids: HashSet<String>,
+    /// Usage added without a message id (Codex growth, or a record with no id).
+    unkeyed: UsageTotals,
+    /// Usage per `message.id`, field-wise maximum over the records seen.
+    by_message_id: HashMap<String, UsageTotals>,
     models: Tally,
     requested_models: Tally,
     efforts: Tally,
@@ -61,12 +70,18 @@ pub struct SegmentUsage {
 
 impl SegmentUsage {
     pub fn totals(&self) -> UsageTotals {
-        self.totals
+        self.by_message_id
+            .values()
+            .fold(self.unkeyed, |mut acc, u| {
+                acc.add(*u);
+                acc
+            })
     }
 
     /// `input_tokens + output_tokens`.
     pub fn token_count(&self) -> i64 {
-        self.totals.input_tokens + self.totals.output_tokens
+        let t = self.totals();
+        t.input_tokens + t.output_tokens
     }
 
     pub fn model(&self) -> Option<&str> {
@@ -81,8 +96,12 @@ impl SegmentUsage {
         self.efforts.winner()
     }
 
+    /// `<synthetic>` marks client-generated messages that no model served. It
+    /// is not a model and never counts.
     pub fn observe_model(&mut self, value: &str) {
-        self.models.record(value);
+        if value != "<synthetic>" {
+            self.models.record(value);
+        }
     }
 
     pub fn observe_requested_model(&mut self, value: &str) {
@@ -93,21 +112,25 @@ impl SegmentUsage {
         self.efforts.record(value);
     }
 
-    /// Add usage once per `message_id`. A repeat of an id already counted in
-    /// this segment is ignored. Usage without an id cannot be deduplicated and
+    /// Record usage for one API turn. Claude Code streams a turn as several
+    /// records sharing `message.id`; `output_tokens` grows across them while
+    /// the other fields repeat. The turn counts once, at the field-wise
+    /// maximum of its records. Usage without an id cannot be deduplicated and
     /// is always added.
-    pub fn add_once(&mut self, message_id: Option<&str>, usage: UsageTotals) {
-        if let Some(id) = message_id
-            && !self.seen_message_ids.insert(id.to_string())
-        {
-            return;
+    pub fn record_message(&mut self, message_id: Option<&str>, usage: UsageTotals) {
+        match message_id {
+            Some(id) => self
+                .by_message_id
+                .entry(id.to_string())
+                .or_default()
+                .field_max(usage),
+            None => self.unkeyed.add(usage),
         }
-        self.totals.add(usage);
     }
 
     /// Add usage unconditionally (Codex counter deltas are already deduplicated).
     pub fn add(&mut self, usage: UsageTotals) {
-        self.totals.add(usage);
+        self.unkeyed.add(usage);
     }
 }
 
@@ -128,19 +151,32 @@ mod tests {
     }
 
     #[test]
-    fn add_once_ignores_repeated_message_id() {
+    fn record_message_takes_field_max_per_id() {
         let mut u = SegmentUsage::default();
-        let usage = UsageTotals {
+        let at = |output| UsageTotals {
             input_tokens: 10,
-            output_tokens: 5,
+            output_tokens: output,
             cache_read_tokens: 3,
             cache_creation_tokens: 2,
         };
-        u.add_once(Some("msg_1"), usage);
-        u.add_once(Some("msg_1"), usage);
-        u.add_once(None, usage);
-        u.add_once(None, usage);
-        assert_eq!(u.totals().input_tokens, 30);
-        assert_eq!(u.token_count(), 45);
+        u.record_message(Some("msg_1"), at(5));
+        u.record_message(Some("msg_1"), at(9));
+        u.record_message(Some("msg_1"), at(7));
+        u.record_message(None, at(1));
+        u.record_message(None, at(1));
+        let t = u.totals();
+        assert_eq!((t.input_tokens, t.output_tokens), (10 + 10 + 10, 9 + 1 + 1));
+        assert_eq!(u.token_count(), 30 + 11);
+    }
+
+    #[test]
+    fn synthetic_model_never_wins() {
+        let mut u = SegmentUsage::default();
+        for _ in 0..3 {
+            u.observe_model("<synthetic>");
+        }
+        assert_eq!(u.model(), None);
+        u.observe_model("claude-opus-5");
+        assert_eq!(u.model(), Some("claude-opus-5"));
     }
 }

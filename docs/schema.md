@@ -66,7 +66,7 @@ All metadata columns below sit outside `content_hash`, so a change that touches 
 | `model` (existing) | `TEXT DEFAULT ''` | Served model id. Claude Code: the most frequent `message.model` among the segment's assistant records (ties: first seen). Codex: the most frequent `turn_context.model` in effect during the segment. `''` when none was recorded. |
 | `requested_model` | `TEXT`, NULL | Claude Code: the most frequent top-level `requestedModel` of the segment's assistant records (ties: first seen). NULL when absent. Codex rollouts carry no requested-model field, so it stays NULL. |
 | `effort` | `TEXT`, NULL | Reasoning effort. Claude Code: most frequent top-level `effort` of the assistant records. Codex: most frequent `turn_context.effort`. Ties: first seen. NULL when absent. |
-| `token_count` (existing) | `INTEGER` | `input_tokens + output_tokens` for the segment. Cache reads and cache creation are excluded; they have their own columns. |
+| `token_count` (existing) | `INTEGER` | Token total for the segment; the definition depends on the writer. Claude Code via the daemon: `input_tokens + output_tokens` (cache reads and creation excluded). Codex: the same, with cached input removed from `input_tokens`. Claude Code via the Xcode Python ingester (`scripts/hippo-ingest-claude.py`, `claude_sessions.py`): legacy value (input read from user records that carry none, output summed per content block), with `model = ''` and zero usage columns until that extractor is ported. opencode: the reported `total`, or the sum of all token fields including cache. Pi: `input + output`; its cache handling is not verified. Cursor: 0. |
 | `input_tokens` | `INTEGER NOT NULL DEFAULT 0` | Uncached input tokens for the segment. |
 | `output_tokens` | `INTEGER NOT NULL DEFAULT 0` | Output tokens for the segment (Codex: includes reasoning tokens). |
 | `cache_read_tokens` | `INTEGER NOT NULL DEFAULT 0` | Prompt-cache read tokens for the segment. |
@@ -82,7 +82,7 @@ All metadata columns below sit outside `content_hash`, so a change that touches 
 
 Token accounting rules:
 
-- Claude Code writes one `assistant` record per content block. Records of one API turn share `message.id` and carry identical `message.usage`, so usage is summed once per distinct `message.id` within a segment. `user` records carry no `usage`. Before HIPO-60 the extractor read `input_tokens` from `user` records, so `token_count` held output tokens only.
+- Claude Code writes one `assistant` record per content block. Records of one API turn share `message.id`. Streamed records of a turn repeat every usage field except `output_tokens`, which grows, so the turn counts once at the field-wise maximum of its records. A turn belongs to the segment where its `message.id` first appears, even when a segment split falls between its records. `user` records carry no `usage`. Records with model `<synthetic>` do not vote for `model`. Before HIPO-60 the extractor read `input_tokens` from `user` records, so `token_count` held output tokens only.
 - Codex reports a cumulative `total_token_usage` in `token_count` events. The writer adds the growth since the previous event, so repeated events add nothing. Codex counts cached tokens inside `input_tokens`; the writer subtracts `cached_input_tokens` so the four columns do not overlap. Tokens reported before a segment opens are not attributed to any segment.
 - A missing or malformed usage field counts as 0.
 

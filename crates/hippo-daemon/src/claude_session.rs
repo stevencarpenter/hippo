@@ -713,6 +713,50 @@ fn extract_assistant_content(msg: &serde_json::Value) -> (Vec<String>, Vec<ToolC
     (texts, tools)
 }
 
+/// Record the model, requested model, and effort of one `assistant` record.
+fn observe_assistant_meta(
+    usage: &mut SegmentUsage,
+    entry: &serde_json::Value,
+    msg: &serde_json::Value,
+) {
+    if let Some(model) = msg.get("model").and_then(|v| v.as_str()) {
+        usage.observe_model(model);
+    }
+    if let Some(model) = entry.get("requestedModel").and_then(|v| v.as_str()) {
+        usage.observe_requested_model(model);
+    }
+    if let Some(effort) = entry.get("effort").and_then(|v| v.as_str()) {
+        usage.observe_effort(effort);
+    }
+}
+
+/// Parse `message.usage` of one `assistant` record into its `message.id` and
+/// token counts. `user` records carry no `usage`. A missing or non-object
+/// `usage` yields `None`; a non-numeric field counts as 0.
+fn parse_assistant_usage(
+    msg: &serde_json::Value,
+    warned: &mut bool,
+) -> Option<(Option<String>, UsageTotals)> {
+    let raw = msg.get("usage")?;
+    let Some(raw) = raw.as_object() else {
+        if !*warned {
+            *warned = true;
+            warn!("assistant message.usage is not an object; token counts left at 0");
+        }
+        return None;
+    };
+    let field = |key: &str| raw.get(key).and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+    Some((
+        msg.get("id").and_then(|v| v.as_str()).map(String::from),
+        UsageTotals {
+            input_tokens: field("input_tokens"),
+            output_tokens: field("output_tokens"),
+            cache_read_tokens: field("cache_read_input_tokens"),
+            cache_creation_tokens: field("cache_creation_input_tokens"),
+        },
+    ))
+}
+
 /// Stream a session JSONL and split it into task-boundary segments.
 ///
 /// This is the Rust port of `extract_segments` in
@@ -724,48 +768,6 @@ fn extract_assistant_content(msg: &serde_json::Value) -> (Vec<String>, Vec<ToolC
 /// `redaction` — applied to `user_prompts`, `assistant_texts`, and each
 /// tool-call summary. Matches the Python `redact_segment_secrets` step; the
 /// builtin pattern set is shared with `hippo_brain.redaction`.
-/// Record model, effort, and token usage from one `assistant` record.
-///
-/// Claude Code writes one record per content block; records of one API turn
-/// share `message.id` and carry identical `message.usage`, so usage is counted
-/// once per distinct id within the segment. `user` records carry no `usage`.
-fn record_assistant_usage(
-    usage: &mut SegmentUsage,
-    entry: &serde_json::Value,
-    msg: &serde_json::Value,
-    warned: &mut bool,
-) {
-    if let Some(model) = msg.get("model").and_then(|v| v.as_str()) {
-        usage.observe_model(model);
-    }
-    if let Some(model) = entry.get("requestedModel").and_then(|v| v.as_str()) {
-        usage.observe_requested_model(model);
-    }
-    if let Some(effort) = entry.get("effort").and_then(|v| v.as_str()) {
-        usage.observe_effort(effort);
-    }
-    let Some(raw) = msg.get("usage") else {
-        return;
-    };
-    let Some(raw) = raw.as_object() else {
-        if !*warned {
-            *warned = true;
-            warn!("assistant message.usage is not an object; token counts left at 0");
-        }
-        return;
-    };
-    let field = |key: &str| raw.get(key).and_then(|v| v.as_i64()).unwrap_or(0).max(0);
-    usage.add_once(
-        msg.get("id").and_then(|v| v.as_str()),
-        UsageTotals {
-            input_tokens: field("input_tokens"),
-            output_tokens: field("output_tokens"),
-            cache_read_tokens: field("cache_read_input_tokens"),
-            cache_creation_tokens: field("cache_creation_input_tokens"),
-        },
-    );
-}
-
 fn extract_segments(
     session_file: &SessionFile<'_>,
     redaction: &RedactionEngine,
@@ -779,6 +781,8 @@ fn extract_segments(
     let mut current_chars: usize = 0;
     let mut last_user_time_ms: i64 = 0;
     let mut warned_usage = false;
+    // `message.id` -> index in `segments` of the segment that owns the turn.
+    let mut usage_owner: HashMap<String, usize> = HashMap::new();
 
     for line_result in reader.lines() {
         let line = match line_result {
@@ -935,7 +939,26 @@ fn extract_segments(
                     summary: redaction.redact(&t.summary).text,
                 });
             }
-            record_assistant_usage(&mut seg.usage, &entry, &msg, &mut warned_usage);
+            observe_assistant_meta(&mut seg.usage, &entry, &msg);
+            // Claude streams one API turn as several records sharing
+            // `message.id`, and a segment split can fall between them. The
+            // turn belongs to the segment where its id first appeared; later
+            // records update that segment's maximum.
+            if let Some((id, tokens)) = parse_assistant_usage(&msg, &mut warned_usage) {
+                match id {
+                    Some(id) => match usage_owner.get(&id).copied() {
+                        Some(idx) if idx < segments.len() => {
+                            segments[idx].usage.record_message(Some(&id), tokens)
+                        }
+                        Some(_) => seg.usage.record_message(Some(&id), tokens),
+                        None => {
+                            usage_owner.insert(id.clone(), segments.len());
+                            seg.usage.record_message(Some(&id), tokens);
+                        }
+                    },
+                    None => seg.usage.record_message(None, tokens),
+                }
+            }
         }
     }
 
@@ -2875,7 +2898,8 @@ mod tests {
         let segments = extract_segments(&SessionFile::from_path(&path), &redaction).unwrap();
         assert_eq!(segments.len(), 1);
         let usage = &segments[0].usage;
-        // msg_a (counted once) + msg_b + msg_c; user record usage is ignored.
+        // msg_a counts once at its maximum (output 20 then 50 -> 50), plus msg_b
+        // and msg_c; the user record's usage and the synthetic record are ignored.
         assert_eq!(
             usage.totals(),
             UsageTotals {
@@ -2886,11 +2910,44 @@ mod tests {
             }
         );
         assert_eq!(usage.token_count(), 147 + 79);
-        // opus: msg_a x2 records + msg_b = 3 records; sonnet: 1 record.
+        // The sonnet record comes first, so "most frequent" and "first seen"
+        // disagree for model and effort. `<synthetic>` never votes.
         assert_eq!(usage.model(), Some("claude-opus-5"));
-        // requestedModel: opus-5 x2, sonnet-5 x2 (tie), first seen wins.
-        assert_eq!(usage.requested_model(), Some("claude-opus-5"));
+        // requestedModel ties 2 to 2 (sonnet first, opus second): first seen wins.
+        assert_eq!(usage.requested_model(), Some("claude-sonnet-5"));
         assert_eq!(usage.effort(), Some("high"));
+    }
+
+    /// One `message.id` split across a segment boundary counts once, in the
+    /// segment where the id first appeared, at its maximum.
+    #[test]
+    fn usage_for_an_id_spanning_a_segment_split_counts_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("-proj").join("split-session.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let asst = |t: &str, id: &str, out: i64, text: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"{t}","cwd":"/p","message":{{"id":"{id}","model":"claude-opus-5","role":"assistant","content":[{{"type":"text","text":"{text}"}}],"usage":{{"input_tokens":10,"output_tokens":{out},"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+            )
+        };
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-10-01T10:00:00.000Z","cwd":"/p","message":{"role":"user","content":"first task"}}"#.to_string(),
+            asst("2026-10-01T10:00:01.000Z", "msg_x", 5, "part one of the long reply"),
+            // A tool_result user record after a gap above 5 minutes splits here.
+            r#"{"type":"user","timestamp":"2026-10-01T10:06:00.000Z","cwd":"/p","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#.to_string(),
+            asst("2026-10-01T10:06:01.000Z", "msg_x", 9, "part two of the long reply"),
+            asst("2026-10-01T10:06:02.000Z", "msg_y", 4, "the next turn of the reply"),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let segs =
+            extract_segments(&SessionFile::from_path(&path), &RedactionEngine::builtin()).unwrap();
+
+        assert_eq!(segs.len(), 2, "the tool_result record must split");
+        // msg_x belongs to segment 0 at its max (9); msg_y belongs to segment 1.
+        assert_eq!(segs[0].usage.totals().output_tokens, 9);
+        assert_eq!(segs[0].usage.totals().input_tokens, 10);
+        assert_eq!(segs[1].usage.totals().output_tokens, 4);
+        assert_eq!(segs[1].usage.totals().input_tokens, 10);
     }
 
     #[test]

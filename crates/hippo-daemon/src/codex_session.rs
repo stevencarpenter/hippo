@@ -1215,34 +1215,61 @@ mod tests {
     fn codex_usage_uses_counter_growth_and_turn_context() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("rollout-usage.jsonl");
+        let tc = |ts: &str, input: i64, cached: i64, output: i64| {
+            format!(
+                r#"{{"timestamp":"{ts}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{input},"cached_input_tokens":{cached},"cache_write_input_tokens":0,"output_tokens":{output},"reasoning_output_tokens":0,"total_tokens":{}}}}}}}}}"#,
+                input + output
+            )
+        };
         let lines = [
-            r#"{"timestamp":"2026-04-04T00:00:00.000Z","type":"session_meta","payload":{"id":"usage","cwd":"/proj"}}"#,
-            r#"{"timestamp":"2026-04-04T00:00:00.500Z","type":"turn_context","payload":{"cwd":"/proj","model":"gpt-synth-1","effort":"high"}}"#,
-            r#"{"timestamp":"2026-04-04T00:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"first request"}}"#,
-            r#"{"timestamp":"2026-04-04T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":60,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}}}}"#,
+            r#"{"timestamp":"2026-04-04T00:00:00.000Z","type":"session_meta","payload":{"id":"usage","cwd":"/proj"}}"#.to_string(),
+            r#"{"timestamp":"2026-04-04T00:00:00.500Z","type":"turn_context","payload":{"cwd":"/proj","model":"gpt-synth-1","effort":"high"}}"#.to_string(),
+            // Before any segment opens: moves the baseline, belongs to no segment.
+            tc("2026-04-04T00:00:00.800Z", 20, 0, 2),
+            r#"{"timestamp":"2026-04-04T00:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"first request"}}"#.to_string(),
+            tc("2026-04-04T00:00:02.000Z", 100, 60, 10),
             // Repeated event: no growth, must add nothing.
-            r#"{"timestamp":"2026-04-04T00:00:02.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":60,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}}}}"#,
-            r#"{"timestamp":"2026-04-04T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":250,"cached_input_tokens":180,"cache_write_input_tokens":0,"output_tokens":30,"reasoning_output_tokens":9,"total_tokens":280}}}}"#,
+            tc("2026-04-04T00:00:02.500Z", 100, 60, 10),
+            tc("2026-04-04T00:00:03.000Z", 250, 180, 30),
             // info null: ignored.
-            r#"{"timestamp":"2026-04-04T00:00:03.500Z","type":"event_msg","payload":{"type":"token_count","info":null}}"#,
+            r#"{"timestamp":"2026-04-04T00:00:03.500Z","type":"event_msg","payload":{"type":"token_count","info":null}}"#.to_string(),
+            // More than 5 minutes later: second segment.
+            r#"{"timestamp":"2026-04-04T00:10:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"second request"}}"#.to_string(),
+            tc("2026-04-04T00:10:02.000Z", 400, 300, 50),
         ];
         std::fs::write(&path, lines.join("\n")).unwrap();
         let segs = extract_segments(&path, &RedactionEngine::builtin()).unwrap();
-        assert_eq!(segs.len(), 1);
-        let u = &segs[0].usage;
+        assert_eq!(segs.len(), 2);
+        // Segment 0: growth from the pre-prompt baseline (20 in, 0 cached, 2 out)
+        // to the last event (250 in, 180 cached, 30 out).
         assert_eq!(
-            u.totals(),
+            segs[0].usage.totals(),
             UsageTotals {
-                input_tokens: 70,
-                output_tokens: 30,
+                input_tokens: 50,
+                output_tokens: 28,
                 cache_read_tokens: 180,
                 cache_creation_tokens: 0,
             }
         );
-        assert_eq!(u.token_count(), 100);
-        assert_eq!(u.model(), Some("gpt-synth-1"));
-        assert_eq!(u.effort(), Some("high"));
-        assert_eq!(u.requested_model(), None);
+        assert_eq!(segs[0].usage.token_count(), 78);
+        // Segment 1: only the growth after segment 0's last event.
+        assert_eq!(
+            segs[1].usage.totals(),
+            UsageTotals {
+                input_tokens: 30,
+                output_tokens: 20,
+                cache_read_tokens: 120,
+                cache_creation_tokens: 0,
+            }
+        );
+        // Segments plus the 20 in / 2 out baseline equal the final counter
+        // (400 in - 300 cached = 100 uncached, 50 out, 300 cached).
+        assert_eq!(50 + 30 + 20, 100);
+        assert_eq!(28 + 20 + 2, 50);
+        assert_eq!(segs[0].usage.model(), Some("gpt-synth-1"));
+        assert_eq!(segs[0].usage.effort(), Some("high"));
+        assert_eq!(segs[1].usage.model(), Some("gpt-synth-1"));
+        assert_eq!(segs[0].usage.requested_model(), None);
 
         let conn = hippo_core::storage::open_db(&tmp.path().join("hippo.db")).unwrap();
         upsert_segment(&conn, &segs[0]).unwrap();
@@ -1256,7 +1283,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             row,
-            ("gpt-synth-1".into(), Some("high".into()), 70, 180, 100)
+            ("gpt-synth-1".into(), Some("high".into()), 50, 180, 78)
         );
     }
 
