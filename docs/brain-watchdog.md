@@ -110,6 +110,20 @@ Git runs outside any transaction, with `--no-optional-locks` so it never takes t
 
 Skip reasons are logged once per finding: the current set lives in `<data_dir>/eval-linkage-notes.json` (`{finding_id: reason}`), and a reason is logged only when it is new or changed. A skipped finding is re-evaluated every pass.
 
+Every reason the job records:
+
+| Reason | When |
+|---|---|
+| `repository missing` | `repo` or `repo/.git` does not exist. |
+| `file deleted at HEAD` | `HEAD:path` does not exist. |
+| `HEAD shares no history with head_sha` | `git merge-base <head_sha> HEAD` exits 1. |
+| `git merge-base failed (exit N)` | `git merge-base` exits with any other nonzero status N. |
+| `head_sha not in repository and no commit before the review` | The `head_sha` object is missing and `HEAD` has no commit at or before `started_at`. |
+| `reviewed branch still exists; not merged` | The line never reached the walked history, `HEAD` does not contain `head_sha`, and a ref under `refs/heads` or `refs/remotes` still contains it. |
+| `line absent at walk start and no later commit touches the path` | The line never reached the walked history and no walked commit touches `path`. |
+| `no walked commit removed the line` | The line was seen in the walk but no walked commit lacks it; `HEAD` lacks it, so this is not expected in practice. |
+| `git failed: <ExceptionType>` | A git call raised `OSError` or `subprocess.SubprocessError` (for example a timeout). |
+
 Limits: matching is raw line to raw line, so a comment-only edit counts as a change. A flagged line that has a byte-identical twin elsewhere in the file stays open until every copy is gone. A file rename reads as a deletion. An inferred commit (step 5) is wrong when a review was discarded and an unrelated commit later touched the file, or when a mainline commit touched the file between the fork point and a squash merge; the `inferred:` note marks every such verdict so scorecards can separate them from observed ones. The marker lives in `note`, so payload GC clears it at `payload_expiry` (90 days, unless the finding is pinned); after that an inferred verdict reads like an observed one. The branch-gone guard reads refs only: after a squash merge, a stale remote-tracking ref such as `origin/feat` keeps the finding open until `git fetch --prune` removes it, and a separate clone that never fetched the branch lacks the `head_sha` object, which the rule treats as a gone branch, so a mainline commit touching the file there can be inferred (the `inferred:` note marks it). A removed worktree or clone reads as `repository missing`; the job does not fall back to another checkout with the same `repo_identity`.
 
 `[eval_linkage] gh_pr_lookup = true` in `config.toml` enables the opt-in PR lookup (default `false`). For each new verdict whose commit the local PR chain (a `workflow_runs` row for the commit, then a session on that branch in the same repository with `pr_links_json`) does not attribute, the job runs `gh api repos/<repo_identity>/commits/<sha>/pulls` and stores `PR <url>, ...` in the verdict `note` (after the `inferred:` marker and `; ` when both apply) (redacted, swept at `payload_expiry` like any note). This sends the slug and the SHA to GitHub. With the flag off, the job makes no network call.
