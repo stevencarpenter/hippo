@@ -106,6 +106,7 @@ def test_main_serve_dispatches(monkeypatch, tmp_path):
         embed_orphan_stale_secs=900,
         classification_enabled=False,
         classification_recipe_path=None,
+        eval_linkage_gh_pr_lookup=False,
     )
     mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9175)
     assert data_dir.stat().st_mode & 0o777 == 0o700
@@ -140,6 +141,7 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
         "embed_reaper_batch_size": 25,
         "embed_orphan_stale_secs": 600,
         "classification": {"enabled": True, "recipe_path": "/tmp/topics.json"},
+        "eval_linkage": {"gh_pr_lookup": True},
     }
 
     with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
@@ -166,6 +168,7 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
         embed_orphan_stale_secs=600,
         classification_enabled=True,
         classification_recipe_path="/tmp/topics.json",
+        eval_linkage_gh_pr_lookup=True,
     )
     mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9444)
     secure_data_dir.assert_called_once_with("/tmp")

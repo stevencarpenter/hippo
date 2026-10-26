@@ -467,6 +467,52 @@ rows. Its `verdict_id` is deterministic:
 It checks for the id before the insert, as the ingest does, so a rerun
 inserts nothing new.
 
+**Linkage as implemented (HIPO-66).** `brain/src/hippo_brain/eval_linkage.py`
+runs hourly in the brain and once through
+`python -m hippo_brain.eval_linkage --once`. Three readings of this section
+are fixed there. First, "open" means a finding with no verdict row at all, so
+the job never adds a verdict after a human one. Second, the job links only
+side `+` findings: a side `-` line is not in the reviewed tree. Third, the
+flagged line counts as changed only when no line of `HEAD:path` carries its
+`line_hash`; the commit recorded is the first one, in
+`git rev-list --reverse --topo-order --ancestry-path <start>..HEAD -- path`
+order, whose file lacks the hash. The start is `git merge-base head_sha HEAD`,
+which is `head_sha` itself unless the reviewed branch was squash-merged; when
+`head_sha` was pruned, the start is HEAD's last commit at or before the
+second of `started_at`, and the walk is the same `--ancestry-path` walk from
+that start. `git log -L` is not used because
+the finding's line number refers to the reviewed working tree, not to
+`HEAD`. The walk excludes the start commit, so a commit in the review's
+start second counts once, as the start. A line
+that never appears in the walked history (fixed before its
+first commit, or fixed on a branch before a squash merge, which is the
+default hippo flow) is gone at `HEAD`, so `likely-addressed` holds. The job
+attributes it to the first walked commit that touches `path` with a committer
+time at or after the review's `started_at` (an earlier mainline edit is not
+evidence of the fix), and sets the
+verdict `note` to the fixed marker
+`inferred: line absent at walk start; first commit touching the path`, so
+scorecards and humans can separate inferred commits from observed ones. An
+observed fix (the line present at the start, then absent in a commit whose
+parent holds it or that recreates the deleted file; from the merge-base, only
+after the review start) keeps a NULL
+note. When no walked commit touches `path`, or only commits from before the
+review start do, the finding stays open. When
+`HEAD` does not contain `head_sha`, inference also requires the reviewed
+branch to be gone: no ref under `refs/heads` or `refs/remotes` contains
+`head_sha`. Otherwise the finding stays open with reason
+`reviewed branch still exists; not merged`, because the line may still be
+unmerged work, and an automatic verdict cannot be withdrawn. Every inference
+also requires that no ref tip under `refs/heads` or `refs/remotes` still holds
+the line (`git cat-file blob <ref>:<path>`, hashed as above); otherwise the
+finding stays open with reason `flagged line still present on <refname>`. This
+covers a review of uncommitted changes whose `head_sha` is on main and whose
+line was later committed only on an unmerged branch. A resolved PR
+from the opt-in `gh` lookup is stored in the automatic verdict's `note` as
+`PR <url>, ...`, after the `inferred:` marker and `; ` when both apply. It is redacted and expires with the note, and the job asks
+only when the chain in steps 1 and 2 finds nothing. Operation and limits:
+`docs/brain-watchdog.md`.
+
 ## 4. Ingest contract: `hippo ingest agent-eval <file.jsonl>`
 
 ### 4.1 Command
@@ -633,7 +679,11 @@ the tool, which may be a cloud model. The HIPO-67 scorecard tool therefore
 returns aggregates and record ids by default. It does not return `claim`,
 `line_text`, or `note`. The CLI report (`hippo agents report`) runs locally
 and can show the text. The optional `gh` PR lookup (section 3.7) is the
-other outbound flow, and it is off by default.
+other outbound flow, and it is off by default. When
+`[eval_linkage] gh_pr_lookup = true`, it sends `repo_identity` and one
+commit SHA per new automatic verdict to GitHub (`gh api
+repos/<slug>/commits/<sha>/pulls`). It sends no eval text. The PR URLs it
+returns are stored in that verdict's `note`.
 
 ### 5.3 Enforcement in code
 

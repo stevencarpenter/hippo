@@ -1469,6 +1469,10 @@ run = "uv run --project brain hippo-decision-bench replay ${@}"
 description = "Inspect classification, resume bounded backfill, inspect topic connections, or export Parquet"
 run = "uv run --project brain python -m hippo_brain.classification_cli ${@}"
 
+[tasks.eval-linkage]
+description = "Run one agent-eval commit linkage pass (the brain also runs it hourly)"
+run = "uv run --project brain python -m hippo_brain.eval_linkage --once ${@}"
+
 [tasks."test:decisions"]
 description = "Test decision sidecar isolation, contracts, rules and metrics offline"
 run = "uv run --project brain pytest brain/tests/test_decision_sidecar.py brain/tests/test_rerank.py brain/tests/test_knowledge_probe.py brain/tests/test_knowledge_tags.py -q"

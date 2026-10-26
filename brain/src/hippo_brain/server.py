@@ -366,6 +366,7 @@ class BrainServer:
         embed_orphan_stale_secs: int = 900,
         classification_enabled: bool = False,
         classification_recipe_path: str | None = None,
+        eval_linkage_gh_pr_lookup: bool = False,
     ):
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
@@ -391,6 +392,8 @@ class BrainServer:
         self.embed_reaper_interval_secs = embed_reaper_interval_secs
         self.embed_reaper_batch_size = embed_reaper_batch_size
         self.embed_orphan_stale_secs = embed_orphan_stale_secs
+        self.eval_linkage_gh_pr_lookup = eval_linkage_gh_pr_lookup is True
+        self._eval_linkage_task = None
         self.classification_enabled = classification_enabled is True
         self._classification_task = None
         self._classification_active = False
@@ -2211,6 +2214,24 @@ class BrainServer:
             except Exception as e:
                 logger.warning("embed reaper loop error: %s", e, exc_info=True)
 
+    async def _eval_linkage_loop(self):
+        """Hourly: record likely-addressed verdicts for findings a later commit changed."""
+        from hippo_brain import eval_linkage
+
+        while True:
+            await asyncio.sleep(eval_linkage.INTERVAL_SECS)
+            if self._paused:
+                continue  # bench pause is a full quiesce
+            try:
+                await asyncio.to_thread(
+                    eval_linkage.run_once,
+                    Path(self.db_path),
+                    Path(self.data_dir) / eval_linkage.NOTES_FILE,
+                    gh_pr_lookup=self.eval_linkage_gh_pr_lookup,
+                )
+            except Exception as e:
+                logger.warning("eval linkage loop error: %s", e, exc_info=True)
+
     async def _classification_loop(self):
         """Yield new classification claims to queries and operator pause."""
         self.classification_status["running"] = True
@@ -2235,6 +2256,7 @@ class BrainServer:
         self._enrichment_task = asyncio.create_task(self._enrichment_loop())
         self._reaper_task = asyncio.create_task(self._reaper_loop())
         self._embed_reaper_task = asyncio.create_task(self._embed_reaper_loop())
+        self._eval_linkage_task = asyncio.create_task(self._eval_linkage_loop())
         if self.classification_enabled and self.jev_client is not None:
             from hippo_brain.classification import ClassificationWorker, schema_ready
 
@@ -2262,6 +2284,7 @@ class BrainServer:
                 self._enrichment_task,
                 self._reaper_task,
                 self._embed_reaper_task,
+                self._eval_linkage_task,
                 self._classification_task,
             )
             if t is not None
@@ -2274,6 +2297,7 @@ class BrainServer:
             self._enrichment_task = None
             self._reaper_task = None
             self._embed_reaper_task = None
+            self._eval_linkage_task = None
             self._classification_task = None
             client, self.jev_client = self.jev_client, None
             if client is not None:
@@ -2327,6 +2351,7 @@ def create_app(
     embed_orphan_stale_secs: int = 900,
     classification_enabled: bool = False,
     classification_recipe_path: str | None = None,
+    eval_linkage_gh_pr_lookup: bool = False,
 ) -> Starlette:
     server = BrainServer(
         db_path=db_path,
@@ -2347,6 +2372,7 @@ def create_app(
         embed_orphan_stale_secs=embed_orphan_stale_secs,
         classification_enabled=classification_enabled,
         classification_recipe_path=classification_recipe_path,
+        eval_linkage_gh_pr_lookup=eval_linkage_gh_pr_lookup,
     )
 
     if _meter:

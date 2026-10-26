@@ -366,3 +366,11 @@ interval_secs = 300       # brain reaper loop cadence
 batch_size = 50           # orphans re-embedded per tick
 orphan_stale_secs = 900   # min node age before it counts as an orphan
 alarm_threshold = 25      # orphan count above which I-14 alarms
+
+[eval_linkage]
+# Hourly brain job that records automatic `likely-addressed` verdicts for review
+# findings whose flagged line a later commit changed (docs/brain-watchdog.md).
+# When true and the local PR chain finds nothing, the job asks GitHub through
+# `gh api` which PRs contain the commit. That sends the repository slug and the
+# commit SHA to GitHub, so it is off by default.
+gh_pr_lookup = false
