@@ -417,6 +417,9 @@ fn prepare_line(
             if session_id.is_some() && harness.is_none() {
                 return Err("missing_field:harness".into());
             }
+            // Producers send "" for an unknown `model_id` or `cli_version`.
+            // Absent, `null`, and "" all store the '' column default, so a
+            // rerun compares them as equal.
             Prepared {
                 table: "eval_review_runs",
                 parent: None,

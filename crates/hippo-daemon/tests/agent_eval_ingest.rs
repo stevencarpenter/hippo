@@ -279,3 +279,37 @@ fn findings_in_a_later_batch_find_their_run_from_an_earlier_one() {
     let summary = run(&mut conn, &records);
     assert_eq!((summary.written, summary.skipped), (0, 151));
 }
+
+#[test]
+fn empty_model_id_and_cli_version_equal_the_column_default() {
+    // Producers emit "" when the value is unknown; an omitted or null field
+    // takes the '' default. All three forms must skip, never id_conflict.
+    for (first, second) in [
+        (json!(""), Value::Null),
+        (Value::Null, json!("")),
+        (json!(""), json!("")),
+    ] {
+        let (_dir, mut conn) = db();
+        let set = |record: Value, key: &str, value: &Value| match value {
+            Value::Null => without(record, key),
+            v => with(record, key, v.clone()),
+        };
+        let run_with = |v: &Value| set(set(review_run("r1"), "model_id", v), "cli_version", v);
+        let bench_with = |v: &Value| set(bench_run("b1"), "cli_version", v);
+        assert_eq!(
+            run(&mut conn, &[run_with(&first), bench_with(&first)]).written,
+            2
+        );
+        let summary = run(&mut conn, &[run_with(&second), bench_with(&second)]);
+        assert_eq!((summary.written, summary.skipped), (0, 2), "{summary:?}");
+        assert!(summary.rejections.is_empty(), "{summary:?}");
+        let stored: (String, String) = conn
+            .query_row(
+                "SELECT model_id, cli_version FROM eval_review_runs",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, (String::new(), String::new()));
+    }
+}
