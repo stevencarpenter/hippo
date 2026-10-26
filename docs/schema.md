@@ -88,19 +88,25 @@ Token accounting rules:
 
 The hook columns exist from v28 but hold their defaults until their writer lands.
 
-`agentic_session_facts` holds one row per `(session_id, harness)` for totals a harness reports for the whole session:
+`agentic_session_facts` holds one row per `(session_id, harness)` for totals a harness reports for the whole session. Only Claude Code writes it today (`claude_session.rs::upsert_session_facts`), once per ingest of a transcript file, in the same transaction as the segments. Facts never enter `content_hash`, so a facts-only change never re-enqueues enrichment. The key is the `session_id` of the file (its name stem), not the `sessionId` inside the records.
 
 | Column | Type | Meaning |
 |---|---|---|
-| `session_id`, `harness` | `TEXT NOT NULL`, primary key | Same keys as `agentic_sessions`. |
-| `cost_usd` | `REAL` | Reported session cost in USD. |
-| `duration_ms` | `INTEGER` | Session wall-clock duration. |
-| `tool_duration_ms` | `INTEGER` | Time spent in tools. |
-| `lines_added`, `lines_removed` | `INTEGER` | Reported line changes. |
-| `title` | `TEXT` | Session title. |
-| `cli_version` | `TEXT` | Harness CLI version. |
-| `pr_links_json` | `TEXT NOT NULL DEFAULT '[]'` | JSON array of linked pull requests. |
-| `updated_at` | `INTEGER NOT NULL` | Last write, epoch ms. |
+| `session_id`, `harness` | `TEXT NOT NULL`, primary key | Same keys as `agentic_sessions`; `harness = 'claude-code'`. |
+| `cost_usd` | `REAL` | `totalCostUSD` of the last `cost-state` record in the file. |
+| `duration_ms` | `INTEGER` | `totalDuration` of the last `cost-state` record (ms). |
+| `tool_duration_ms` | `INTEGER` | `totalToolDuration` of the last `cost-state` record (ms). |
+| `lines_added`, `lines_removed` | `INTEGER` | `totalLinesAdded` and `totalLinesRemoved` of the last `cost-state` record. |
+| `title` | `TEXT` | Last `aiTitle` of the file, redacted. NULL when the file has none. |
+| `cli_version` | `TEXT` | Top-level `version` of the last `assistant` record. |
+| `pr_links_json` | `TEXT NOT NULL DEFAULT '[]'` | JSON array of `{"number", "repo", "url"}` from `prNumber`, `prRepository`, and `prUrl` (redacted), one entry per distinct `pr-link` record, in file order. |
+| `updated_at` | `INTEGER NOT NULL` | Time of the last ingest that wrote the row, epoch ms. |
+
+A missing or mistyped field is stored as NULL and logs one `warn` per file. `cost-state`, `pr-link`, and `ai-title` records never start or split a segment and do not count toward `message_count`.
+
+Resumed sessions: when a later file continues a `session_id`, the upsert is per column. A column the later file carries replaces the stored value. A NULL column (no `cost-state`, no `aiTitle`, no assistant `version`) or an empty `pr-link` list keeps the stored value, so a resume never erases a known cost. `pr_links_json` is replaced as a whole by the later file's list, not merged.
+
+`agentic_sessions.title` holds the same redacted last `aiTitle` on every segment of the file. `''` when the file has none; a reparse never replaces a stored title with `''`.
 
 `hippo ingest claude-session-backfill <glob>` first repairs subagent identity in the database: claude-code rows whose stored `source_file` is under `subagents/` but carry `is_subagent = 0` (workflow subagents written before v28) get `is_subagent`, `parent_session_id`, and `project_dir` recomputed from that path, even when the transcript is gone, and the count prints as `Subagent rows repaired`. It then re-reads `meta.json` for transcripts still on disk and prints `Subagent agent coverage: <filled> / <rows>`, counting the processed files' `is_subagent = 1` rows by `(session_id, harness)`.
 
@@ -184,7 +190,7 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 | `events` | Shell commands and Claude tool-use events. `source_kind` distinguishes; `probe_tag` marks synthetic. | `storage.rs::insert_event_at` |
 | `sessions` | One row per zsh session (start time, hostname, shell, user). | Daemon at session start |
 | `agentic_sessions` | Live session store. Supported harnesses and uniqueness constraints are defined in `schema.sql`. Holds segment-derived summary, tool calls / user prompts JSON, message count, content hashes. | Daemon session ingesters; brain enrichment writers |
-| `agentic_session_facts` | One row per `(session_id, harness)`: session-level cost, duration, line counts, title, CLI version, PR links (v28). | Not written yet as of v28 |
+| `agentic_session_facts` | One row per `(session_id, harness)`: session-level cost, duration, line counts, title, CLI version, PR links (v28). | `claude_session.rs::upsert_session_facts` (Claude Code only) |
 | `agentic_session_offsets` | Per-file FS-watcher resume state (byte_offset, inode, device). | `watch_claude_sessions.rs::process_file` |
 | `browser_events` | Firefox-extension visits with Readability-extracted main text, dwell, scroll depth. | `storage.rs::insert_browser_event` |
 | `workflow_runs` / `_jobs` / `_annotations` / `_log_excerpts` | GitHub Actions ingest. | `gh_poll.rs::run_once` |

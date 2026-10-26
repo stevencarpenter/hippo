@@ -450,6 +450,110 @@ fn read_subagent_meta(path: &Path) -> SubagentMeta {
     meta
 }
 
+/// One `pr-link` record. `url` is redacted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct PrLink {
+    number: Option<i64>,
+    repo: Option<String>,
+    url: Option<String>,
+}
+
+/// Session-level facts from `cost-state`, `pr-link`, `ai-title`, and the last
+/// assistant `version`. Metadata only: never part of `content_hash`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct SessionFacts {
+    cost_usd: Option<f64>,
+    duration_ms: Option<i64>,
+    tool_duration_ms: Option<i64>,
+    lines_added: Option<i64>,
+    lines_removed: Option<i64>,
+    /// Redacted last `aiTitle`.
+    title: Option<String>,
+    cli_version: Option<String>,
+    /// Distinct `pr-link` records in file order.
+    pr_links: Vec<PrLink>,
+}
+
+/// A JSON number as whole milliseconds or a count. Floats round to the nearest
+/// integer; non-finite or out-of-range values yield `None`.
+fn json_whole(v: &serde_json::Value) -> Option<i64> {
+    v.as_i64().or_else(|| {
+        v.as_f64()
+            .filter(|f| f.is_finite() && f.abs() < 9.0e15)
+            .map(|f| f.round() as i64)
+    })
+}
+
+/// Fold one `cost-state`, `pr-link`, or `ai-title` record into `facts`.
+/// A missing or mistyped field stays `None` and logs one `warn` per file.
+fn observe_fact_record(
+    facts: &mut SessionFacts,
+    entry_type: &str,
+    entry: &serde_json::Value,
+    redaction: &RedactionEngine,
+    warned: &mut bool,
+) {
+    let mut bad = |what: &str| {
+        if !*warned {
+            *warned = true;
+            warn!("{entry_type} record has a missing or unexpected {what}; stored as NULL");
+        }
+    };
+    match entry_type {
+        "cost-state" => {
+            let mut whole = |key: &str| {
+                let v = entry.get(key).and_then(json_whole);
+                if v.is_none() {
+                    bad(key);
+                }
+                v
+            };
+            let (duration, tool, added, removed) = (
+                whole("totalDuration"),
+                whole("totalToolDuration"),
+                whole("totalLinesAdded"),
+                whole("totalLinesRemoved"),
+            );
+            facts.duration_ms = duration;
+            facts.tool_duration_ms = tool;
+            facts.lines_added = added;
+            facts.lines_removed = removed;
+            facts.cost_usd = entry
+                .get("totalCostUSD")
+                .and_then(|v| v.as_f64())
+                .filter(|f| f.is_finite());
+            if facts.cost_usd.is_none() {
+                bad("totalCostUSD");
+            }
+        }
+        "ai-title" => match entry.get("aiTitle").and_then(|v| v.as_str()) {
+            Some(t) if !t.trim().is_empty() => {
+                facts.title = Some(redaction.redact(t.trim()).text);
+            }
+            _ => bad("aiTitle"),
+        },
+        "pr-link" => {
+            let link = PrLink {
+                number: entry.get("prNumber").and_then(json_whole),
+                repo: entry
+                    .get("prRepository")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                url: entry
+                    .get("prUrl")
+                    .and_then(|v| v.as_str())
+                    .map(|u| redaction.redact(u).text),
+            };
+            if link.number.is_none() && link.url.is_none() {
+                bad("prNumber and prUrl");
+            } else if !facts.pr_links.contains(&link) {
+                facts.pr_links.push(link);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct ToolCallSummary {
     pub(crate) name: String,
@@ -772,6 +876,17 @@ fn extract_segments(
     session_file: &SessionFile<'_>,
     redaction: &RedactionEngine,
 ) -> Result<Vec<SessionSegment>> {
+    extract_segments_and_facts(session_file, redaction).map(|(segments, _)| segments)
+}
+
+/// `extract_segments` plus the session-level facts of the same pass.
+///
+/// `cost-state`, `pr-link`, and `ai-title` records feed the facts only. They
+/// never start a segment, split one, or count toward `message_count`.
+fn extract_segments_and_facts(
+    session_file: &SessionFile<'_>,
+    redaction: &RedactionEngine,
+) -> Result<(Vec<SessionSegment>, SessionFacts)> {
     let file = std::fs::File::open(session_file.path)
         .with_context(|| format!("failed to open {}", session_file.path.display()))?;
     let reader = std::io::BufReader::new(file);
@@ -781,6 +896,8 @@ fn extract_segments(
     let mut current_chars: usize = 0;
     let mut last_user_time_ms: i64 = 0;
     let mut warned_usage = false;
+    let mut warned_facts = false;
+    let mut facts = SessionFacts::default();
     // `message.id` -> index in `segments` of the segment that owns the turn.
     let mut usage_owner: HashMap<String, usize> = HashMap::new();
 
@@ -806,6 +923,11 @@ fn extract_segments(
             entry_type,
             "file-history-snapshot" | "progress" | "queue-operation" | "last-prompt"
         ) {
+            continue;
+        }
+
+        if matches!(entry_type, "cost-state" | "pr-link" | "ai-title") {
+            observe_fact_record(&mut facts, entry_type, &entry, redaction, &mut warned_facts);
             continue;
         }
 
@@ -940,6 +1062,9 @@ fn extract_segments(
                 });
             }
             observe_assistant_meta(&mut seg.usage, &entry, &msg);
+            if let Some(v) = entry.get("version").and_then(|v| v.as_str()) {
+                facts.cli_version = Some(v.to_string());
+            }
             // Claude streams one API turn as several records sharing
             // `message.id`, and a segment split can fall between them. The
             // turn belongs to the segment where its id first appeared; later
@@ -971,7 +1096,7 @@ fn extract_segments(
         segments.push(last);
     }
 
-    Ok(collapse_adjacent_identical_segments(segments))
+    Ok((collapse_adjacent_identical_segments(segments), facts))
 }
 
 /// Verify that the current semantic contents of a Claude transcript are
@@ -1147,9 +1272,21 @@ fn decide_enqueue(
 /// The upsert uses `ON CONFLICT (session_id, harness, segment_index) DO UPDATE` so
 /// every watcher reparse keeps the DB in sync with the latest file content.
 /// `last_enriched_content_hash` is NOT touched here — only the brain sets it.
+#[cfg(test)]
 fn insert_segments(
     conn: &Connection,
     segments: &[SessionSegment],
+) -> rusqlite::Result<(usize, usize)> {
+    insert_segments_with_facts(conn, segments, None)
+}
+
+/// `insert_segments` plus the session facts row, written in the same
+/// transaction. `facts` also supplies `agentic_sessions.title` for every
+/// segment. A segment's title is never overwritten with an empty one.
+fn insert_segments_with_facts(
+    conn: &Connection,
+    segments: &[SessionSegment],
+    facts: Option<&SessionFacts>,
 ) -> rusqlite::Result<(usize, usize)> {
     let mut inserted = 0usize;
     let mut skipped = 0usize;
@@ -1228,7 +1365,7 @@ fn insert_segments(
                  output_tokens, cache_read_tokens, cache_creation_tokens, spawn_depth,
                  parent_tool_use_id, subagent_finished, hook_runs, hook_errors,
                  prevented_continuations, hook_names_json, permission_decisions_json)
-             VALUES (?1, 'claude-code', ?2, ?22, ?18, ?3, ?4, ?5, '', '', ?6, ?7, ?8,
+             VALUES (?1, 'claude-code', ?2, ?22, ?18, ?3, ?4, ?5, '', ?29, ?6, ?7, ?8,
                      ?9, ?10, ?11, 'null', '[]', ?12, ?13, ?14, ?15, ?16, ?17,
                      ?23, ?24, ?25, ?26, ?27, ?28, ?19, ?20, ?21, 0, 0, 0, '[]', '{}')
              ON CONFLICT (session_id, harness, segment_index) DO UPDATE SET
@@ -1255,6 +1392,8 @@ fn insert_segments(
                  prevented_continuations   = excluded.prevented_continuations,
                  hook_names_json           = excluded.hook_names_json,
                  permission_decisions_json = excluded.permission_decisions_json,
+                 title                     = CASE WHEN excluded.title <> ''
+                                             THEN excluded.title ELSE agentic_sessions.title END,
                  is_subagent               = excluded.is_subagent,
                  parent_session_id         = excluded.parent_session_id,
                  project_dir               = excluded.project_dir",
@@ -1287,6 +1426,7 @@ fn insert_segments(
                 seg.usage.totals().output_tokens,
                 seg.usage.totals().cache_read_tokens,
                 seg.usage.totals().cache_creation_tokens,
+                facts.and_then(|f| f.title.as_deref()).unwrap_or(""),
             ],
         )?;
 
@@ -1385,14 +1525,69 @@ fn insert_segments(
         }
     }
 
+    if let Some(facts) = facts
+        && let Some(first) = segments.first()
+    {
+        upsert_session_facts(&tx, &first.session_id, facts, now_ms)?;
+    }
+
     tx.commit()?;
     Ok((inserted, skipped))
 }
 
+/// Upsert the `(session_id, 'claude-code')` facts row. A resumed session's
+/// later file wins on the fields it carries: a NULL field (no `cost-state`,
+/// no `ai-title`, no assistant `version`) or an empty `pr-link` list keeps the
+/// stored value instead of erasing it.
+fn upsert_session_facts(
+    conn: &Connection,
+    session_id: &str,
+    facts: &SessionFacts,
+    now_ms: i64,
+) -> rusqlite::Result<()> {
+    let pr_links_json = serde_json::to_string(&facts.pr_links).unwrap_or_else(|_| "[]".into());
+    conn.execute(
+        "INSERT INTO agentic_session_facts
+            (session_id, harness, cost_usd, duration_ms, tool_duration_ms, lines_added,
+             lines_removed, title, cli_version, pr_links_json, updated_at)
+         VALUES (?1, 'claude-code', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT (session_id, harness) DO UPDATE SET
+             cost_usd         = COALESCE(excluded.cost_usd, cost_usd),
+             duration_ms      = COALESCE(excluded.duration_ms, duration_ms),
+             tool_duration_ms = COALESCE(excluded.tool_duration_ms, tool_duration_ms),
+             lines_added      = COALESCE(excluded.lines_added, lines_added),
+             lines_removed    = COALESCE(excluded.lines_removed, lines_removed),
+             title            = COALESCE(excluded.title, title),
+             cli_version      = COALESCE(excluded.cli_version, cli_version),
+             pr_links_json    = CASE WHEN excluded.pr_links_json <> '[]'
+                                THEN excluded.pr_links_json ELSE pr_links_json END,
+             updated_at       = excluded.updated_at",
+        params![
+            session_id,
+            facts.cost_usd,
+            facts.duration_ms,
+            facts.tool_duration_ms,
+            facts.lines_added,
+            facts.lines_removed,
+            facts.title,
+            facts.cli_version,
+            pr_links_json,
+            now_ms,
+        ],
+    )?;
+    Ok(())
+}
+
 /// Insert segments with a single SQLITE_BUSY retry. Shared by the FS watcher
 /// (`ingest_session_file`) and batch CLI (`write_session_segments`).
-fn try_insert_segments(conn: &Connection, segments: &[SessionSegment]) -> (usize, usize, usize) {
-    match crate::with_busy_retry("claude_session_insert", || insert_segments(conn, segments)) {
+fn try_insert_segments(
+    conn: &Connection,
+    segments: &[SessionSegment],
+    facts: Option<&SessionFacts>,
+) -> (usize, usize, usize) {
+    match crate::with_busy_retry("claude_session_insert", || {
+        insert_segments_with_facts(conn, segments, facts)
+    }) {
         Ok((inserted, skipped)) => (inserted, skipped, 0),
         Err(e) => {
             if crate::is_sqlite_busy(&e) {
@@ -1472,21 +1667,22 @@ fn repair_subagent_identity_in_batches(
 /// Only the ingest paths read `meta.json`; the probe and doctor callers of
 /// `extract_segments` compare content hashes and timestamps, which the
 /// metadata never affects.
-fn extract_segments_for_ingest(path: &Path) -> Result<Vec<SessionSegment>> {
+fn extract_segments_for_ingest(path: &Path) -> Result<(Vec<SessionSegment>, SessionFacts)> {
     let redaction = RedactionEngine::builtin();
-    let mut segments = extract_segments(&SessionFile::from_path(path), &redaction)?;
+    let (mut segments, facts) =
+        extract_segments_and_facts(&SessionFile::from_path(path), &redaction)?;
     let subagent = read_subagent_meta(path);
     for seg in &mut segments {
         seg.subagent = subagent.clone();
     }
-    Ok(segments)
+    Ok((segments, facts))
 }
 
 /// Extract segments from a JSONL session file and insert them into the given
 /// connection. Used by the FS watcher (per-event invocation in a `spawn_blocking`
 /// task with its own connection). Returns `(inserted, skipped, errors)`.
 pub fn ingest_session_file(conn: &Connection, path: &Path) -> (usize, usize, usize) {
-    let segments = match extract_segments_for_ingest(path) {
+    let (segments, facts) = match extract_segments_for_ingest(path) {
         Ok(s) => s,
         Err(e) => {
             warn!(path = %path.display(), %e, "failed to extract session segments");
@@ -1498,11 +1694,11 @@ pub fn ingest_session_file(conn: &Connection, path: &Path) -> (usize, usize, usi
         return (0, 0, 0);
     }
 
-    try_insert_segments(conn, &segments)
+    try_insert_segments(conn, &segments, Some(&facts))
 }
 
 fn write_session_segments(db_path: &Path, path: &Path) -> (usize, usize, usize) {
-    let segments = match extract_segments_for_ingest(path) {
+    let (segments, facts) = match extract_segments_for_ingest(path) {
         Ok(s) => s,
         Err(e) => {
             warn!(path = %path.display(), %e, "failed to extract session segments");
@@ -1522,7 +1718,7 @@ fn write_session_segments(db_path: &Path, path: &Path) -> (usize, usize, usize) 
         }
     };
 
-    try_insert_segments(&conn, &segments)
+    try_insert_segments(&conn, &segments, Some(&facts))
 }
 
 /// Run the importer in batch mode: read all lines, send all events, exit.
@@ -3409,7 +3605,8 @@ mod tests {
 
         barrier.wait();
         let start = Instant::now();
-        let (inserted, _skipped, errors) = try_insert_segments(&conn, std::slice::from_ref(&seg));
+        let (inserted, _skipped, errors) =
+            try_insert_segments(&conn, std::slice::from_ref(&seg), None);
         let elapsed = start.elapsed();
         holder.join().unwrap();
 
