@@ -478,11 +478,12 @@ flagged line counts as changed only when no line of `HEAD:path` carries its
 `git rev-list --reverse --topo-order --ancestry-path <start>..HEAD -- path`
 order, whose file lacks the hash. The start is `git merge-base head_sha HEAD`,
 which is `head_sha` itself unless the reviewed branch was squash-merged; when
-`head_sha` was pruned, the start is HEAD's last commit before `started_at`
-and the walk uses `--since=<started_at>`. `git log -L` is not used because
+`head_sha` was pruned, the start is HEAD's last commit at or before the
+second of `started_at`, and the walk is the same `--ancestry-path` walk from
+that start. `git log -L` is not used because
 the finding's line number refers to the reviewed working tree, not to
-`HEAD`. After a pruned `head_sha`, the walk is
-`--ancestry-path <start>..HEAD`, which excludes the start commit. A line
+`HEAD`. The walk excludes the start commit, so a commit in the review's
+start second counts once, as the start. A line
 that never appears in the walked history (fixed before its
 first commit, or fixed on a branch before a squash merge, which is the
 default hippo flow) is gone at `HEAD`, so `likely-addressed` holds. The job

@@ -131,7 +131,7 @@ def _contains(blob: bytes | None, wanted: str) -> bool:
 class Walk(NamedTuple):
     start: str
     revs: list[str]
-    blocked: str | None  # why inference is not allowed, or None
+    guarded: bool  # HEAD lacks head_sha: infer only once the reviewed branch is gone
 
 
 def _walk_start(repo: Path, head_sha: str, started_at_ms: int) -> Walk | str:
@@ -152,26 +152,29 @@ def _walk_start(repo: Path, head_sha: str, started_at_ms: int) -> Walk | str:
         if base.returncode != 0:
             return f"git merge-base failed (exit {base.returncode})"
         start = base.stdout.decode().strip()
-        blocked = None
-        if (
-            start != head_sha
-            and _git(
-                repo,
-                "for-each-ref",
-                "--contains",
-                head_sha,
-                "--format=%(refname)",
-                "refs/heads",
-                "refs/remotes",
-            ).stdout.strip()
-        ):
-            blocked = "reviewed branch still exists; not merged"
-        return Walk(start, ["--ancestry-path", f"{start}..HEAD"], blocked)
+        return Walk(start, ["--ancestry-path", f"{start}..HEAD"], start != head_sha)
     started = str(started_at_ms // 1000)  # git reads a 10-digit number as epoch seconds
     start = _git(repo, "rev-list", "-1", f"--before={started}", "HEAD").stdout.decode().strip()
     if not start:
         return "head_sha not in repository and no commit before the review"
-    return Walk(start, ["--ancestry-path", f"{start}..HEAD"], None)
+    return Walk(start, ["--ancestry-path", f"{start}..HEAD"], False)
+
+
+def _inference_blocked(repo: Path, head_sha: str) -> str | None:
+    """Why the reviewed branch may still be unmerged, or None when it is gone."""
+    refs = _git(
+        repo,
+        "for-each-ref",
+        "--contains",
+        head_sha,
+        "--format=%(refname)",
+        "refs/heads",
+        "refs/remotes",
+        check=False,
+    )
+    if refs.returncode != 0:
+        return f"git for-each-ref failed (exit {refs.returncode})"
+    return "reviewed branch still exists; not merged" if refs.stdout.strip() else None
 
 
 def find_change(
@@ -196,7 +199,7 @@ def find_change(
     walk = _walk_start(repo, head_sha, started_at_ms)
     if isinstance(walk, str):
         return Outcome(None, walk)
-    start, revs, blocked = walk
+    start, revs, guarded = walk
     commits = _git(repo, "rev-list", "--reverse", "--topo-order", *revs, "--", path).stdout.split()
     seen = _contains(_blob(repo, start, path), wanted)
     first_touch: str | None = None
@@ -214,11 +217,13 @@ def find_change(
     # The line never reached the walked history (fixed before its first commit, or
     # on a branch before a squash merge). It is gone at HEAD, so the status holds;
     # the commit is a guess, and the note says so.
-    if first_touch and blocked:
+    if not first_touch:
+        return Outcome(None, "line absent at walk start and no later commit touches the path")
+    # Checked only here, so a ref lookup failure never costs an observed fix.
+    blocked = _inference_blocked(repo, head_sha) if guarded else None
+    if blocked:
         return Outcome(None, blocked)
-    if first_touch:
-        return Outcome(first_touch, None, INFERRED_NOTE)
-    return Outcome(None, "line absent at walk start and no later commit touches the path")
+    return Outcome(first_touch, None, INFERRED_NOTE)
 
 
 def gh_pr_urls(slug: str, sha: str) -> list[str]:

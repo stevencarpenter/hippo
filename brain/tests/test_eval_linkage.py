@@ -641,3 +641,24 @@ def test_unrelated_history_stays_open_with_a_reason(db, repo, tmp_path):
     assert verdicts(conn) == []
     notes = json.loads((tmp_path / "eval-linkage-notes.json").read_text())
     assert notes == {"f1": "HEAD shares no history with head_sha"}
+
+
+def test_observed_fix_never_runs_the_branch_guard(db, repo, tmp_path, monkeypatch):
+    conn, db_path = db
+    repo.commit({"src/app.py": BASE}, "base")
+    repo.git("checkout", "-q", "-b", "feat")
+    head = repo.commit({"src/app.py": ORIGINAL}, "add check")
+    repo.git("checkout", "-q", "main")
+    repo.git("merge", "-q", "--squash", "feat")
+    repo.git("commit", "-q", "-m", "squash feat")
+    fixed = repo.commit({"src/app.py": FIXED}, "fix on main")
+    add_finding(conn, repo.path, head)
+
+    def forbidden(*args):
+        raise AssertionError("branch guard ran for an observed fix")
+
+    monkeypatch.setattr(eval_linkage, "_inference_blocked", forbidden)
+
+    run(db_path, tmp_path)
+
+    assert [(row[3], row[4]) for row in verdicts(conn)] == [(fixed, None)]

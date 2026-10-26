@@ -120,6 +120,7 @@ Every reason the job records:
 | `git merge-base failed (exit N)` | `git merge-base` exits with any other nonzero status N. |
 | `head_sha not in repository and no commit before the review` | The `head_sha` object is missing and `HEAD` has no commit at or before `started_at`. |
 | `reviewed branch still exists; not merged` | The line never reached the walked history, `HEAD` does not contain `head_sha`, and a ref under `refs/heads` or `refs/remotes` still contains it. |
+| `git for-each-ref failed (exit N)` | The branch-gone check (run only when a commit would be inferred and `HEAD` lacks `head_sha`) exits with nonzero status N. |
 | `line absent at walk start and no later commit touches the path` | The line never reached the walked history and no walked commit touches `path`. |
 | `no walked commit removed the line` | The line was seen in the walk but no walked commit lacks it; `HEAD` lacks it, so this is not expected in practice. |
 | `git failed: <ExceptionType>` | A git call raised `OSError` or `subprocess.SubprocessError` (for example a timeout). |
