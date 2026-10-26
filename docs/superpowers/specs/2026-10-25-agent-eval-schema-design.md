@@ -3,8 +3,8 @@
 **Status:** proposed, awaiting the HIPO-63 gate decision
 **Date:** 2026-10-25
 **Ticket:** HIPO-63 (epic HIPO-57). Implementation ticket: HIPO-64.
-**Related:** HIPO-7 (derived-index exclusion), HIPO-9 (append-only feedback rows), HIPO-13 (payload expiry), HIPO-65 (producers), HIPO-66 (commit linkage), HIPO-67 (scorecards), HIPO-68 (private corpus)
-**Producers (read-only reference):** `~/projects/agents/skills/blind-review/scripts/review_log.py`, `~/projects/agents/skills/blind-review/bench/bench.py`
+**Related:** HIPO-7 (derived-index exclusion), HIPO-9 (planned append-only feedback rows), HIPO-13 (payload expiry), HIPO-65 (producers), HIPO-66 (commit linkage), HIPO-67 (scorecards), HIPO-68 (private corpus)
+**Producers (read-only reference):** `~/projects/agents/skills/blind-review/scripts/review_log.py`, `scripts/mechanical_review.py`, `bench/bench.py`
 
 ## 1. Goal and scope
 
@@ -23,17 +23,25 @@ Evidence used, all checked on 2026-10-25:
 
 - `review_log.py` writes `finding`, `status`, and `escape` events to
   `~/.local/share/blind-review/findings.jsonl`. That ledger file does not
-  exist on this machine yet, so no legacy rows need a backfill.
+  exist on this machine yet, so no legacy rows need a backfill, and the id
+  and record formats can change now without a migration.
 - `bench/results.jsonl` holds 2 recorded runs.
 - The mechanical reviewer runs `claude -p ... --no-session-persistence`
   (`mechanical_review.py::reviewer_argv`). The per-unit reviewer process
   writes no transcript, so hippo never has an `agentic_sessions` row for it.
+- A mechanical out dir records no run times, no effort, and no commit SHAs.
+  `manifest.json` holds `repo`, `base` (a ref name), `mode`, and `files`.
+  `results/*.json` holds `unit`, `ok`, `findings`, `usage`, `model_id`,
+  `cli_version`, `input_sha256`, and `error`.
 - Claude Code exports `CLAUDE_CODE_SESSION_ID` to tool subprocesses (seen in
   this session's Bash environment).
+- `workflow_runs` has no PR column, and `raw_json` holds no `pull_requests`
+  key on any live row. `workflow_runs.repo` is an `owner/repo` slug.
 - `.semgrep.yml` exists but no CI workflow or `mise` task runs it. Its header
   says so.
 - The live schema is v27 (`storage.rs::EXPECTED_VERSION`). Phase 1 of the
-  epic takes v28.
+  epic takes v28. `retrieval_events` (HIPO-9) does not exist yet. The in-tree
+  append-only precedent is `deletion_receipts` (`schema.sql`).
 
 ## 2. Decision: hippo tables, not a sidecar database
 
@@ -46,14 +54,18 @@ That choice was correct for hippo-bench because its rows join to nothing in
 
 Reasons for hippo tables:
 
-1. **Joins are the product.** Scorecards (HIPO-67) join findings to
-   `agentic_sessions` and `agentic_session_facts` (agent, model, tokens,
-   cost). Commit linkage (HIPO-66) attributes PRs through
-   `workflow_runs.head_sha`. A sidecar needs `ATTACH` on every reader
-   connection, and cross-file foreign keys do not exist in SQLite.
-2. **One privacy regime.** Redaction (`RedactionEngine`), payload expiry,
-   `deletion_receipts`, and `secure_delete=ON` already exist for `hippo.db`
-   (HIPO-13). A sidecar must copy all four and keep them in step.
+1. **Commit linkage and attribution join hippo tables.** Linkage (HIPO-66)
+   resolves a fix commit through `workflow_runs` and branch-matched
+   `agentic_sessions` rows (section 3.7). Scorecards (HIPO-67) join a run to
+   its orchestrating session in `agentic_sessions` and
+   `agentic_session_facts`. Those joined values describe the orchestrator,
+   not the reviewer, because the reviewer has no transcript. Reviewer model,
+   effort, and tokens come from `eval_review_runs` itself. A sidecar needs
+   `ATTACH` on every reader connection, and cross-file foreign keys do not
+   exist in SQLite.
+2. **One privacy regime.** Redaction (`RedactionEngine`), payload expiry with
+   pins, `deletion_receipts`, and `secure_delete=ON` already exist for
+   `hippo.db` (HIPO-13). A sidecar must copy all four and keep them in step.
 3. **One backup and one doctor.** Operators back up, inspect, and migrate one
    file. A second file adds a second migration runner and a second
    version handshake.
@@ -81,20 +93,28 @@ hippo release cadence. Neither holds today.
 One additive migration in `crates/hippo-core/src/storage.rs`, the first free
 version after Phase 1 (v28 to v29 if Phase 1 lands first). It follows the
 crash-safe pattern: `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT
-EXISTS`, `PRAGMA user_version` bump. The same DDL goes into
-`crates/hippo-core/src/schema.sql`. `EXPECTED_SCHEMA_VERSION` and
-`ACCEPTED_READ_VERSIONS` in `brain/src/hippo_brain/schema_version.py` change
-in the same commit. No existing table changes.
+EXISTS`, `CREATE TRIGGER IF NOT EXISTS`, `PRAGMA user_version` bump. The same
+DDL goes into `crates/hippo-core/src/schema.sql`. `EXPECTED_SCHEMA_VERSION`
+and `ACCEPTED_READ_VERSIONS` in `brain/src/hippo_brain/schema_version.py`
+change in the same commit. No existing table changes.
 
 Conventions in all five tables:
 
 - The primary key is the producer-generated record id (`TEXT`). It is the
-  idempotency key (section 4.4).
+  idempotency key (section 4.5).
 - All timestamps are Unix epoch milliseconds (`INTEGER`).
 - `ingested_at` is the time hippo wrote the row. Producer times have their own
   columns.
+- Commit columns used for linkage (`base_sha`, `head_sha`, `commit_sha`,
+  `fix_commit`) hold full 40-character lowercase hex SHAs. Producers resolve
+  them with `git rev-parse`. Ingest rejects any other form.
+- `repo` keeps the local absolute path, which the linkage job needs to run
+  `git`. `repo_identity` holds the slug from
+  `crates/hippo-daemon/src/git_repo.rs::derive_git_repo`: `owner/repo` from
+  the `origin` remote, else the top-level directory name, else NULL.
+  Scorecards and joins to `workflow_runs.repo` use `repo_identity`.
 - `payload_expiry` follows HIPO-13: `ingested_at + 7776000000` (90 days).
-  Only tables with private free text carry it.
+  Only `eval_findings` and `eval_verdicts` carry it (section 5.4).
 - Columns marked "redacted" pass through `RedactionEngine::redact` before the
   insert.
 - Enumerated values (`severity`, `confidence`, `verdict`) are validated by the
@@ -104,47 +124,59 @@ Conventions in all five tables:
 
 ### 3.2 `eval_review_runs`
 
-One row per review invocation (one `review_log.py log` call). Expected volume
-is tens of rows per week. Write pattern: insert once, never updated.
+One row per review invocation (one mechanical out dir). Expected volume is
+tens of rows per week. Write pattern: insert once, never updated.
 
 ```sql
 CREATE TABLE IF NOT EXISTS eval_review_runs (
-    run_id         TEXT    PRIMARY KEY,
-    agent          TEXT    NOT NULL,
-    mode           TEXT    NOT NULL,
-    model_id       TEXT    NOT NULL DEFAULT '',
-    effort         TEXT,
-    cli_version    TEXT    NOT NULL DEFAULT '',
-    repo           TEXT    NOT NULL,
-    base           TEXT    NOT NULL,
-    head_commit    TEXT,
-    input_sha256   TEXT    NOT NULL,
-    units_total    INTEGER NOT NULL DEFAULT 0,
-    units_failed   INTEGER NOT NULL DEFAULT 0,
-    session_id     TEXT,
-    harness        TEXT,
-    started_at     INTEGER NOT NULL,
-    finished_at    INTEGER NOT NULL,
-    ingested_at    INTEGER NOT NULL
+    run_id                TEXT    PRIMARY KEY,
+    agent                 TEXT    NOT NULL,
+    mode                  TEXT    NOT NULL,
+    requested_model       TEXT,
+    model_id              TEXT    NOT NULL DEFAULT '',
+    effort                TEXT,
+    cli_version           TEXT    NOT NULL DEFAULT '',
+    repo                  TEXT    NOT NULL,
+    repo_identity         TEXT,
+    base                  TEXT    NOT NULL,
+    base_sha              TEXT    NOT NULL,
+    head_sha              TEXT,
+    input_sha256          TEXT    NOT NULL,
+    units_total           INTEGER NOT NULL DEFAULT 0,
+    units_failed          INTEGER NOT NULL DEFAULT 0,
+    input_tokens          INTEGER NOT NULL DEFAULT 0,
+    output_tokens         INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    session_id            TEXT,
+    harness               TEXT,
+    started_at            INTEGER NOT NULL,
+    finished_at           INTEGER NOT NULL,
+    ingested_at           INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_eval_review_runs_agent_started_at
     ON eval_review_runs (agent, started_at);
 CREATE INDEX IF NOT EXISTS idx_eval_review_runs_session_id_harness
     ON eval_review_runs (session_id, harness) WHERE session_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_eval_review_runs_repo_started_at
-    ON eval_review_runs (repo, started_at);
+CREATE INDEX IF NOT EXISTS idx_eval_review_runs_repo_identity_started_at
+    ON eval_review_runs (repo_identity, started_at);
 ```
 
 - `agent` is the reviewing agent name, for example `blind-review`.
   `mode` is for example `mechanical`.
-- `model_id` is the sorted, comma-joined set of served model ids, the same
-  form `mechanical_review.py` writes per unit.
-- `head_commit` is `git rev-parse HEAD` in the reviewed repo at review time.
-  It is NULL when the repo has no commits. Commit linkage looks only at
-  commits after it.
+- `requested_model` is the model argument (for example `haiku`). `model_id`
+  is the sorted, comma-joined set of served model ids, the same form
+  `mechanical_review.py` writes per unit. The column names match the Phase 1
+  `agentic_sessions` columns.
+- `base` is the ref name the review used. `base_sha` is that ref resolved at
+  review start. `head_sha` is `HEAD` at review start, NULL when the repo has
+  no commits. The reviewed tree can hold uncommitted changes on top of
+  `head_sha`. Commit linkage looks only at commits after `head_sha`.
 - `input_sha256` is the SHA-256 of the sorted per-unit `input_sha256` values.
 - `units_failed` keeps a failed review distinct from a clean one with zero
   findings. `review_log.py log` already treats that difference as an error.
+- The token columns are sums of the reviewer `usage` objects over all units,
+  the same sum `bench.py` computes. They describe the reviewer processes.
 - No column holds free text, so no column is redacted. `repo` is a local path,
   which hippo already stores in `agentic_sessions.cwd`.
 
@@ -158,6 +190,7 @@ CREATE TABLE IF NOT EXISTS eval_findings (
     finding_id     TEXT    PRIMARY KEY,
     run_id         TEXT    NOT NULL REFERENCES eval_review_runs (run_id),
     repo           TEXT    NOT NULL,
+    repo_identity  TEXT,
     path           TEXT    NOT NULL,
     side           TEXT    NOT NULL CHECK (side IN ('+', '-')),
     line           INTEGER NOT NULL,
@@ -183,16 +216,21 @@ CREATE INDEX IF NOT EXISTS idx_eval_findings_payload_expiry
 - Redacted: `line_text`, `claim`.
 - `line_text` and `claim` are NOT NULL at ingest. They become NULL after
   payload expiry, so the columns allow NULL.
-- `repo` repeats the run's value so that linkage can use
+- `repo` and `repo_identity` repeat the run's values so that linkage can use
   `idx_eval_findings_repo_path` without a join.
 - `line_hash` is defined in section 3.7.
+- The finding id includes the run id (section 6), so the same claim in two
+  runs gives two rows.
 
 ### 3.4 `eval_verdicts`
 
 Append-only, one row per verdict event. Expected volume is 0 to 3 rows per
-finding. Write pattern: insert only. Triggers reject `DELETE` and any
-`UPDATE` except the payload-expiry update of `note`. This is the
-`retrieval_events` pattern from HIPO-9.
+finding. Write pattern: insert only. The only permitted `UPDATE` sets `note`
+to NULL at payload expiry. The triggers copy the in-tree `deletion_receipts`
+pattern (`schema.sql`), including its `no_replace` trigger. That trigger is
+needed because `INSERT OR REPLACE` deletes the old row without firing a delete
+trigger while `recursive_triggers` is off. HIPO-9 plans the same pattern for
+`retrieval_events`.
 
 ```sql
 CREATE TABLE IF NOT EXISTS eval_verdicts (
@@ -217,8 +255,22 @@ BEFORE DELETE ON eval_verdicts BEGIN
     SELECT RAISE(ABORT, 'eval_verdicts are append-only');
 END;
 CREATE TRIGGER IF NOT EXISTS eval_verdicts_no_update
-BEFORE UPDATE OF verdict_id, finding_id, verdict, commit_sha, auto, decided_at, ingested_at
+BEFORE UPDATE OF verdict_id, finding_id, verdict, commit_sha, auto, decided_at,
+    ingested_at, payload_expiry
 ON eval_verdicts BEGIN
+    SELECT RAISE(ABORT, 'eval_verdicts are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS eval_verdicts_note_clear_only
+BEFORE UPDATE OF note ON eval_verdicts
+WHEN NEW.note IS NOT NULL BEGIN
+    SELECT RAISE(ABORT, 'eval_verdicts.note can only be cleared');
+END;
+CREATE TRIGGER IF NOT EXISTS eval_verdicts_no_replace
+BEFORE INSERT ON eval_verdicts
+WHEN EXISTS (
+    SELECT 1 FROM eval_verdicts
+    WHERE verdict_id = NEW.verdict_id
+) BEGIN
     SELECT RAISE(ABORT, 'eval_verdicts are append-only');
 END;
 ```
@@ -228,6 +280,10 @@ END;
   `false-positive`, `not-useful`, `duplicate`, `likely-addressed`.
 - `auto = 1` marks a machine verdict (`review_log.py reconcile`, the HIPO-66
   linkage job). `auto = 0` marks a human verdict (`review_log.py mark`).
+- The `no_replace` trigger also aborts `INSERT ... ON CONFLICT DO NOTHING`
+  for an existing id, because a `BEFORE INSERT` trigger runs before the
+  conflict check. The ingest therefore checks for the id before it inserts
+  (section 4.5).
 
 **Effective verdict rule.** The latest human verdict wins. If a finding has no
 human verdict, the latest automatic verdict wins. "Latest" orders by
@@ -252,25 +308,24 @@ WHERE rn = 1;
 ### 3.5 `eval_escapes`
 
 One row per defect that reached review and that no finding reported. Rows are
-manual and rare (a few per month). Write pattern: insert once, then the
-payload-expiry partial `UPDATE` of `note`.
+manual and rare (a few per month). Write pattern: insert once, never updated.
+Escape notes never expire (section 5.4), so the table has no
+`payload_expiry`.
 
 ```sql
 CREATE TABLE IF NOT EXISTS eval_escapes (
     escape_id      TEXT    PRIMARY KEY,
     repo           TEXT    NOT NULL,
+    repo_identity  TEXT,
     path           TEXT    NOT NULL,
     line           INTEGER NOT NULL,
     fix_commit     TEXT,
-    note           TEXT,
+    note           TEXT    NOT NULL,
     recorded_at    INTEGER NOT NULL,
-    ingested_at    INTEGER NOT NULL,
-    payload_expiry INTEGER NOT NULL
+    ingested_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_eval_escapes_repo_path
     ON eval_escapes (repo, path);
-CREATE INDEX IF NOT EXISTS idx_eval_escapes_payload_expiry
-    ON eval_escapes (payload_expiry) WHERE note IS NOT NULL;
 ```
 
 - Redacted: `note`.
@@ -309,6 +364,9 @@ CREATE INDEX IF NOT EXISTS idx_eval_bench_runs_bench_recorded_at
 
 - `bench` names the benchmark, for example `blind-review-mechanical`, so that
   a second benchmark needs no new table.
+- `repo_commit` is the bench version label that `bench.py` writes: a short
+  SHA of the `agents` repo with an optional `-dirty` suffix. It is not a
+  linkage key, so the 40-hex rule does not apply to it.
 - `scores_json` and `per_case_json` store the producer objects as they are.
   Scores change with the bench version, and two rows do not justify one
   column per score. Readers use `json_extract`.
@@ -319,9 +377,11 @@ CREATE INDEX IF NOT EXISTS idx_eval_bench_runs_bench_recorded_at
 
 **Reviewing session.** The mechanical reviewer processes run with
 `--no-session-persistence`, so the session that hippo can see is the agent
-session that ran the review. The producer reads `CLAUDE_CODE_SESSION_ID` and
-writes it to the run record with `harness = 'claude-code'`. Both columns are
-NULL when the review ran outside an agent harness. The join is:
+session that ran the review (the orchestrator). The producer reads
+`CLAUDE_CODE_SESSION_ID` and writes it to the run record with
+`harness = 'claude-code'`. Both columns are NULL when the review ran outside
+an agent harness, and for harnesses other than Claude Code (section 8). The
+join is:
 
 ```text
 eval_findings.run_id -> eval_review_runs.(session_id, harness)
@@ -333,51 +393,72 @@ This is a soft link with no foreign key, for two reasons. First,
 `agentic_sessions` is keyed by `(session_id, harness, segment_index)`, so no
 single parent row exists. Second, the eval record can arrive before the
 watcher ingests the session. A query that finds no session row reports the
-finding as unattributed. It does not drop the finding.
+finding as unattributed. It does not drop the finding. Values read through
+this join describe the orchestrator. Reviewer values come from
+`eval_review_runs`.
 
 **Commits.** `eval_verdicts.commit_sha` holds the commit that addressed a
 finding (automatic `likely-addressed`) or that a human cites. The JSON field
 is `commit`. The column is `commit_sha` because `COMMIT` is an SQL keyword.
-`eval_escapes.fix_commit` holds the commit that fixed an escape.
+`eval_escapes.fix_commit` holds the commit that fixed an escape. Both are
+full 40-hex SHAs. A short SHA that a user types for `escape --commit` is
+resolved by the producer with `git rev-parse` before it is written.
 
-**Raw-line hash.** Commit linkage (HIPO-66) matches a finding to a later
-commit on `(repo, path)` plus `line_hash`. It never matches on `line_text`.
-Redacted text is unusable as a match key: a line with a credential is
-stored as `[REDACTED]` text, and a later change to `redact.toml` changes the
-stored form of new rows but not old ones.
+**Raw-line hash.** Commit linkage (HIPO-66) and `review_log.py reconcile`
+match a finding against later file contents on `(repo, path)` plus
+`line_hash`. Neither matches on `line_text`. Redacted text is unusable as a
+match key: a line with a credential is stored as `[REDACTED]` text, and a
+later change to `redact.toml` changes the stored form of new rows but not old
+ones. Both sides of every comparison are raw source lines.
 
 - The producer sends `line_text` as the raw source line at the reviewed
-  revision: the working-tree line for side `+`, the `base` line for side `-`.
-  This is not the comment-stripped unit row that `review_log.py` keeps
-  today (section 6).
-- At ingest, before redaction, hippo computes
-  `line_hash = lower_hex(sha256(utf8(normalize(line_text))))`.
-  `normalize` removes a trailing `\r` and then leading and trailing
-  whitespace. The same function, in one place in `hippo-core`, serves the
-  ingest and the linkage job.
-- Hippo stores the redacted `line_text` and the hash. It never stores the raw
-  line.
+  revision: the working-tree line for side `+`, the `base_sha` line for side
+  `-`. It is not the comment-stripped unit row.
+- `normalize(s)` removes one trailing `\r`, then removes leading and trailing
+  ASCII spaces and tabs. `line_hash = lower_hex(sha256(utf8(normalize(line_text))))`.
+  The definition uses only ASCII spaces and tabs because Python `str.strip()`
+  and Rust `str::trim` disagree on some Unicode whitespace.
+- Test vector, required in both the Rust and the Python test suites: input
+  `"    if user.is_admin or True:  \r"` normalizes to
+  `"if user.is_admin or True:"` and hashes to
+  `d5474129f47594d84b580d2b1d5d10e2ddd523ce5b0668b5de867807203e676c`.
+- At ingest, hippo computes `line_hash` from the raw `line_text` before
+  redaction. It ignores any hash the producer sends. Hippo stores the
+  redacted `line_text` and the hash. It never stores the raw line.
 - If `line_text` is absent, `line_hash` is NULL and linkage skips the
   finding.
+- Limit: raw-to-raw comparison counts a comment-only edit on the flagged line
+  as a change. The comment-stripped comparison that `reconcile` uses today
+  avoids that false positive, but it cannot run in hippo.
 - Limit: a plain hash lets someone who holds the database confirm a guessed
   full line. For a line that holds a credential, the guess requires the
   credential, so the hash adds no practical exposure. This is an inference,
   not a proof.
 
-**PRs.** No eval table stores a PR. A session can have several PR links
-(`agentic_session_facts.pr_links_json` is an array), and `pr-link` records
-exist in only 48 transcript files. PR attribution therefore comes from the
-commit: `eval_verdicts.commit_sha` and `eval_escapes.fix_commit` join to
-`workflow_runs.head_sha` (indexed by `idx_workflow_runs_sha`) at query time.
-The session PR links are a secondary source when the commit has no workflow
-run.
+**PRs.** No eval table stores a PR. `workflow_runs` has no PR column, and a
+run exists only for a commit that was a push tip in a repo with Actions. PR
+attribution for a commit (`commit_sha` or `fix_commit`) follows this chain:
+
+1. Find `workflow_runs` rows with `repo = repo_identity` and
+   `head_sha = <commit>` (index `idx_workflow_runs_sha`). Take their
+   `head_branch`.
+2. Find `agentic_sessions` rows on that `git_branch` in the same repository,
+   and read `agentic_session_facts.pr_links_json` for those sessions. A
+   session can have several PR links, so the result is a set.
+3. If step 1 or step 2 finds nothing, HIPO-66 can resolve the PR at linkage
+   time with a `gh` lookup of the commit. This lookup is off by default and
+   is enabled only by explicit configuration. It is an outbound flow: it
+   sends the repository slug and the commit SHA to GitHub. HIPO-66 defines
+   where a resolved PR is stored and documents the flow in the privacy
+   section of its own design.
 
 **Linkage writer constraints (for HIPO-66).** The linkage job is a new
 writer. It reads open findings and runs `git` outside any transaction. It
 writes automatic verdicts in `BEGIN IMMEDIATE` transactions of at most 100
 rows. Its `verdict_id` is deterministic:
 `auto-` + the first 16 hex characters of `sha256(finding_id | commit_sha | verdict)`.
-A rerun then inserts nothing new.
+It checks for the id before the insert, as the ingest does, so a rerun
+inserts nothing new.
 
 ## 4. Ingest contract: `hippo ingest agent-eval <file.jsonl>`
 
@@ -386,10 +467,13 @@ A rerun then inserts nothing new.
 A new `IngestSource::AgentEval { path }` in `crates/hippo-daemon/src/cli.rs`.
 The command opens the database with `storage::open_db` and writes directly,
 the same way the other `hippo ingest` subcommands reach SQLite. It is
-implemented in Rust because redaction must use `RedactionEngine`. It is not
-a capture source: it writes no `source_health` row, adds no watchdog
-invariant, and writes no fallback JSONL. The producer's own JSONL file is the
-durable copy, and a rerun of the command is safe.
+implemented in Rust because redaction must use `RedactionEngine` and
+`repo_identity` must use `derive_git_repo`. It is not a capture source: it
+writes no `source_health` row, adds no watchdog invariant, and writes no
+fallback JSONL. The producer's ledger is the durable copy. It holds the same
+v1 records that this command reads (section 6), so a rerun of the command on
+the ledger is safe and recovers any record that a failed or skipped ingest
+missed.
 
 ### 4.2 Line format
 
@@ -401,61 +485,74 @@ durable copy, and a rerun of the command is safe.
 - Every line has `id` (string, 1 to 64 characters from `[A-Za-z0-9._:-]`).
   The id becomes the table's primary key.
 - All `*_at` fields are integer epoch milliseconds.
+- `base_sha`, `head_sha`, `commit`, and `fix_commit` match `^[0-9a-f]{40}$`.
 - Keys not defined for the type are ignored. The command logs one `warn` per
   file that lists them.
 - Text caps: `claim` and `note` 4,000 characters, `line_text` 1,000
-  characters. Hippo redacts first and truncates second, so that a cut cannot
-  split a credential and hide it from a pattern.
+  characters. Hippo hashes the raw `line_text` first, then redacts, then
+  truncates, so that a cut cannot split a credential and hide it from a
+  pattern.
 - A line longer than 1 MiB is rejected.
 
 ### 4.3 Fields per type
 
 | `type` | Required | Optional | Table |
 |---|---|---|---|
-| `review_run` | `id`, `agent`, `mode`, `repo`, `base`, `input_sha256`, `started_at`, `finished_at` | `model_id`, `effort`, `cli_version`, `head_commit`, `units_total`, `units_failed`, `session_id`, `harness` | `eval_review_runs` |
+| `review_run` | `id`, `agent`, `mode`, `repo`, `base`, `base_sha`, `input_sha256`, `started_at`, `finished_at` | `requested_model`, `model_id`, `effort`, `cli_version`, `head_sha`, `units_total`, `units_failed`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `session_id`, `harness` | `eval_review_runs` |
 | `finding` | `id`, `run_id`, `repo`, `path`, `side`, `line`, `severity`, `confidence`, `claim`, `logged_at` | `line_text`, `category` | `eval_findings` |
 | `verdict` | `id`, `finding_id`, `verdict`, `auto`, `decided_at` | `commit`, `note` | `eval_verdicts` |
-| `escape` | `id`, `repo`, `path`, `line`, `recorded_at` | `fix_commit`, `note` | `eval_escapes` |
+| `escape` | `id`, `repo`, `path`, `line`, `note`, `recorded_at` | `fix_commit` | `eval_escapes` |
 | `bench_run` | `id`, `bench`, `recorded_at`, `repo_commit`, `model`, `reps`, `cases`, `cases_sha256`, `brief_sha256`, `scores` | `cli_version`, `model_ids`, `effort`, `failed_reviews`, `tokens`, `per_case` | `eval_bench_runs` |
 
 Value rules: `side` is `+` or `-`. `severity` and `confidence` are `high`,
 `medium`, or `low`. `verdict` is one of the five values in section 3.4.
 `auto` is a JSON boolean. `harness` is a value that the `agentic_sessions`
-`CHECK` accepts. `session_id` without `harness` is rejected.
+`CHECK` accepts. `session_id` without `harness` is rejected. `repo_identity`
+is not a record field: hippo derives it from `repo` at ingest, outside the
+write transaction, once per distinct `repo` value.
 
 ### 4.4 Example lines (synthetic values)
 
 ```json
-{"schema_version":1,"type":"review_run","id":"run-7f3a9c1e2b4d","agent":"blind-review","mode":"mechanical","model_id":"claude-haiku-5-5","effort":"low","cli_version":"2.1.310 (Claude Code)","repo":"/home/dev/example-repo","base":"main","head_commit":"0a1b2c3d4e5f60718293a4b5c6d7e8f901234567","input_sha256":"5e0f4c3b2a1908f7e6d5c4b3a2918070f6e5d4c3b2a19080706f5e4d3c2b1a09","units_total":4,"units_failed":0,"session_id":"00000000-0000-4000-8000-000000000001","harness":"claude-code","started_at":1792900000000,"finished_at":1792900042000}
-{"schema_version":1,"type":"finding","id":"a1b2c3d4e5","run_id":"run-7f3a9c1e2b4d","repo":"/home/dev/example-repo","path":"src/app.py","side":"+","line":42,"line_text":"    if user.is_admin or True:","severity":"high","confidence":"medium","category":"security","claim":"The condition is always true, so every user passes the admin check.","logged_at":1792900043000}
-{"schema_version":1,"type":"verdict","id":"v-9d8c7b6a5f4e","finding_id":"a1b2c3d4e5","verdict":"accepted","commit":"1122334455667788990011223344556677889900","note":"Fixed in the same branch.","auto":false,"decided_at":1792903600000}
-{"schema_version":1,"type":"escape","id":"e-4f5e6d7c8b9a","repo":"/home/dev/example-repo","path":"src/db.py","line":17,"fix_commit":"aabbccddeeff00112233445566778899aabbccdd","note":"Off-by-one in the page size; no review flagged it.","recorded_at":1792990000000}
-{"schema_version":1,"type":"bench_run","id":"bench-3c2b1a0f9e8d","bench":"blind-review-mechanical","recorded_at":1792800000000,"repo_commit":"686e67b","cli_version":"2.1.310 (Claude Code)","model":"haiku","model_ids":["claude-haiku-5-5"],"effort":"low","reps":3,"cases":15,"cases_sha256":"15c4bffbf0dc","brief_sha256":"393aabd28d31","failed_reviews":0,"tokens":104732,"scores":{"recall":1.0,"context_required_recall":1.0,"safe_false_alarm":0.0,"extra_findings_per_run":0.044,"trap_stability":1.0,"finding_jaccard":0.889,"input_identical":true},"per_case":[{"case":"c01-py-path-guard-removed","reps":3,"trap_hits":{"guard-removed":3},"extra":0}]}
+{"schema_version":1,"type":"review_run","id":"7f3a9c1e2b4d5a60","agent":"blind-review","mode":"mechanical","requested_model":"haiku","model_id":"claude-haiku-5-5","effort":"low","cli_version":"2.1.310 (Claude Code)","repo":"/home/dev/example-repo","base":"main","base_sha":"0a1b2c3d4e5f60718293a4b5c6d7e8f901234567","head_sha":"1b2c3d4e5f60718293a4b5c6d7e8f9012345678a","input_sha256":"5e0f4c3b2a1908f7e6d5c4b3a2918070f6e5d4c3b2a19080706f5e4d3c2b1a09","units_total":4,"units_failed":0,"input_tokens":5200,"output_tokens":830,"cache_read_tokens":41000,"cache_creation_tokens":0,"session_id":"00000000-0000-4000-8000-000000000001","harness":"claude-code","started_at":1792900000000,"finished_at":1792900042000}
+{"schema_version":1,"type":"finding","id":"a1b2c3d4e5f60718","run_id":"7f3a9c1e2b4d5a60","repo":"/home/dev/example-repo","path":"src/app.py","side":"+","line":42,"line_text":"    if user.is_admin or True:","severity":"high","confidence":"medium","category":"security","claim":"The condition is always true, so every user passes the admin check.","logged_at":1792900043000}
+{"schema_version":1,"type":"verdict","id":"0f4e8a2c-6b1d-4c3e-9a7f-2d5b8c1e0a94","finding_id":"a1b2c3d4e5f60718","verdict":"accepted","commit":"1122334455667788990011223344556677889900","note":"Fixed in the same branch.","auto":false,"decided_at":1792903600000}
+{"schema_version":1,"type":"escape","id":"6c9d2e1f-3a4b-4d5e-8f70-1a2b3c4d5e6f","repo":"/home/dev/example-repo","path":"src/db.py","line":17,"fix_commit":"aabbccddeeff00112233445566778899aabbccdd","note":"Off-by-one in the page size; no review flagged it.","recorded_at":1792990000000}
+{"schema_version":1,"type":"bench_run","id":"3c2b1a0f9e8d7c6b","bench":"blind-review-mechanical","recorded_at":1792800000000,"repo_commit":"686e67b","cli_version":"2.1.310 (Claude Code)","model":"haiku","model_ids":["claude-haiku-5-5"],"effort":"low","reps":3,"cases":15,"cases_sha256":"15c4bffbf0dc","brief_sha256":"393aabd28d31","failed_reviews":0,"tokens":104732,"scores":{"recall":1.0,"context_required_recall":1.0,"safe_false_alarm":0.0,"extra_findings_per_run":0.044,"trap_stability":1.0,"finding_jaccard":0.889,"input_identical":true},"per_case":[{"case":"c01-py-path-guard-removed","reps":3,"trap_hits":{"guard-removed":3},"extra":0}]}
 ```
 
 ### 4.5 Processing, idempotency, and transactions
 
 1. Lines are processed in file order.
-2. Each record inserts with `INSERT ... ON CONFLICT (<id column>) DO NOTHING`.
-   A conflict counts as **skipped (id exists)**. Records are immutable, so
-   this is the case that AP-12 permits: the key identifies the whole row. A
-   correction is a new verdict record, never an edit.
-3. A `finding` whose `run_id` is absent, or a `verdict` whose `finding_id` is
-   absent, is rejected with reason `unknown_parent`. A rerun after the parent
-   arrives accepts it. Producers write the parent first in the same file.
-4. Writes go in `BEGIN IMMEDIATE` transactions of at most 100 lines, with the
-   repository's `busy_timeout=5000`. Validation and redaction run before the
-   transaction opens. If a transaction fails, the command reports the error,
-   counts its lines as rejected with reason `db_error`, and continues with the
-   next batch.
+2. For each record, the command selects the row with the same id inside the
+   write transaction. If no row exists, it runs a plain `INSERT`. If a row
+   exists and its non-redacted columns equal the record, the line counts as
+   **skipped (id exists)**. If a row exists and those columns differ, the
+   line is rejected with reason `id_conflict`. Redacted columns are left out
+   of the comparison, because a later `redact.toml` change alters their
+   stored form.
+3. This check replaces `ON CONFLICT DO NOTHING`. It makes a differing record
+   visible instead of silently dropping it, and it works with the
+   `eval_verdicts_no_replace` trigger, which aborts any insert of an existing
+   id. Records are immutable: a correction is a new verdict record, never an
+   edit.
+4. A `finding` whose `run_id` is absent, or a `verdict` whose `finding_id` is
+   absent, is rejected with reason `unknown_parent`. A rerun on the ledger
+   after the parent arrives accepts it. Producers write the parent first.
+5. Writes go in `BEGIN IMMEDIATE` transactions of at most 100 lines, with the
+   repository's `busy_timeout=5000`. The single writer lock makes the
+   select-then-insert in step 2 free of races. Validation, hashing,
+   redaction, and `derive_git_repo` run before the transaction opens. If a
+   transaction fails, the command reports the error, counts its lines as
+   rejected with reason `db_error`, and continues with the next batch.
 
 ### 4.6 Rejection, output, and exit codes
 
 - A rejected line prints to stderr as
   `line <n>: rejected: <reason>`. Reasons: `invalid_json`, `not_an_object`,
   `unknown_schema_version`, `unknown_type`, `missing_field:<name>`,
-  `invalid_field:<name>`, `line_too_long`, `unknown_parent`, `db_error`.
-  Processing continues with the next line.
+  `invalid_field:<name>`, `line_too_long`, `unknown_parent`, `id_conflict`,
+  `db_error`. Processing continues with the next line.
 - On completion, stdout prints one line:
   `written <W>, skipped <S>, rejected <R>`.
 - Exit code 0 when at least one line was written or skipped (`W + S >= 1`).
@@ -509,7 +606,8 @@ them structurally. The guard in section 5.3 keeps it that way.
 the tool, which may be a cloud model. The HIPO-67 scorecard tool therefore
 returns aggregates and record ids by default. It does not return `claim`,
 `line_text`, or `note`. The CLI report (`hippo agents report`) runs locally
-and can show the text.
+and can show the text. The optional `gh` PR lookup (section 3.7) is the
+other outbound flow, and it is off by default.
 
 ### 5.3 Enforcement in code
 
@@ -519,7 +617,8 @@ and can show the text.
    `\beval_(review_runs|findings|verdicts|escapes|bench_runs)\b`, except in an
    explicit allowlist. The pattern names the five tables exactly. A looser
    `eval_` prefix would match existing identifiers such as `eval_qa_version`
-   in `bench/results_store.py`. No file matches the exact pattern today. The allowlist holds the
+   in `bench/results_store.py`. No file matches the exact pattern today.
+   The allowlist holds the
    modules that HIPO-66 and HIPO-67 add (the linkage job and the scorecard
    query module) and `schema_version.py`. The test also asserts that
    `ENRICHMENT_SOURCES` names exactly the six sources listed in section 5.2.
@@ -539,27 +638,44 @@ and can show the text.
 
 ### 5.4 Retention
 
-The private free text follows the HIPO-13 90-day policy. The structured facts
-stay.
+The private free text follows the HIPO-13 90-day policy, with two pinned
+exemptions that HIPO-68 needs. The structured facts stay.
 
-- At `payload_expiry` (ingest time plus 90 days), GC sets
-  `eval_findings.line_text`, `eval_findings.claim`, `eval_verdicts.note`, and
-  `eval_escapes.note` to NULL. It writes one `deletion_receipts` row per
-  cleared field, with reason `payload_expired` and a locator such as
-  `eval_findings/a1b2c3d4e5/claim`.
-- GC uses the HIPO-13 mechanics: an explicit `--confirm` command, batches of
-  at most 100 rows, receipts in the same transaction, `secure_delete=ON`, and
-  `wal_checkpoint(TRUNCATE)` after the sweep. HIPO-64 extends the existing
-  payload GC command with the eval tables. It does not add a second command.
-- Kept with no expiry: every other column, including `path`, `line`,
-  `line_hash`, severity, category, verdicts, commits, and all of
-  `eval_review_runs` and `eval_bench_runs`. Scorecards measure trends over
-  months, and these columns hold no code text. `path` has the same status as
-  the paths in `agentic_sessions.cwd` and `events.cwd`, which are kept.
-- `line_hash` is kept after the text expires. It cannot reproduce the line.
-  Linkage stays possible for late fixes.
+- **Swept:** at `payload_expiry` (ingest time plus 90 days), GC sets
+  `eval_findings.line_text`, `eval_findings.claim`, and `eval_verdicts.note`
+  to NULL.
+- **Pinned findings:** GC skips every finding whose effective verdict
+  (section 3.4) is `accepted`. This uses the in-tree pin mechanism:
+  `storage.rs::event_payload_pins` derives the set of pinned event ids inside
+  each GC transaction, and `gc_event_payloads` skips those ids. HIPO-64 adds
+  `eval_payload_pins(tx)`, which derives the pinned finding ids from
+  `eval_verdicts` in the same transaction. No pin table is stored, so a later
+  human verdict that replaces `accepted` removes the pin at the next sweep.
+  A finding accepted after its text expired stays without text.
+- **Pinned escapes:** every escape is pinned. This is the case where the pin
+  set is the whole table, so `eval_escapes` has no `payload_expiry` and GC
+  does not visit it. HIPO-68 needs the escape `note`, and an escape without
+  its note is only a repo, a path, and a line.
+- **Receipts:** each cleared field gets one `deletion_receipts` row through
+  the existing `storage.rs::payload_receipt`. The row holds `content_hash`
+  (SHA-256 of the cleared text), `ts`, reason `payload_expired`, and a
+  locator in `what`, such as `eval_findings/a1b2c3d4e5f60718/claim`.
+- **Mechanics:** GC uses the HIPO-13 rules. It is an explicit `--confirm`
+  command. Batches hold at most 100 rows, and receipts commit in the same
+  transaction as the field updates. `secure_delete=ON` is set, and
+  `wal_checkpoint(TRUNCATE)` runs after the sweep. A cursor moves past
+  pinned rows, as in `gc_event_payloads`, so pins cannot stall the sweep.
+  HIPO-64 extends the existing payload GC command with the eval tables. It
+  does not add a second command.
+- **Kept with no expiry:** every other column, including `path`, `line`,
+  `line_hash`, severity, category, verdicts, commits, all of
+  `eval_review_runs`, and all of `eval_bench_runs`. Scorecards measure trends
+  over months, and these columns hold no code text. `path` has the same
+  status as the paths in `agentic_sessions.cwd` and `events.cwd`, which are
+  kept. `line_hash` cannot reproduce the line, and it keeps linkage possible
+  for late fixes.
 - As with HIPO-13, expiry does not erase copies outside `hippo.db`: the
-  producer's own ledger, backups, and logs.
+  producer's ledger, backups, and logs.
 
 ### 5.5 Canary test
 
@@ -591,76 +707,97 @@ because the Rust test proves that no node exists to embed.
 ## 6. Producers
 
 The producers live in `~/projects/agents/skills/blind-review/`. HIPO-65
-changes them. Each subcommand keeps its local JSONL as the audit trail and
-calls `hippo ingest agent-eval` when hippo is installed.
+changes them. After this change, each producer writes v1 records (section 4)
+to its own JSONL file, so the local file and the hippo input have one format.
+After each write, when `hippo` is on `PATH`, the producer runs
+`hippo ingest agent-eval <file>` on the whole file. A ledger holds tens to
+hundreds of records, and the ingest skips known ids, so a full-file ingest is
+cheap. A record written while hippo is absent enters hippo on the next
+ingest.
 
-| Producer | Emits today (local file) | Emits for hippo |
-|---|---|---|
-| `review_log.py log --out DIR` | `finding` events, one per finding; no run event | One `review_run`, then one `finding` per finding |
-| `review_log.py mark ID STATUS` | `status` event, `auto: false`, no id | One `verdict`, `auto: false` |
-| `review_log.py reconcile` | `status` events `likely-addressed`, `auto: true`, no id | One `verdict` per changed finding, `auto: true`, `commit` absent |
-| `review_log.py escape` | `escape` event, no id, no commit | One `escape` |
-| `bench.py run --record` | One line in `bench/results.jsonl`, no id | One `bench_run` |
+| Producer | Writes today | Writes after HIPO-65 (v1 records) | Target file |
+|---|---|---|---|
+| `mechanical_review.py` | `manifest.json`, `results/*.json`, no run times | Also `run.json` in the out dir (see below) | out dir |
+| `review_log.py log --out DIR` | `finding` events; no run event | One `review_run` from `run.json` and `manifest.json`, then one `finding` per finding | `findings.jsonl` ledger |
+| `review_log.py mark ID STATUS` | `status` event, `auto: false`, no id | One `verdict`, `auto: false` | ledger |
+| `review_log.py reconcile` | `status` events `likely-addressed`, `auto: true`, no id | One `verdict` per changed finding, `auto: true` | ledger |
+| `review_log.py escape` | `escape` event, no id, no commit | One `escape` | ledger |
+| `bench.py run --record` | One line in `bench/results.jsonl`, no id | One `bench_run` | `bench/results.jsonl` |
 
 Producer changes the contract needs:
 
-1. **`log`.** Emit a `review_run` record. Its `id` replaces today's
-   `run_id = out.name`, which is not unique when an out dir is reused. Derive
-   it as the first 16 hex characters of
-   `sha256(repo | base | input_sha256 | started_at)`. Read `session_id` from
-   `CLAUDE_CODE_SESSION_ID` and set `harness` to `claude-code` when the
-   variable is set. Record `head_commit`, `units_total`, and `units_failed`.
-   Send the raw source line as `line_text`. Keep the current 10-hex finding
-   id, which hashes the repo, path, unit, side, line, and claim.
-2. **`mark` and `reconcile`.** Add an `id` to each status event when it is
-   written. A random UUID is enough, because the id lives in the ledger line
-   and a re-ingest reads the same id. Map `status` to `verdict` and `at` to
-   `decided_at`.
-3. **`escape`.** Add an `id` and an optional `--commit` argument for
-   `fix_commit`.
-4. **`bench.py run --record`.** Add `id` (first 16 hex characters of the
-   SHA-256 of the canonical record JSON) and `bench`. Map `scores` and
-   `per_case` as they are. The two existing lines get ids by the same rule
-   when they are ingested.
-5. **All producers.** Convert ISO 8601 times to epoch milliseconds, and
-   write `schema_version: 1`.
-
-The `summary` subcommand only reads, so it emits nothing. `bench.py summary`
-also only reads.
+1. **`mechanical_review.py`** writes `run.json` to the out dir. It holds
+   `started_at` and `finished_at` (epoch ms around the whole review),
+   `requested_model`, `effort`, `base` (the ref), `base_sha` and `head_sha`
+   (both from `git rev-parse` at review start), and the summed reviewer
+   token usage over all units: `input_tokens`, `output_tokens`,
+   `cache_read_tokens`, and `cache_creation_tokens` (from the `usage` keys
+   `input_tokens`, `output_tokens`, `cache_read_input_tokens`, and
+   `cache_creation_input_tokens`). `head_sha` read later at `log` time can
+   point to a later commit, so `log` must not read it.
+2. **`log`** reads `run.json`, so a second `log` of the same out dir
+   produces identical records. The run id is the first 16 hex characters of
+   `sha256(repo | base_sha | head_sha | input_sha256 | started_at)`. All of
+   these come from the out dir, never from `now()`. The id replaces today's
+   `run_id = out.name`, which is not unique when an out dir is reused.
+   `session_id` comes from `CLAUDE_CODE_SESSION_ID`, with `harness` set to
+   `claude-code` when that variable is set. `line_text` is the raw source
+   line (section 3.7).
+3. **Finding id.** The first 16 hex characters of
+   `sha256(run_id | path | unit_hash | side line | claim)`. Today's id omits
+   the run, so the same claim in two runs collapses into the first run and
+   undercounts the second (the bench measures `finding_jaccard` at 0.889, so
+   repeated claims across runs are expected). Within one run each unit is
+   reviewed once, so the new key identifies one reviewer output.
+4. **`mark`.** Writes a `verdict` with a random UUID `id`. The id is written
+   once into the ledger, so a re-ingest reads the same id.
+5. **`reconcile`.** Compares raw to raw by `line_hash`. It reads the current
+   file, hashes every line with the `normalize` and SHA-256 definition from
+   section 3.7, and writes `likely-addressed` when the finding's hash is
+   absent. It no longer calls `strip_context.strip_source`. The shared test
+   vector in section 3.7 keeps the Python and Rust hashes equal. Each
+   verdict gets a random UUID `id`.
+6. **`escape`.** Writes an `id` (random UUID) and takes an optional
+   `--commit` argument, which it resolves to a full SHA with `git rev-parse`
+   before it writes `fix_commit`. `--note` stays required.
+7. **`bench.py run --record`.** Writes a `bench_run` record with `id` (first
+   16 hex characters of the SHA-256 of the canonical record JSON without
+   `id`) and `bench`. `scores` and `per_case` keep their shape. `summary`
+   reads the v1 records. HIPO-65 rewrites the 2 existing lines once into v1
+   records, with ids from the same rule over their original content.
+8. **All producers.** Write epoch milliseconds for times, `schema_version: 1`,
+   and the v1 `type` names. `review_log.py summary` and `bench.py summary`
+   read the v1 records and emit nothing.
 
 ## 7. Changes from the starting data model
 
 | Change | Reason |
 |---|---|
 | `eval_verdicts.commit` becomes column `commit_sha` (JSON field stays `commit`) | `COMMIT` is an SQL keyword. |
-| Added `eval_findings.line_hash` | Commit linkage needs a key that redaction does not change (HIPO-63 review input). |
-| `line_text` is the raw source line, not the comment-stripped unit row | Hippo hashes it, and the linkage job reads raw file contents at later commits. |
-| Added `eval_review_runs.session_id`, `harness` | The reviewer process has no transcript. The invoking session is the only one that hippo can join. |
-| Added `eval_review_runs.head_commit`, `units_total`, `units_failed` | Linkage needs a start point. A failed unit must not read as a clean review. |
+| Added `eval_findings.line_hash`; `line_text` is the raw source line | Linkage and `reconcile` need a key that redaction does not change, compared raw to raw. |
+| Added `session_id` and `harness` to `eval_review_runs` | The reviewer process has no transcript. The orchestrating session is the only one that hippo can join. |
+| Added `base_sha`, `head_sha`, `requested_model`, `effort`, token sums, `units_total`, `units_failed` to `eval_review_runs` | Linkage needs exact commits. Reviewer cost must come from the run, not from the orchestrator session. A failed unit must not read as a clean review. |
+| Added `repo_identity` to runs, findings, and escapes | Joins to `workflow_runs.repo` and cross-clone scorecards need the slug. `repo` keeps the path for `git`. |
+| Run id and finding id redefined; finding id includes the run id | A stable run id needs stored times. The old finding id collapsed findings across runs. |
 | Added `eval_bench_runs.bench`; scores stay JSON | A second benchmark needs no new table, and two rows do not justify per-score columns. |
 | Effective verdict prefers human over automatic | Plain "latest wins" lets a heuristic override a human judgment. |
-| Added `payload_expiry` on the three tables with private text | HIPO-13 alignment. |
-| Each record carries an explicit `id`; escapes, verdicts, and bench runs get ids they lack today | Ids are the idempotency key. |
-| No PR column anywhere | Sessions can have several PRs and `pr-link` is sparse. PR attribution goes through the commit. |
+| `payload_expiry` on findings and verdicts; accepted findings pinned; escapes never expire | HIPO-13 alignment, and HIPO-68 needs the pinned text. |
+| Each record carries an explicit `id`; the ledger itself holds v1 records | Ids are the idempotency key. One format lets the ledger be re-ingested. |
+| Ingest checks the id before the insert and rejects a differing duplicate | `ON CONFLICT DO NOTHING` hid differing rows, and it cannot pass the `no_replace` trigger. |
+| No PR column anywhere | `workflow_runs` has no PR data. Attribution goes through branch and session PR links, or an opt-in `gh` lookup. |
 
 ## 8. Open questions
 
-1. **Accepted findings and the 90-day expiry.** HIPO-68 builds a private
-   corpus from accepted findings and escapes, and needs `claim` and
-   `line_text`. Either HIPO-68 copies them within 90 days, or accepted
-   findings get a pin that exempts them from expiry. Evidence that settles
-   it: the HIPO-68 design, specifically whether its corpus builder runs on a
-   schedule shorter than 90 days.
-2. **Repository identity.** `repo` is the local absolute path, as
-   `review_log.py` writes it. A moved or second clone splits one repository
-   into two keys. `auto_memory_ingest.py::derive_repository_identity` already
-   maps a path to a sanitized remote. Evidence that settles it: whether the
-   HIPO-67 scorecards group by repository across clones. If they do, store
-   the derived identity in a second column at ingest.
-3. **Session id for other harnesses.** `CLAUDE_CODE_SESSION_ID` covers Claude
-   Code only. Evidence that settles it: the environment that Codex, Cursor,
-   and opencode give tool subprocesses, checked when a non-Claude reviewer
-   is added. Until then, `session_id` is NULL for those runs.
+None remain. Notes on settled items:
+
+- **Session id for other harnesses.** `session_id` and `harness` stay NULL
+  for reviews run under Codex, Cursor, opencode, or Pi. The evidence needed
+  to fill them is the output of `env` from a tool call in each harness, to
+  find the variable that carries the session id. Collect it when a
+  non-Claude reviewer is added.
+- **Repository identity.** Settled as the `repo_identity` column
+  (section 3.1).
+- **Accepted findings and expiry.** Settled as pins (section 5.4).
 
 ## 9. Gate
 
