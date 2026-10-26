@@ -1358,6 +1358,10 @@ async fn run() -> Result<()> {
                         summary.segments_unchanged
                     );
                     println!(
+                        "  Subagent rows repaired: {:>5}   (identity recomputed from stored source_file)",
+                        summary.subagent_identity_repaired
+                    );
+                    println!(
                         "  Subagent agent coverage: {} / {}   (subagent rows with agent filled / subagent rows)",
                         summary.subagent_rows_with_agent, summary.subagent_rows
                     );

@@ -94,7 +94,7 @@ The token, hook, `requested_model`, and `effort` columns exist from v28 but hold
 | `pr_links_json` | `TEXT NOT NULL DEFAULT '[]'` | JSON array of linked pull requests. |
 | `updated_at` | `INTEGER NOT NULL` | Last write, epoch ms. |
 
-`hippo ingest claude-session-backfill <glob>` re-reads `meta.json` for transcripts still on disk and prints `Subagent agent coverage: <filled> / <rows>` for the processed subagent transcripts.
+`hippo ingest claude-session-backfill <glob>` first repairs subagent identity in the database: claude-code rows whose stored `source_file` is under `subagents/` but carry `is_subagent = 0` (workflow subagents written before v28) get `is_subagent`, `parent_session_id`, and `project_dir` recomputed from that path, even when the transcript is gone, and the count prints as `Subagent rows repaired`. It then re-reads `meta.json` for transcripts still on disk and prints `Subagent agent coverage: <filled> / <rows>`, counting the processed files' `is_subagent = 1` rows by `(session_id, harness)`.
 
 ## Event payload retention
 

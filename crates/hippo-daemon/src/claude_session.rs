@@ -381,14 +381,6 @@ pub(crate) struct SubagentMeta {
     finished: Option<bool>,
 }
 
-/// True for any transcript below a `subagents` directory, including
-/// `subagents/workflows/<wf>/agent-<id>.jsonl`. Workflow `journal.jsonl`
-/// files sit there too but are orchestration journals with no `meta.json`.
-pub(crate) fn is_subagent_transcript(path: &Path) -> bool {
-    path.file_name() != Some(std::ffi::OsStr::new("journal.jsonl"))
-        && path.components().any(|c| c.as_os_str() == "subagents")
-}
-
 /// Read the sibling `meta.json` of a subagent transcript.
 ///
 /// Never fails: a missing or malformed file, a missing `agentType` or
@@ -399,7 +391,7 @@ pub(crate) fn is_subagent_transcript(path: &Path) -> bool {
 fn read_subagent_meta(path: &Path) -> SubagentMeta {
     use serde_json::Value;
 
-    if !is_subagent_transcript(path) {
+    if !SessionFile::from_path(path).is_subagent {
         return SubagentMeta::default();
     }
     let meta_path = path.with_extension("meta.json");
@@ -492,70 +484,68 @@ pub(crate) fn compute_segment_content_hash(seg: &SessionSegment) -> String {
         .collect()
 }
 
-/// Describes how a JSONL path decomposes into the fields the `claude_sessions`
+/// Describes how a JSONL path decomposes into the fields the `agentic_sessions`
 /// row needs. We derive these from the filesystem layout Claude Code uses:
 ///
 /// ```text
-/// <projects-root>/<project-encoded>/<session-uuid>.jsonl              (main)
-/// <projects-root>/<project-encoded>/<parent-uuid>/subagents/<id>.jsonl (subagent)
+/// <projects-root>/<project-encoded>/<session-uuid>.jsonl                               (main)
+/// <projects-root>/<project-encoded>/<parent-uuid>/subagents/<id>.jsonl                 (subagent)
+/// <projects-root>/<project-encoded>/<parent-uuid>/subagents/workflows/<wf>/<id>.jsonl  (workflow subagent)
 /// ```
+///
+/// This is the single definition of "subagent transcript": the nearest
+/// `subagents` ancestor decides, and its parent directory is the parent
+/// session. Workflow `journal.jsonl` files sit under `subagents/` too, but
+/// they are orchestration journals, not transcripts.
 ///
 /// `project_dir` is the encoded project directory name (e.g.
 /// `-Users-carpenter-projects-hippo`). We keep the encoded form because the
-/// Python ingester uses the same value — mixing encodings between paths would
+/// Python ingester uses the same value; mixing encodings between paths would
 /// make dedupe-by-(session_id, segment_index) lookups miss.
-struct SessionFile<'a> {
+pub(crate) struct SessionFile<'a> {
     path: &'a Path,
-    project_dir: String,
+    pub(crate) project_dir: String,
     session_id: String,
-    is_subagent: bool,
-    parent_session_id: Option<String>,
+    pub(crate) is_subagent: bool,
+    pub(crate) parent_session_id: Option<String>,
 }
 
 impl<'a> SessionFile<'a> {
-    fn from_path(path: &'a Path) -> Self {
-        let session_id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        // Detect `<project>/<parent-uuid>/subagents/<id>.jsonl`.
-        let parent = path.parent();
-        let is_subagent =
-            parent.and_then(|p| p.file_name()).and_then(|n| n.to_str()) == Some("subagents");
-
-        let (project_dir, parent_session_id) = if is_subagent {
-            // parent = <project>/<parent-uuid>/subagents
-            // grandparent = <project>/<parent-uuid>
-            // great-grandparent = <project>
-            let grandparent = parent.and_then(|p| p.parent());
-            let project = grandparent.and_then(|p| p.parent());
-            let parent_uuid = grandparent
-                .and_then(|p| p.file_name())
+    pub(crate) fn from_path(path: &'a Path) -> Self {
+        let name = |p: Option<&Path>| {
+            p.and_then(Path::file_name)
                 .and_then(|n| n.to_str())
-                .map(|s| s.to_string());
-            let project_name = project
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            (project_name, parent_uuid)
-        } else {
+                .map(str::to_string)
+        };
+        let is_journal = path.file_name() == Some(std::ffi::OsStr::new("journal.jsonl"));
+        let subagents_dir = path
+            .ancestors()
+            .skip(1)
+            .find(|dir| dir.file_name() == Some(std::ffi::OsStr::new("subagents")))
+            .filter(|_| !is_journal);
+
+        let (project_dir, parent_session_id) = match subagents_dir {
+            // subagents_dir = <project>/<parent-uuid>/subagents
+            Some(dir) => {
+                let parent_uuid_dir = dir.parent();
+                (
+                    name(parent_uuid_dir.and_then(Path::parent)).unwrap_or_default(),
+                    name(parent_uuid_dir),
+                )
+            }
             // parent = <project>
-            let project_name = parent
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            (project_name, None)
+            None => (name(path.parent()).unwrap_or_default(), None),
         };
 
         Self {
             path,
             project_dir,
-            session_id,
-            is_subagent,
+            session_id: path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string(),
+            is_subagent: subagents_dir.is_some(),
             parent_session_id,
         }
     }
@@ -1160,10 +1150,13 @@ fn insert_segments(
         let prior_queue_status = prior.as_ref().and_then(|(_, _, _, s)| s.as_deref());
 
         // T-A.3 step 3: upsert with ON CONFLICT DO UPDATE.
-        // Identity columns (session_id, segment_index, project_dir, source_file,
-        // cwd, is_subagent, parent_session_id, start_time, created_at) are NOT
-        // updated on conflict — they describe what the segment is, not what it
-        // contains. Content columns are always refreshed to the latest reparse.
+        // Identity columns (session_id, segment_index, source_file, cwd,
+        // start_time, created_at) are NOT updated on conflict: they describe
+        // what the segment is, not what it contains. The path-derived identity
+        // (`is_subagent`, `parent_session_id`, `project_dir`) IS refreshed so a
+        // reparse repairs rows written by an older `SessionFile::from_path`
+        // (workflow subagents were once stored as main sessions). Content
+        // columns are always refreshed to the latest reparse.
         // `last_enriched_content_hash` is intentionally omitted — only the brain
         // writes that (T-A.5).
         tx.execute(
@@ -1201,7 +1194,10 @@ fn insert_segments(
                  hook_errors               = excluded.hook_errors,
                  prevented_continuations   = excluded.prevented_continuations,
                  hook_names_json           = excluded.hook_names_json,
-                 permission_decisions_json = excluded.permission_decisions_json",
+                 permission_decisions_json = excluded.permission_decisions_json,
+                 is_subagent               = excluded.is_subagent,
+                 parent_session_id         = excluded.parent_session_id,
+                 project_dir               = excluded.project_dir",
             params![
                 seg.session_id,
                 seg.segment_index,
@@ -1343,6 +1339,38 @@ fn try_insert_segments(conn: &Connection, segments: &[SessionSegment]) -> (usize
             (0, 0, 1)
         }
     }
+}
+
+/// Repair subagent identity on rows whose transcript may no longer be on
+/// disk. Recomputes `is_subagent`, `parent_session_id`, and `project_dir` from
+/// the stored `source_file` with `SessionFile::from_path` for claude-code rows
+/// under `subagents/` still marked as main sessions. Returns the rows updated.
+pub(crate) fn repair_subagent_identity(conn: &Connection) -> rusqlite::Result<usize> {
+    let tx = conn.unchecked_transaction()?;
+    let rows: Vec<(i64, String)> = tx
+        .prepare(
+            "SELECT id, source_file FROM agentic_sessions
+             WHERE harness = 'claude-code'
+               AND source_file LIKE '%/subagents/%'
+               AND is_subagent = 0",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut repaired = 0usize;
+    for (id, source_file) in rows {
+        let identity = SessionFile::from_path(Path::new(&source_file));
+        if identity.is_subagent {
+            repaired += tx.execute(
+                "UPDATE agentic_sessions
+                 SET is_subagent = 1, parent_session_id = ?2, project_dir = ?3
+                 WHERE id = ?1",
+                params![id, identity.parent_session_id, identity.project_dir],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(repaired)
 }
 
 /// Extract redacted segments and attach the subagent `meta.json` fields.
@@ -2489,6 +2517,146 @@ mod tests {
         let journal = wf.join("journal.jsonl");
         let (meta, warns) = count_warns(|| read_subagent_meta(&journal));
         assert_eq!((meta, warns), (SubagentMeta::default(), 0));
+    }
+
+    #[test]
+    fn from_path_derives_identity_for_every_layout() {
+        let identity = |p: &str| {
+            let f = SessionFile::from_path(Path::new(p));
+            (
+                f.session_id.clone(),
+                f.is_subagent,
+                f.project_dir.clone(),
+                f.parent_session_id.clone(),
+            )
+        };
+        assert_eq!(
+            identity("/root/-proj/sess-1.jsonl"),
+            ("sess-1".into(), false, "-proj".into(), None)
+        );
+        assert_eq!(
+            identity("/root/-proj/parent-1/subagents/agent-a1.jsonl"),
+            (
+                "agent-a1".into(),
+                true,
+                "-proj".into(),
+                Some("parent-1".into())
+            )
+        );
+        assert_eq!(
+            identity("/root/-proj/parent-1/subagents/workflows/wf_1/agent-w1.jsonl"),
+            (
+                "agent-w1".into(),
+                true,
+                "-proj".into(),
+                Some("parent-1".into())
+            )
+        );
+        // Orchestration journals are not transcripts.
+        assert!(
+            !SessionFile::from_path(Path::new(
+                "/root/-proj/parent-1/subagents/workflows/wf_1/journal.jsonl"
+            ))
+            .is_subagent
+        );
+    }
+
+    /// Rows written by the old `from_path` stored workflow subagents as main
+    /// sessions. Re-ingesting the file must repair the identity columns.
+    #[test]
+    fn reingest_repairs_mislabeled_workflow_subagent_row() {
+        use crate::watch_claude_sessions::make_test_jsonl_line;
+
+        let conn = open_test_db();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("-proj/parent-1/subagents/workflows/wf_1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent-w1.jsonl");
+        std::fs::write(
+            &path,
+            [
+                make_test_jsonl_line("agent-w1", 0, "user", "workflow step"),
+                make_test_jsonl_line("agent-w1", 2, "assistant", "doing the workflow step now"),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        assert_eq!(ingest_session_file(&conn, &path).2, 0);
+        conn.execute(
+            "UPDATE agentic_sessions
+             SET is_subagent = 0, parent_session_id = NULL, project_dir = 'wf_1'",
+            [],
+        )
+        .unwrap();
+
+        let (_, _, errors) = ingest_session_file(&conn, &path);
+        assert_eq!(errors, 0);
+        let row: (i64, Option<String>, String) = conn
+            .query_row(
+                "SELECT is_subagent, parent_session_id, project_dir
+                 FROM agentic_sessions WHERE session_id = 'agent-w1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (1, Some("parent-1".into()), "-proj".into()));
+    }
+
+    /// The database-side pass repairs rows whose transcript is gone, and
+    /// leaves main sessions, journals, and correct rows alone.
+    #[test]
+    fn repair_subagent_identity_fixes_rows_from_stored_source_file() {
+        let conn = open_test_db();
+        let insert = |session_id: &str, source_file: &str, is_subagent: i64, project: &str| {
+            conn.execute(
+                "INSERT INTO agentic_sessions
+                    (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                     source_file, is_subagent, start_time, end_time)
+                 VALUES (?1, 'claude-code', 0, ?4, '/p', 's', ?2, ?3, 1, 2)",
+                params![session_id, source_file, is_subagent, project],
+            )
+            .unwrap();
+        };
+        insert(
+            "agent-gone",
+            "/deleted/-proj/parent-9/subagents/workflows/wf_9/agent-gone.jsonl",
+            0,
+            "wf_9",
+        );
+        insert("main-1", "/deleted/-proj/main-1.jsonl", 0, "-proj");
+        insert(
+            "agent-ok",
+            "/deleted/-proj/parent-9/subagents/agent-ok.jsonl",
+            1,
+            "-proj",
+        );
+
+        assert_eq!(repair_subagent_identity(&conn).unwrap(), 1);
+        assert_eq!(repair_subagent_identity(&conn).unwrap(), 0, "idempotent");
+
+        let rows: Vec<(String, i64, Option<String>, String)> = conn
+            .prepare(
+                "SELECT session_id, is_subagent, parent_session_id, project_dir
+                 FROM agentic_sessions ORDER BY session_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "agent-gone".into(),
+                    1,
+                    Some("parent-9".into()),
+                    "-proj".into()
+                ),
+                ("agent-ok".into(), 1, None, "-proj".into()),
+                ("main-1".into(), 0, None, "-proj".into()),
+            ]
+        );
     }
 
     /// Metadata columns are refreshed on conflict but never feed
