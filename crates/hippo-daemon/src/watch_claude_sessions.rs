@@ -60,6 +60,8 @@ struct FileState {
     cooldown_until: Option<Instant>,
     /// A timed-out blocking task must finish before another parser can start.
     in_flight: Option<tokio::task::AbortHandle>,
+    /// The sibling `meta.json` changed: re-ingest even without transcript growth.
+    meta_changed: bool,
 }
 
 /// Load all saved offsets from `agentic_session_offsets` into memory.
@@ -90,6 +92,7 @@ fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
                 size_at_last_read: size,
                 cooldown_until: None,
                 in_flight: None,
+                meta_changed: false,
             },
         );
     }
@@ -187,9 +190,10 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
     // detect growth because extract_segments/reader.lines() stops before an
     // unterminated final line — so byte_offset can equal size_at_last_read
     // even when the raw file is slightly larger.
-    if current_size <= state.size_at_last_read {
+    if current_size <= state.size_at_last_read && !state.meta_changed {
         return Ok(0);
     }
+    state.meta_changed = false;
 
     #[cfg(feature = "otel")]
     let start = Instant::now();
@@ -758,6 +762,32 @@ async fn watch(config: &HippoConfig) -> Result<()> {
     }
 }
 
+/// Queue the transcript an FS event refers to. A `<stem>.meta.json` event
+/// queues the sibling `<stem>.jsonl` and marks it for re-ingest: Claude Code
+/// writes `finished` after the last transcript write, so the transcript alone
+/// never shows it. The content hash is unchanged, so nothing is re-enqueued.
+fn queue_event_path(
+    path: PathBuf,
+    states: &mut HashMap<PathBuf, FileState>,
+    pending: &mut VecDeque<PathBuf>,
+) {
+    let path = match path.to_str().and_then(|p| p.strip_suffix(".meta.json")) {
+        Some(stem) => {
+            let jsonl = PathBuf::from(format!("{stem}.jsonl"));
+            if !jsonl.is_file() {
+                return;
+            }
+            states.entry(jsonl.clone()).or_default().meta_changed = true;
+            jsonl
+        }
+        None if path.extension().is_some_and(|e| e == "jsonl") => path,
+        None => return,
+    };
+    if !pending.contains(&path) {
+        pending.push_back(path);
+    }
+}
+
 async fn ingest_events(
     mut states: HashMap<PathBuf, FileState>,
     db_path: &Path,
@@ -790,12 +820,7 @@ async fn ingest_events(
                 }
 
                 for path in event.paths {
-                    if path.extension().is_none_or(|e| e != "jsonl") {
-                        continue;
-                    }
-                    if !pending_reconciliation.contains(&path) {
-                        pending_reconciliation.push_back(path);
-                    }
+                    queue_event_path(path, &mut states, &mut pending_reconciliation);
                 }
             }
         }
@@ -1157,6 +1182,78 @@ mod tests {
             re_inserted, 0,
             "re-process with no new content should insert 0"
         );
+    }
+
+    #[tokio::test]
+    async fn meta_json_event_updates_subagent_finished_without_requeue() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).expect("init test db");
+
+        let parent = "test-sess-0001-0001-0001-0001-000000000002";
+        let sub_dir = dir.path().join("proj").join(parent).join("subagents");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let jsonl = sub_dir.join("agent-aaa.jsonl");
+        let meta = sub_dir.join("agent-aaa.meta.json");
+        let content = [
+            j("agent-aaa", 0, "user", "hello"),
+            j("agent-aaa", 1, "assistant", "hi there"),
+        ]
+        .join("\n")
+            + "\n";
+        std::fs::write(&jsonl, content).unwrap();
+
+        let mut states = HashMap::new();
+        let mut pending = VecDeque::new();
+        queue_event_path(jsonl.clone(), &mut states, &mut pending);
+        reconcile_next_file(&mut pending, &mut states, &db_path).await;
+
+        let finished = |c: &Connection| -> Option<i64> {
+            c.query_row(
+                "SELECT subagent_finished FROM agentic_sessions WHERE session_id = 'agent-aaa'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let queue = |c: &Connection| -> Vec<(i64, String, i64)> {
+            let mut stmt = c
+                .prepare("SELECT id, status, updated_at FROM agentic_enrichment_queue ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(finished(&conn), None);
+        let before = queue(&conn);
+        assert!(!before.is_empty());
+
+        // Claude Code writes `finished` after the last transcript write.
+        std::fs::write(
+            &meta,
+            r#"{"agentType":"Explore","spawnDepth":1,"toolUseId":"toolu_1","finished":true}"#,
+        )
+        .unwrap();
+        queue_event_path(meta.clone(), &mut states, &mut pending);
+        assert_eq!(pending.len(), 1);
+        reconcile_next_file(&mut pending, &mut states, &db_path).await;
+
+        assert_eq!(finished(&conn), Some(1));
+        assert_eq!(
+            queue(&conn),
+            before,
+            "metadata-only ingest must not re-enqueue"
+        );
+
+        // A meta.json with no transcript, or an unrelated file, queues nothing.
+        queue_event_path(
+            sub_dir.join("agent-zzz.meta.json"),
+            &mut states,
+            &mut pending,
+        );
+        queue_event_path(sub_dir.join("notes.txt"), &mut states, &mut pending);
+        assert!(pending.is_empty());
     }
 
     #[tokio::test]

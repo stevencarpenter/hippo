@@ -348,7 +348,9 @@ pub enum IngestSource {
         #[arg(long, default_value_t = 0)]
         wait_for_file: u64,
     },
-    /// Re-extract segments from previously-truncated session JSONL files (Bug A recovery)
+    /// Re-extract segments from previously-truncated session JSONL files (Bug A recovery).
+    /// Also repairs subagent identity across the whole database, prints `Subagent agent coverage`,
+    /// and on the first run after schema v28 re-enqueues segments whose `Agent` summaries changed.
     ClaudeSessionBackfill {
         /// Glob pattern matching session JSONL paths (e.g. ~/.claude/projects/**/*.jsonl)
         glob: String,

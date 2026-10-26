@@ -58,7 +58,7 @@ usage is in [Jev decisions](jev-decisions.md).
 
 ## Agent-evaluation columns (v28)
 
-All metadata columns below sit outside `content_hash`, so a change that touches only them never re-enqueues enrichment. The Claude Code writer (`claude_session.rs::insert_segments`) sets them, and the Codex writer (`codex_session.rs::upsert_segment_tx`) sets the model, effort, and token columns. Other harnesses leave the defaults.
+All metadata columns below sit outside `content_hash`, so a change that touches only them never re-enqueues enrichment. The Claude Code writer (`claude_session.rs::insert_segments_with_facts`) sets them, and the Codex writer (`codex_session.rs::upsert_segment_tx`) sets the model, effort, and token columns. Other harnesses leave the defaults.
 
 | Column | Type / default | Meaning |
 |---|---|---|
@@ -112,7 +112,7 @@ Resumed sessions: when a later file continues a `session_id`, the upsert is per 
 
 `agentic_sessions.title` holds the same redacted last `aiTitle` on every segment of the file. `''` when the file has none; a reparse never replaces a stored title with `''`.
 
-`hippo ingest claude-session-backfill <glob>` first repairs subagent identity in the database: claude-code rows whose stored `source_file` is under `subagents/` but carry `is_subagent = 0` (workflow subagents written before v28) get `is_subagent`, `parent_session_id`, and `project_dir` recomputed from that path, even when the transcript is gone, and the count prints as `Subagent rows repaired`. It then re-reads `meta.json` for transcripts still on disk and prints `Subagent agent coverage: <filled> / <rows>`, counting the processed files' `is_subagent = 1` rows by `(session_id, harness)`.
+`hippo ingest claude-session-backfill <glob>` first repairs subagent identity in the database: claude-code rows whose stored `source_file` is under `subagents/` but carry `is_subagent = 0` (workflow subagents written before v28) get `is_subagent`, `parent_session_id`, and `project_dir` recomputed from that path, even when the transcript is gone, and the count prints as `Subagent rows repaired`. It then re-reads `meta.json` for transcripts still on disk and prints `Subagent agent coverage: <filled> / <rows>`, counting the processed files' `is_subagent = 1` rows by `(session_id, harness)`. The first run after v28 also re-enqueues about 1,300 segments (counted on the development database) whose `Agent` tool-call summaries changed format, because those summaries are part of `content_hash`; later runs re-enqueue nothing for metadata-only changes. The live watcher also re-ingests a subagent transcript when its sibling `meta.json` changes, so `subagent_finished` no longer waits for a backfill.
 
 ## Event payload retention
 

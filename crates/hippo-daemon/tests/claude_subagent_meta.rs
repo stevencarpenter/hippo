@@ -87,8 +87,8 @@ fn subagent_meta_and_agent_summary_land_and_reingest_is_idempotent() {
         (0, String::new(), None, None, None)
     );
 
-    // Usage columns come from the transcript; hook columns are populated by a later task.
-    let defaults: (Option<String>, Option<String>, i64, i64, String, String) = conn
+    // Usage columns come from the transcript; this transcript has no hook or permission records.
+    let usage_and_hooks: (Option<String>, Option<String>, i64, i64, String, String) = conn
         .query_row(
             "SELECT requested_model, effort, input_tokens, hook_runs,
                     hook_names_json, permission_decisions_json
@@ -107,7 +107,7 @@ fn subagent_meta_and_agent_summary_land_and_reingest_is_idempotent() {
         )
         .unwrap();
     assert_eq!(
-        defaults,
+        usage_and_hooks,
         (
             Some("haiku".to_string()),
             Some("low".to_string()),

@@ -1264,8 +1264,10 @@ mod tests {
         );
         // Segments plus the 20 in / 2 out baseline equal the final counter
         // (400 in - 300 cached = 100 uncached, 50 out, 300 cached).
-        assert_eq!(50 + 30 + 20, 100);
-        assert_eq!(28 + 20 + 2, 50);
+        let (t0, t1) = (segs[0].usage.totals(), segs[1].usage.totals());
+        assert_eq!(t0.input_tokens + t1.input_tokens + 20, 100);
+        assert_eq!(t0.output_tokens + t1.output_tokens + 2, 50);
+        assert_eq!(t0.cache_read_tokens + t1.cache_read_tokens, 300);
         assert_eq!(segs[0].usage.model(), Some("gpt-synth-1"));
         assert_eq!(segs[0].usage.effort(), Some("high"));
         assert_eq!(segs[1].usage.model(), Some("gpt-synth-1"));

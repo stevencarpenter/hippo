@@ -576,6 +576,7 @@ fn json_whole(v: &serde_json::Value) -> Option<i64> {
 /// Fold one `cost-state`, `pr-link`, or `ai-title` record into `facts`.
 /// A missing or mistyped field stays `None` and logs one `warn` per file.
 fn observe_fact_record(
+    path: &Path,
     facts: &mut SessionFacts,
     entry_type: &str,
     entry: &serde_json::Value,
@@ -585,7 +586,10 @@ fn observe_fact_record(
     let mut bad = |what: &str| {
         if !*warned {
             *warned = true;
-            warn!("{entry_type} record has a missing or unexpected {what}; stored as NULL");
+            warn!(
+                path = %path.display(),
+                "{entry_type} record has a missing or unexpected {what}; stored as NULL"
+            );
         }
     };
     match entry_type {
@@ -927,6 +931,7 @@ fn observe_assistant_meta(
 /// token counts. `user` records carry no `usage`. A missing or non-object
 /// `usage` yields `None`; a non-numeric field counts as 0.
 fn parse_assistant_usage(
+    path: &Path,
     msg: &serde_json::Value,
     warned: &mut bool,
 ) -> Option<(Option<String>, UsageTotals)> {
@@ -934,7 +939,10 @@ fn parse_assistant_usage(
     let Some(raw) = raw.as_object() else {
         if !*warned {
             *warned = true;
-            warn!("assistant message.usage is not an object; token counts left at 0");
+            warn!(
+                path = %path.display(),
+                "assistant message.usage is not an object; token counts left at 0"
+            );
         }
         return None;
     };
@@ -1007,8 +1015,10 @@ fn extract_segments_and_facts(
 
         let entry_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-        // Skip noise entries that Python filters out. Keep this list in
-        // sync with the Python `extract_segments` skip list.
+        // Skip noise entries. This list matches the Python `extract_segments`
+        // skip list, but Python does not skip `cost-state`, `pr-link`, or
+        // `ai-title` (handled just below), so Python's `message_count` is
+        // higher than Rust's for the same file.
         if matches!(
             entry_type,
             "file-history-snapshot" | "progress" | "queue-operation" | "last-prompt"
@@ -1017,7 +1027,14 @@ fn extract_segments_and_facts(
         }
 
         if matches!(entry_type, "cost-state" | "pr-link" | "ai-title") {
-            observe_fact_record(&mut facts, entry_type, &entry, redaction, &mut warned_facts);
+            observe_fact_record(
+                session_file.path,
+                &mut facts,
+                entry_type,
+                &entry,
+                redaction,
+                &mut warned_facts,
+            );
             continue;
         }
 
@@ -1164,7 +1181,9 @@ fn extract_segments_and_facts(
             // `message.id`, and a segment split can fall between them. The
             // turn belongs to the segment where its id first appeared; later
             // records update that segment's maximum.
-            if let Some((id, tokens)) = parse_assistant_usage(&msg, &mut warned_usage) {
+            if let Some((id, tokens)) =
+                parse_assistant_usage(session_file.path, &msg, &mut warned_usage)
+            {
                 match id {
                     Some(id) => match usage_owner.get(&id).copied() {
                         Some(idx) if idx < segments.len() => {
@@ -3011,8 +3030,6 @@ mod tests {
         assert_eq!(row, (1, Some("parent-1".into()), "-proj".into()));
     }
 
-    /// The database-side pass repairs rows whose transcript is gone, and
-    /// leaves main sessions, journals, and correct rows alone.
     /// 1,001 candidates with a batch size of 500 cross two batch boundaries
     /// and end in the same table state as one large batch.
     #[test]
@@ -3081,6 +3098,8 @@ mod tests {
         );
     }
 
+    /// The database-side pass repairs rows whose transcript is gone, and
+    /// leaves main sessions, journals, and correct rows alone.
     #[test]
     fn repair_subagent_identity_fixes_rows_from_stored_source_file() {
         let conn = open_test_db();
