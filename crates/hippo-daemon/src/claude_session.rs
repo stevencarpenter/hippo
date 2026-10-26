@@ -1346,30 +1346,57 @@ fn try_insert_segments(conn: &Connection, segments: &[SessionSegment]) -> (usize
 /// the stored `source_file` with `SessionFile::from_path` for claude-code rows
 /// under `subagents/` still marked as main sessions. Returns the rows updated.
 pub(crate) fn repair_subagent_identity(conn: &Connection) -> rusqlite::Result<usize> {
-    let tx = conn.unchecked_transaction()?;
-    let rows: Vec<(i64, String)> = tx
+    repair_subagent_identity_in_batches(conn, REPAIR_BATCH_SIZE)
+}
+
+/// Rows per repair write transaction: short enough that the watcher's own
+/// writes wait at most one batch.
+const REPAIR_BATCH_SIZE: usize = 500;
+
+fn repair_subagent_identity_in_batches(
+    conn: &Connection,
+    batch_size: usize,
+) -> rusqlite::Result<usize> {
+    // Read-only scan outside any transaction, so no read snapshot is later
+    // upgraded to a write (which fails with SQLITE_BUSY_SNAPSHOT, ignoring
+    // busy_timeout, if another writer committed in between).
+    let fixes: Vec<(i64, Option<String>, String)> = conn
         .prepare(
             "SELECT id, source_file FROM agentic_sessions
              WHERE harness = 'claude-code'
                AND source_file LIKE '%/subagents/%'
                AND is_subagent = 0",
         )?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .filter_map(|row| match row {
+            Ok((id, source_file)) => {
+                let identity = SessionFile::from_path(Path::new(&source_file));
+                identity
+                    .is_subagent
+                    .then(|| Ok((id, identity.parent_session_id, identity.project_dir)))
+            }
+            Err(e) => Some(Err(e)),
+        })
         .collect::<rusqlite::Result<_>>()?;
 
     let mut repaired = 0usize;
-    for (id, source_file) in rows {
-        let identity = SessionFile::from_path(Path::new(&source_file));
-        if identity.is_subagent {
+    for batch in fixes.chunks(batch_size.max(1)) {
+        // IMMEDIATE takes the write lock up front, so busy_timeout applies.
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+        for (id, parent_session_id, project_dir) in batch {
+            // `is_subagent = 0` again: a concurrent re-ingest may have fixed it.
             repaired += tx.execute(
                 "UPDATE agentic_sessions
                  SET is_subagent = 1, parent_session_id = ?2, project_dir = ?3
-                 WHERE id = ?1",
-                params![id, identity.parent_session_id, identity.project_dir],
+                 WHERE id = ?1 AND is_subagent = 0",
+                params![id, parent_session_id, project_dir],
             )?;
         }
+        tx.commit()?;
     }
-    tx.commit()?;
     Ok(repaired)
 }
 
@@ -2604,6 +2631,74 @@ mod tests {
 
     /// The database-side pass repairs rows whose transcript is gone, and
     /// leaves main sessions, journals, and correct rows alone.
+    /// 1,001 candidates with a batch size of 500 cross two batch boundaries
+    /// and end in the same table state as one large batch.
+    #[test]
+    fn repair_subagent_identity_batches_match_single_pass() {
+        let seed = |conn: &Connection| {
+            for i in 0..1001 {
+                conn.execute(
+                    "INSERT INTO agentic_sessions
+                        (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                         source_file, is_subagent, start_time, end_time)
+                     VALUES (?1, 'claude-code', 0, 'wf_x', '/p', 's', ?2, 0, 1, 2)",
+                    params![
+                        format!("agent-{i}"),
+                        format!("/gone/-proj/parent-{i}/subagents/workflows/wf_x/agent-{i}.jsonl")
+                    ],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO agentic_sessions
+                    (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                     source_file, is_subagent, start_time, end_time)
+                 VALUES ('main', 'claude-code', 0, '-proj', '/p', 's', '/gone/-proj/main.jsonl',
+                         0, 1, 2)",
+                [],
+            )
+            .unwrap();
+        };
+        let snapshot = |conn: &Connection| -> Vec<(String, i64, Option<String>, String)> {
+            conn.prepare(
+                "SELECT session_id, is_subagent, parent_session_id, project_dir
+                 FROM agentic_sessions ORDER BY session_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+
+        let batched = open_test_db();
+        seed(&batched);
+        assert_eq!(
+            repair_subagent_identity_in_batches(&batched, 500).unwrap(),
+            1001
+        );
+
+        let single = open_test_db();
+        seed(&single);
+        assert_eq!(
+            repair_subagent_identity_in_batches(&single, 10_000).unwrap(),
+            1001
+        );
+
+        assert_eq!(snapshot(&batched), snapshot(&single));
+        assert!(
+            snapshot(&batched)
+                .iter()
+                .filter(|r| r.0 != "main")
+                .all(|r| r.1 == 1 && r.3 == "-proj"),
+            "every workflow row repaired"
+        );
+        assert_eq!(
+            repair_subagent_identity_in_batches(&batched, 500).unwrap(),
+            0
+        );
+    }
+
     #[test]
     fn repair_subagent_identity_fixes_rows_from_stored_source_file() {
         let conn = open_test_db();
