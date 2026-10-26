@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufRead;
 use std::path::Path;
 
@@ -364,6 +364,9 @@ pub(crate) struct SessionSegment {
     message_count: i64,
     /// Model, effort, and token usage. Metadata only: never part of `content_hash`.
     usage: SegmentUsage,
+    /// Stop-hook outcomes and permission decisions. Metadata only: never part
+    /// of `content_hash`.
+    hooks: HookStats,
     source_file: String,
     is_subagent: bool,
     parent_session_id: Option<String>,
@@ -448,6 +451,86 @@ fn read_subagent_meta(path: &Path) -> SubagentMeta {
         );
     }
     meta
+}
+
+/// Stop-hook outcomes and permission decisions of one segment.
+///
+/// Holds counts and hook command names only. Hook output and `stopReason` text
+/// are never read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct HookStats {
+    runs: i64,
+    errors: i64,
+    prevented_continuations: i64,
+    /// Redacted `hookInfos[].command` values, distinct and sorted.
+    names: BTreeSet<String>,
+    /// `permissionDecision` value -> number of `user` records carrying it.
+    decisions: BTreeMap<String, i64>,
+}
+
+impl HookStats {
+    /// Fold one `system` record. Records other than `stop_hook_summary` are
+    /// ignored. A field of the wrong type contributes nothing and sets `*bad`.
+    fn observe_system(
+        &mut self,
+        entry: &serde_json::Value,
+        redaction: &RedactionEngine,
+        bad: &mut bool,
+    ) {
+        if entry.get("subtype").and_then(|v| v.as_str()) != Some("stop_hook_summary") {
+            return;
+        }
+        match entry.get("hookCount") {
+            None => {}
+            Some(v) => match json_whole(v).filter(|n| *n >= 0) {
+                Some(n) => self.runs = self.runs.saturating_add(n),
+                None => *bad = true,
+            },
+        }
+        match entry.get("hookErrors") {
+            None => {}
+            Some(serde_json::Value::Array(a)) => self.errors += a.len() as i64,
+            Some(_) => *bad = true,
+        }
+        match entry.get("preventedContinuation") {
+            None => {}
+            Some(serde_json::Value::Bool(b)) => self.prevented_continuations += i64::from(*b),
+            Some(_) => *bad = true,
+        }
+        match entry.get("hookInfos") {
+            None => {}
+            Some(serde_json::Value::Array(infos)) => {
+                for info in infos {
+                    match info.get("command").and_then(|v| v.as_str()) {
+                        Some(c) if !c.trim().is_empty() => {
+                            self.names.insert(redaction.redact(c).text);
+                        }
+                        _ => *bad = true,
+                    }
+                }
+            }
+            Some(_) => *bad = true,
+        }
+    }
+
+    /// Count the `permissionDecision` of one `user` record, if present.
+    fn observe_user(&mut self, entry: &serde_json::Value, bad: &mut bool) {
+        match entry.get("permissionDecision") {
+            None | Some(serde_json::Value::Null) => {}
+            Some(serde_json::Value::String(d)) if !d.is_empty() => {
+                *self.decisions.entry(d.clone()).or_insert(0) += 1;
+            }
+            Some(_) => *bad = true,
+        }
+    }
+
+    fn names_json(&self) -> String {
+        serde_json::to_string(&self.names).unwrap_or_else(|_| "[]".into())
+    }
+
+    fn decisions_json(&self) -> String {
+        serde_json::to_string(&self.decisions).unwrap_or_else(|_| "{}".into())
+    }
 }
 
 /// One `pr-link` record. `url` is redacted.
@@ -897,6 +980,7 @@ fn extract_segments_and_facts(
     let mut last_user_time_ms: i64 = 0;
     let mut warned_usage = false;
     let mut warned_facts = false;
+    let mut bad_hooks = false;
     let mut facts = SessionFacts::default();
     // `message.id` -> index in `segments` of the segment that owns the turn.
     let mut usage_owner: HashMap<String, usize> = HashMap::new();
@@ -968,6 +1052,7 @@ fn extract_segments_and_facts(
                 tool_calls: Vec::new(),
                 message_count: 0,
                 usage: SegmentUsage::default(),
+                hooks: HookStats::default(),
                 source_file: session_file.path.to_string_lossy().into_owned(),
                 is_subagent: session_file.is_subagent,
                 parent_session_id: session_file.parent_session_id.clone(),
@@ -1010,6 +1095,7 @@ fn extract_segments_and_facts(
                         tool_calls: Vec::new(),
                         message_count: 0,
                         usage: SegmentUsage::default(),
+                        hooks: HookStats::default(),
                         source_file: session_file.path.to_string_lossy().into_owned(),
                         is_subagent: session_file.is_subagent,
                         parent_session_id: session_file.parent_session_id.clone(),
@@ -1034,7 +1120,10 @@ fn extract_segments_and_facts(
             seg.cwd = cwd;
         }
 
-        if entry_type == "user" {
+        if entry_type == "system" {
+            seg.hooks.observe_system(&entry, redaction, &mut bad_hooks);
+        } else if entry_type == "user" {
+            seg.hooks.observe_user(&entry, &mut bad_hooks);
             if ts_ms > 0 {
                 last_user_time_ms = ts_ms;
             }
@@ -1085,6 +1174,13 @@ fn extract_segments_and_facts(
                 }
             }
         }
+    }
+
+    if bad_hooks {
+        warn!(
+            path = %session_file.path.display(),
+            "stop_hook_summary or permissionDecision has a field of the wrong type; it contributed nothing"
+        );
     }
 
     // Finalize trailing segment if it has any content.
@@ -1367,7 +1463,7 @@ fn insert_segments_with_facts(
                  prevented_continuations, hook_names_json, permission_decisions_json)
              VALUES (?1, 'claude-code', ?2, ?22, ?18, ?3, ?4, ?5, '', ?29, ?6, ?7, ?8,
                      ?9, ?10, ?11, 'null', '[]', ?12, ?13, ?14, ?15, ?16, ?17,
-                     ?23, ?24, ?25, ?26, ?27, ?28, ?19, ?20, ?21, 0, 0, 0, '[]', '{}')
+                     ?23, ?24, ?25, ?26, ?27, ?28, ?19, ?20, ?21, ?30, ?31, ?32, ?33, ?34)
              ON CONFLICT (session_id, harness, segment_index) DO UPDATE SET
                  end_time                  = excluded.end_time,
                  summary_text              = excluded.summary_text,
@@ -1427,6 +1523,11 @@ fn insert_segments_with_facts(
                 seg.usage.totals().cache_read_tokens,
                 seg.usage.totals().cache_creation_tokens,
                 facts.and_then(|f| f.title.as_deref()).unwrap_or(""),
+                seg.hooks.runs,
+                seg.hooks.errors,
+                seg.hooks.prevented_continuations,
+                seg.hooks.names_json(),
+                seg.hooks.decisions_json(),
             ],
         )?;
 
@@ -2479,6 +2580,7 @@ mod tests {
             tool_calls: vec![],
             message_count: 0,
             usage: SegmentUsage::default(),
+            hooks: HookStats::default(),
             source_file: "/test/session.jsonl".to_string(),
             is_subagent: false,
             parent_session_id: None,
@@ -2664,6 +2766,7 @@ mod tests {
             }],
             message_count: 3,
             usage: usage_with_tokens(100),
+            hooks: HookStats::default(),
             source_file: "/test/session.jsonl".to_string(),
             is_subagent: false,
             parent_session_id: None,

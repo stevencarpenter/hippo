@@ -74,11 +74,11 @@ All metadata columns below sit outside `content_hash`, so a change that touches 
 | `spawn_depth` | `INTEGER`, NULL | Claude Code subagent nesting depth (`spawnDepth` in `meta.json`). |
 | `parent_tool_use_id` | `TEXT`, NULL | `toolUseId` of the parent's `Agent` call that spawned this subagent. |
 | `subagent_finished` | `INTEGER`, NULL | `finished` from `meta.json` as 0/1; NULL when absent. |
-| `hook_runs` | `INTEGER NOT NULL DEFAULT 0` | Hook executions in the segment. |
-| `hook_errors` | `INTEGER NOT NULL DEFAULT 0` | Hook executions that reported errors. |
-| `prevented_continuations` | `INTEGER NOT NULL DEFAULT 0` | Stop hooks that prevented a continuation. |
-| `hook_names_json` | `TEXT NOT NULL DEFAULT '[]'` | JSON array of hook names that ran. |
-| `permission_decisions_json` | `TEXT NOT NULL DEFAULT '{}'` | JSON object counting permission decisions. |
+| `hook_runs` | `INTEGER NOT NULL DEFAULT 0` | Claude Code: sum of `hookCount` over the segment's `system` records with `subtype = "stop_hook_summary"`. |
+| `hook_errors` | `INTEGER NOT NULL DEFAULT 0` | Claude Code: total length of the `hookErrors` arrays of those records. The error text is not stored. |
+| `prevented_continuations` | `INTEGER NOT NULL DEFAULT 0` | Claude Code: number of those records with `preventedContinuation == true`. `stopReason` text is not stored. |
+| `hook_names_json` | `TEXT NOT NULL DEFAULT '[]'` | Claude Code: JSON array of the distinct `hookInfos[].command` values of those records, each passed through redaction, sorted. Names only: hook output is never stored. |
+| `permission_decisions_json` | `TEXT NOT NULL DEFAULT '{}'` | Claude Code: JSON object mapping each `permissionDecision` value found on the segment's `user` records to its count, for example `{"allow":2,"deny":1}`. `permissionMode` is ignored. |
 
 Token accounting rules:
 
@@ -86,7 +86,11 @@ Token accounting rules:
 - Codex reports a cumulative `total_token_usage` in `token_count` events. The writer adds the growth since the previous event, so repeated events add nothing. Codex counts cached tokens inside `input_tokens`; the writer subtracts `cached_input_tokens` so the four columns do not overlap. Tokens reported before a segment opens are not attributed to any segment.
 - A missing or malformed usage field counts as 0.
 
-The hook columns exist from v28 but hold their defaults until their writer lands.
+Hook and permission rules (Claude Code only; other harnesses keep the defaults):
+
+- A `stop_hook_summary` record is still a `system` record, so it starts and counts in segments exactly as before. The hook columns never enter `content_hash`.
+- A field of the wrong type (for example a string `hookCount`, a non-array `hookErrors`, a non-string `command` or `permissionDecision`) contributes nothing, logs one `warn` for the file, and never drops a segment. A missing field also contributes nothing.
+- A trailing segment that is identical in content to its predecessor is collapsed, and its hook counts go with it.
 
 `agentic_session_facts` holds one row per `(session_id, harness)` for totals a harness reports for the whole session. Only Claude Code writes it today (`claude_session.rs::upsert_session_facts`), once per ingest of a transcript file, in the same transaction as the segments. Facts never enter `content_hash`, so a facts-only change never re-enqueues enrichment. The key is the `session_id` of the file (its name stem), not the `sessionId` inside the records.
 
