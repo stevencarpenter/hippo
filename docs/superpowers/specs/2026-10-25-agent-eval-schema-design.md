@@ -482,12 +482,16 @@ which is `head_sha` itself unless the reviewed branch was squash-merged; when
 and the walk uses `--since=<started_at>`. `git log -L` is not used because
 the finding's line number refers to the reviewed working tree, not to
 `HEAD`. A line that never appears in the walked history (fixed before its
-first commit, or fixed on a branch before a squash merge) stays open: no
-commit records the fix, and recorded facts are preferred over inference.
-`review_log.py reconcile` marks such findings `likely-addressed` by
-presence, without a commit. A resolved PR
+first commit, or fixed on a branch before a squash merge, which is the
+default hippo flow) is gone at `HEAD`, so `likely-addressed` holds. The job
+attributes it to the first walked commit that touches `path` and sets the
+verdict `note` to the fixed marker
+`inferred: line absent at walk start; first commit touching the path`, so
+scorecards and humans can separate inferred commits from observed ones. An
+observed fix (the line present at the start, then absent) keeps a NULL
+note. When no walked commit touches `path`, the finding stays open. A resolved PR
 from the opt-in `gh` lookup is stored in the automatic verdict's `note` as
-`PR <url>, ...`. It is redacted and expires with the note, and the job asks
+`PR <url>, ...`, after the `inferred:` marker and `; ` when both apply. It is redacted and expires with the note, and the job asks
 only when the chain in steps 1 and 2 finds nothing. Operation and limits:
 `docs/brain-watchdog.md`.
 

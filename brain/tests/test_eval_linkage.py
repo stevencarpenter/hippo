@@ -470,10 +470,58 @@ def test_mainline_commit_merged_into_the_branch_is_not_the_fix(db, repo, tmp_pat
     assert [row[3] for row in verdicts(conn)] == [fixed]
 
 
-def test_line_fixed_before_its_first_commit_stays_open(db, repo, tmp_path):
+INFERRED = "inferred: line absent at walk start; first commit touching the path"
+
+
+def test_line_fixed_before_its_first_commit_on_a_merged_branch_is_inferred(db, repo, tmp_path):
+    """Review the uncommitted tree, fix, commit, merge: the fixing commit, marked inferred."""
     conn, db_path = db
-    head = repo.commit({"src/app.py": BASE}, "base")
-    repo.commit({"src/app.py": FIXED}, "commit the already fixed version")
+    repo.commit({"src/app.py": BASE}, "base")
+    repo.git("checkout", "-q", "-b", "feat")
+    head = repo.git("rev-parse", "HEAD")
+    fixed = repo.commit({"src/app.py": FIXED}, "commit the already fixed version")
+    repo.git("checkout", "-q", "main")
+    repo.git("merge", "-q", "--no-ff", "--no-edit", "feat")
+    add_finding(conn, repo.path, head)
+
+    run(db_path, tmp_path)
+
+    assert [(row[3], row[4], row[5]) for row in verdicts(conn)] == [(fixed, INFERRED, 1)]
+
+
+def test_branch_review_then_squash_infers_the_squash_commit(db, repo, tmp_path):
+    conn, db_path = db
+    repo.commit({"src/app.py": BASE}, "base")
+    repo.git("checkout", "-q", "-b", "feat")
+    head = repo.commit({"src/app.py": ORIGINAL}, "add check")
+    repo.commit({"src/app.py": FIXED}, "fix on feat")
+    repo.git("checkout", "-q", "main")
+    repo.git("merge", "-q", "--squash", "feat")
+    repo.git("commit", "-q", "-m", "squash feat")
+    squash = repo.git("rev-parse", "HEAD")
+    repo.git("branch", "-q", "-D", "feat")
+    add_finding(conn, repo.path, head)
+
+    run(db_path, tmp_path)
+
+    assert [(row[3], row[4], row[5]) for row in verdicts(conn)] == [(squash, INFERRED, 1)]
+
+
+def test_observed_fix_keeps_an_empty_note(db, repo, tmp_path):
+    conn, db_path = db
+    head = repo.commit({"src/app.py": ORIGINAL}, "add check")
+    repo.commit({"src/app.py": FIXED}, "fix")
+    add_finding(conn, repo.path, head)
+
+    run(db_path, tmp_path)
+
+    assert [row[4] for row in verdicts(conn)] == [None]
+
+
+def test_discarded_review_with_untouched_file_stays_open(db, repo, tmp_path):
+    conn, db_path = db
+    head = repo.commit({"src/app.py": BASE, "README": ["x"]}, "base")
+    repo.commit({"README": ["y"]}, "unrelated")
     add_finding(conn, repo.path, head)
 
     summary = run(db_path, tmp_path)
@@ -481,7 +529,23 @@ def test_line_fixed_before_its_first_commit_stays_open(db, repo, tmp_path):
     assert verdicts(conn) == []
     assert summary == {"open_findings": 1, "linked": 0, "still_open": 1}
     notes = json.loads((tmp_path / "eval-linkage-notes.json").read_text())
-    assert notes == {"f1": "line not found in any commit after the review"}
+    assert notes == {"f1": "line absent at walk start and no later commit touches the path"}
+
+
+def test_inferred_note_keeps_the_gh_pr(db, repo, tmp_path, monkeypatch):
+    conn, db_path = db
+    head = repo.commit({"src/app.py": BASE}, "base")
+    repo.commit({"src/app.py": FIXED}, "commit the already fixed version")
+    add_finding(conn, repo.path, head)
+    monkeypatch.setattr(
+        eval_linkage, "gh_pr_urls", lambda slug, sha: ["https://github.com/owner/work/pull/7"]
+    )
+
+    run(db_path, tmp_path, gh_pr_lookup=True)
+
+    assert [row[4] for row in verdicts(conn)] == [
+        f"{INFERRED}; PR https://github.com/owner/work/pull/7"
+    ]
 
 
 def test_unwritable_notes_file_does_not_block_verdicts(db, repo, tmp_path):

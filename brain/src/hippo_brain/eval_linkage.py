@@ -39,6 +39,8 @@ BATCH_ROWS = 100
 PAYLOAD_RETENTION_MS = 7_776_000_000
 VERDICT = "likely-addressed"
 NOTES_FILE = "eval-linkage-notes.json"
+# Marks a verdict whose commit is inferred, not observed removing the line.
+INFERRED_NOTE = "inferred: line absent at walk start; first commit touching the path"
 _SLUG = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 # Side '-' lines are not in the reviewed tree, and a NULL hash cannot match (section 3.7).
@@ -82,6 +84,7 @@ class RunSummary(TypedDict):
 class Outcome(NamedTuple):
     commit: str | None
     reason: str | None
+    note: str | None = None
 
 
 def line_hash(line: bytes) -> str:
@@ -158,7 +161,8 @@ def find_change(
     from the start commit or, for a line reviewed before it was committed, from
     the first later commit that contains it. A line that never appears in that
     history (fixed before its first commit, or fixed on a branch before a squash
-    merge) stays open: no commit records the fix.
+    merge) is attributed to the first walked commit that touches the path, with
+    ``INFERRED_NOTE``.
     """
     current = _blob(repo, "HEAD", path)
     if current is None:
@@ -171,15 +175,24 @@ def find_change(
     start, revs = walk
     commits = _git(repo, "rev-list", "--reverse", "--topo-order", *revs, "--", path).stdout.split()
     seen = _contains(_blob(repo, start, path), wanted)
+    first_touch: str | None = None
     for commit in (c.decode() for c in commits):
         blob = _blob(repo, commit, path)
         if blob is None:
             continue  # deleted here; a later re-creation decides
+        first_touch = first_touch or commit
         if _contains(blob, wanted):
             seen = True
         elif seen:
             return Outcome(commit, None)
-    return Outcome(None, "line not found in any commit after the review")
+    if seen:
+        return Outcome(None, "no walked commit removed the line")
+    # The line never reached the walked history (fixed before its first commit, or
+    # on a branch before a squash merge). It is gone at HEAD, so the status holds;
+    # the commit is a guess, and the note says so.
+    if first_touch:
+        return Outcome(first_touch, None, INFERRED_NOTE)
+    return Outcome(None, "line absent at walk start and no later commit touches the path")
 
 
 def gh_pr_urls(slug: str, sha: str) -> list[str]:
@@ -280,12 +293,13 @@ def run_once(
             if outcome.reason:
                 reasons[finding_id] = outcome.reason
             if outcome.commit:
-                note = None
+                pr = None
                 if gh_pr_lookup:
                     try:
-                        note = _pr_note(conn, repo, slug, outcome.commit)
+                        pr = _pr_note(conn, repo, slug, outcome.commit)
                     except sqlite3.Error as exc:
                         logger.warning("eval linkage: PR chain read failed: %s", exc)
+                note = "; ".join(part for part in (outcome.note, pr) if part)[:4000] or None
                 links.append((finding_id, outcome.commit, note))
         linked = write_verdicts(conn, links, now_ms) if links else 0
     try:

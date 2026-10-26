@@ -174,7 +174,7 @@ Indexes: `idx_eval_findings_run_id (run_id)`, `idx_eval_findings_repo_path (repo
 | `finding_id` | `TEXT NOT NULL REFERENCES eval_findings (finding_id)` | Parent finding; ingest rejects an unknown finding as `unknown_parent`. |
 | `verdict` | `TEXT NOT NULL` | Verdict value. |
 | `commit_sha` | `TEXT`, NULL | Commit that addressed the finding or that a human cites (record field `commit`). |
-| `note` | `TEXT`, redacted | Rationale. NULL after expiry. |
+| `note` | `TEXT`, redacted | Rationale. On linkage-job verdicts: NULL (observed fix), the `inferred:` marker, and/or `PR <url>, ...`. NULL after expiry. |
 | `auto` | `INTEGER NOT NULL CHECK (auto IN (0, 1))` | Machine (1) or human (0) verdict. |
 | `decided_at`, `ingested_at`, `payload_expiry` | `INTEGER NOT NULL` | Decision time, hippo write time, note expiry. |
 
@@ -184,7 +184,7 @@ Triggers (the `deletion_receipts` pattern): `eval_verdicts_no_delete` aborts eve
 
 The effective verdict of a finding is the latest human verdict, else the latest automatic one, ordered by `decided_at` and then `verdict_id`. A finding with no verdict is open.
 
-Automatic `likely-addressed` verdicts come from two writers: the producer's `review_log.py reconcile` (through ingest) and the brain linkage job `hippo_brain.eval_linkage` (hourly, HIPO-66). The linkage job considers only findings with no verdict at all, so it never adds a verdict after a human one. It matches `line_hash` against raw lines of `path` in the commits that descend from the run's `head_sha` (or from its merge-base with `HEAD` after a squash merge) and records the first commit whose file no longer contains the line, with `auto = 1`, that `commit_sha`, and `verdict_id = auto-` + the first 16 hex characters of `sha256(finding_id|commit_sha|likely-addressed)`. Rules, skip reasons, and limits: [`docs/brain-watchdog.md`](brain-watchdog.md#agent-eval-commit-linkage).
+Automatic `likely-addressed` verdicts come from two writers: the producer's `review_log.py reconcile` (through ingest) and the brain linkage job `hippo_brain.eval_linkage` (hourly, HIPO-66). The linkage job considers only findings with no verdict at all, so it never adds a verdict after a human one. It matches `line_hash` against raw lines of `path` in the commits that descend from the run's `head_sha` (or from its merge-base with `HEAD` after a squash merge) and records the first commit whose file no longer contains the line, with `auto = 1`, that `commit_sha`, and `verdict_id = auto-` + the first 16 hex characters of `sha256(finding_id|commit_sha|likely-addressed)`. When the flagged line never appears in the walked commits (fixed before its first commit, or on a branch before a squash merge), the job records the first walked commit that touches `path` and sets `note` to `inferred: line absent at walk start; first commit touching the path`; an observed fix has a NULL `note`. With the opt-in `gh` lookup, `note` can also hold `PR <url>, ...`, after the marker and `; `. Rules, skip reasons, and limits: [`docs/brain-watchdog.md`](brain-watchdog.md#agent-eval-commit-linkage).
 
 ```sql
 SELECT finding_id, verdict, auto, commit_sha
