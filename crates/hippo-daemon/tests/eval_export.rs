@@ -320,3 +320,35 @@ fn multi_line_secrets_are_redacted_across_lines() {
     }
     assert!(!out.join("f-f2.json").exists());
 }
+
+#[test]
+fn line_anchored_operator_patterns_still_apply() {
+    use hippo_core::config::{RedactConfig, RedactPattern};
+    let tmp = tempfile::tempdir().unwrap();
+    // `^` without `(?m)` matches only at the start of the text it is given.
+    let secret_line = "SECRET=hunter2-synthetic\n";
+    let (repo, bad, good) = repo_with_fix(tmp.path(), &format!("{DEFECTIVE}{secret_line}"));
+    let mut conn = db(tmp.path());
+    load(
+        &mut conn,
+        &[
+            run(&repo, &bad),
+            finding("f1", &repo, "+", 2, "    if user.is_admin or True:"),
+            verdict("v1", "f1", "accepted", false, Some(&good), 6),
+        ],
+    );
+    let operator = RedactionEngine::new(&RedactConfig {
+        patterns: vec![RedactPattern {
+            name: "line_secret".into(),
+            regex: "^SECRET=.*$".into(),
+            replacement: "[REDACTED]".into(),
+        }],
+    })
+    .unwrap();
+    let out = tmp.path().join("cases");
+    let engines = [RedactionEngine::builtin(), operator];
+    let summary = export_bench_cases(&conn, &out, &engines, 0, None).unwrap();
+    assert_eq!(summary.written, 1, "{summary:?}");
+    let text = std::fs::read_to_string(out.join("f-f1.json")).unwrap();
+    assert!(!text.contains("hunter2"), "{text}");
+}

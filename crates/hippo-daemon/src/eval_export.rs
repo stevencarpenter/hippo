@@ -216,10 +216,20 @@ fn build_case(c: &Candidate, redaction: &[RedactionEngine]) -> Result<Json, &'st
             .iter()
             .fold(text.to_owned(), |acc, engine| engine.redact(&acc).text)
     };
-    // Whole files, so multi-line patterns (PEM blocks) apply. A match that
-    // joins lines in the defective file would move the anchor: skip it.
-    let redacted_fixed = redact(&fixed);
-    let redacted_defective = redact(&defective);
+    // Per line first, so line-anchored operator patterns (`^`, `$`) apply;
+    // then the whole file, so multi-line patterns apply (the PEM rule also
+    // matches a key body after a redacted BEGIN line).
+    let per_line = |text: &str| text.split('\n').map(redact).collect::<Vec<_>>().join("\n");
+    let redacted_fixed = redact(&per_line(&fixed));
+    let redacted_defective = redact(&per_line(&defective));
+    // Fail closed: a pattern that still matches the output skips the case.
+    if [&redacted_fixed, &redacted_defective]
+        .iter()
+        .any(|t| per_line(t) != **t || redact(t) != **t)
+    {
+        return Err("redaction_unstable");
+    }
+    // A match that joins lines in the defective file would move the anchor.
     let redacted_lines: Vec<&str> = redacted_defective.split('\n').collect();
     if redacted_lines.len() != lines.len() {
         return Err("redaction_changed_line_count");
