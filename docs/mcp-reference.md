@@ -4,7 +4,9 @@ Full reference for hippo's MCP server. Every tool that `hippo-mcp` exposes, with
 
 **Before citing evidence:** read [`docs/capture/source-trust-contracts.md`](capture/source-trust-contracts.md) for per-source identity, timestamp, freshness, and safe-citation semantics. Eligibility filters (what retrieval excludes by default) are in [`docs/capture/retrieval-eligibility.md`](capture/retrieval-eligibility.md).
 
-For setup (adding hippo to your MCP config), see the [README's MCP Server section](../README.md#mcp-server). For the trust-boundary discussion (what granting MCP access actually exposes), see the [README's Privacy and Security section](../README.md#privacy-and-security).
+For setup (adding hippo to your MCP config), see the [README's MCP Server section](../README.md#mcp-server).
+
+**Which copy runs.** Run the server from the installed brain, `uv run --no-sync --project ~/.local/share/hippo-brain hippo-mcp` (use the absolute home path in config files). `scripts/install.sh` syncs that directory with `uv sync --locked`, which installs the `hippo-mcp` console script (`brain/pyproject.toml`, `[project.scripts]`) together with the brain service, so both run the same version. `hippo doctor` prints `MCP server version`: `[OK]` when the installed version matches the running brain, `[WW]` when it differs (restart the brain service, or reinstall), `[!!]` when `.venv/bin/hippo-mcp` is missing. A running MCP session keeps its old code until the agent restarts it. For the trust-boundary discussion (what granting MCP access actually exposes), see the [README's Privacy and Security section](../README.md#privacy-and-security).
 
 ## Tool selection guide
 

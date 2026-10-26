@@ -39,6 +39,8 @@ A clean run looks like this:
 
 A failed run will list the specific check, the source, and (with `--explain`) what to do.
 
+`MCP server version` compares the `hippo-mcp` package installed in `~/.local/share/hippo-brain` with the version the running brain reports on `/health`. `[WW]` means they differ: the brain service was not restarted after an install, or the install is stale. Run `mise run restart`, then restart the agent session so it launches a new MCP server. `[!!]` means `.venv/bin/hippo-mcp` is missing: run `mise run install`. `[--]` means the brain is unreachable, so no comparison was made. See [`docs/mcp-reference.md`](../mcp-reference.md).
+
 ### Enrichment pause
 
 Pause LLM enrichment while you work at the keyboard, and resume it later so the backlog drains.
