@@ -604,3 +604,192 @@ fn concurrent_capture_and_busy_checkpoint_do_not_claim_wal_erasure() {
         0
     );
 }
+
+fn seed_eval_run(conn: &Connection) {
+    conn.execute_batch(
+        "INSERT INTO eval_review_runs(run_id,agent,mode,repo,base,base_sha,head_sha,
+            input_sha256,started_at,finished_at,ingested_at)
+         VALUES('r1','blind-review','mechanical','/home/dev/example-repo','main',
+            'sha','sha','in',1,2,3);",
+    )
+    .unwrap();
+}
+
+fn seed_finding(conn: &Connection, id: &str, expiry: i64) {
+    conn.execute(
+        "INSERT INTO eval_findings(finding_id,run_id,repo,path,side,line,line_text,line_hash,
+            severity,confidence,claim,logged_at,ingested_at,payload_expiry)
+         VALUES(?1,'r1','/home/dev/example-repo','src/a.py','+',7,'synthetic line','h',
+            'high','low','synthetic claim ' || ?1,1,?2,?3)",
+        rusqlite::params![id, CREATED, expiry],
+    )
+    .unwrap();
+}
+
+fn seed_verdict(conn: &Connection, id: &str, finding: &str, verdict: &str, auto: bool, at: i64) {
+    conn.execute(
+        "INSERT INTO eval_verdicts(verdict_id,finding_id,verdict,note,auto,decided_at,
+            ingested_at,payload_expiry)
+         VALUES(?1,?2,?3,'synthetic note ' || ?1,?4,?5,?6,?7)",
+        rusqlite::params![id, finding, verdict, auto, at, CREATED, EXPIRES],
+    )
+    .unwrap();
+}
+
+fn cleared_findings(conn: &Connection) -> Vec<String> {
+    conn.prepare(
+        "SELECT finding_id FROM eval_findings
+         WHERE line_text IS NULL AND claim IS NULL ORDER BY finding_id",
+    )
+    .unwrap()
+    .query_map([], |r| r.get(0))
+    .unwrap()
+    .collect::<rusqlite::Result<_>>()
+    .unwrap()
+}
+
+fn kept_notes(conn: &Connection) -> Vec<String> {
+    conn.prepare("SELECT verdict_id FROM eval_verdicts WHERE note IS NOT NULL ORDER BY verdict_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[test]
+fn eval_sweep_clears_expired_text_and_keeps_accepted_findings_and_escapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = storage::open_db(&dir.path().join("eval.db")).unwrap();
+    seed_eval_run(&conn);
+    for id in ["f-accepted", "f-human-wins", "f-open", "f-overruled"] {
+        seed_finding(&conn, id, EXPIRES);
+    }
+    seed_finding(&conn, "f-later", EXPIRES + 1);
+    seed_verdict(&conn, "v-acc", "f-accepted", "accepted", false, 1);
+    // A later automatic verdict does not override a human `accepted`.
+    seed_verdict(&conn, "v-hw-human", "f-human-wins", "accepted", false, 1);
+    seed_verdict(
+        &conn,
+        "v-hw-auto",
+        "f-human-wins",
+        "likely-addressed",
+        true,
+        9,
+    );
+    // A human `false-positive` overrides a later automatic `accepted`.
+    seed_verdict(&conn, "v-ov-auto", "f-overruled", "accepted", true, 9);
+    seed_verdict(
+        &conn,
+        "v-ov-human",
+        "f-overruled",
+        "false-positive",
+        false,
+        1,
+    );
+    conn.execute_batch(
+        "INSERT INTO eval_escapes(escape_id,repo,path,line,note,recorded_at,ingested_at)
+         VALUES('e1','/home/dev/example-repo','src/db.py',17,'synthetic escape',1,1);",
+    )
+    .unwrap();
+
+    let early = storage::gc_event_payloads(&conn, EXPIRES - 1).unwrap();
+    assert_eq!(
+        (early.eval_findings_cleared, early.eval_verdicts_cleared),
+        (0, 0)
+    );
+
+    let report = storage::gc_event_payloads(&conn, EXPIRES).unwrap();
+    assert_eq!(report.eval_findings_cleared, 2);
+    assert_eq!(report.eval_verdicts_cleared, 2);
+    assert_eq!(report.checkpoint, PayloadCheckpoint::Truncated);
+    assert_eq!(cleared_findings(&conn), ["f-open", "f-overruled"]);
+    assert_eq!(kept_notes(&conn), ["v-acc", "v-hw-auto", "v-hw-human"]);
+    // Structured facts stay on cleared rows.
+    let kept: (String, i64, String, String) = conn
+        .query_row(
+            "SELECT path, line, line_hash, severity FROM eval_findings WHERE finding_id='f-open'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(kept, ("src/a.py".into(), 7, "h".into(), "high".into()));
+    assert_eq!(
+        scalar(
+            &conn,
+            "SELECT count(*) FROM eval_verdicts WHERE verdict IS NOT NULL"
+        ),
+        5
+    );
+    assert_eq!(
+        scalar(
+            &conn,
+            "SELECT count(*) FROM eval_escapes WHERE note = 'synthetic escape'"
+        ),
+        1
+    );
+
+    let receipts: Vec<(String, String, String)> = conn
+        .prepare(
+            "SELECT what, content_hash, reason FROM deletion_receipts
+             WHERE what LIKE 'eval_%' ORDER BY what",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let hash = |text: &str| -> String {
+        Sha256::digest(text.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
+    let expected = [
+        ("eval_findings/f-open/claim", "synthetic claim f-open"),
+        ("eval_findings/f-open/line_text", "synthetic line"),
+        (
+            "eval_findings/f-overruled/claim",
+            "synthetic claim f-overruled",
+        ),
+        ("eval_findings/f-overruled/line_text", "synthetic line"),
+        ("eval_verdicts/v-ov-auto/note", "synthetic note v-ov-auto"),
+        ("eval_verdicts/v-ov-human/note", "synthetic note v-ov-human"),
+    ]
+    .map(|(what, text)| (what.to_owned(), hash(text), "payload_expired".to_owned()));
+    assert_eq!(receipts, expected);
+
+    // The pin is derived, not stored: a later human verdict removes it.
+    seed_verdict(&conn, "v-acc-2", "f-accepted", "not-useful", false, 2);
+    let report = storage::gc_event_payloads(&conn, EXPIRES).unwrap();
+    assert_eq!(report.eval_findings_cleared, 1);
+    assert_eq!(report.eval_verdicts_cleared, 2);
+    assert_eq!(kept_notes(&conn), ["v-hw-auto", "v-hw-human"]);
+
+    let rerun = storage::gc_event_payloads(&conn, EXPIRES + 1).unwrap();
+    assert_eq!(
+        (rerun.eval_findings_cleared, rerun.eval_verdicts_cleared),
+        (1, 0)
+    );
+    assert_eq!(
+        cleared_findings(&conn),
+        ["f-accepted", "f-later", "f-open", "f-overruled"]
+    );
+}
+
+#[test]
+fn eval_sweep_cursor_moves_past_more_than_a_batch_of_pinned_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = storage::open_db(&dir.path().join("eval-pins.db")).unwrap();
+    seed_eval_run(&conn);
+    for i in 0..150 {
+        let id = format!("p{i:03}");
+        seed_finding(&conn, &id, EXPIRES);
+        seed_verdict(&conn, &format!("v{i:03}"), &id, "accepted", false, 1);
+    }
+    seed_finding(&conn, "z-open", EXPIRES);
+    let report = storage::gc_event_payloads(&conn, EXPIRES).unwrap();
+    assert_eq!(report.eval_findings_cleared, 1);
+    assert_eq!(report.eval_verdicts_cleared, 0);
+    assert_eq!(cleared_findings(&conn), ["z-open"]);
+}

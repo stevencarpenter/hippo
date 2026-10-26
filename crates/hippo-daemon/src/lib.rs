@@ -1,3 +1,4 @@
+pub mod agent_eval;
 pub mod auto_memory_poll;
 pub mod backfill;
 pub mod browser_health;

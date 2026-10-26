@@ -93,8 +93,10 @@ hippo release cadence. Neither holds today.
 One additive migration in `crates/hippo-core/src/storage.rs`, the first free
 version after Phase 1 (v28 to v29 if Phase 1 lands first). It follows the
 crash-safe pattern: `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT
-EXISTS`, `CREATE TRIGGER IF NOT EXISTS`, `PRAGMA user_version` bump. The same
-DDL goes into `crates/hippo-core/src/schema.sql`. `EXPECTED_SCHEMA_VERSION`
+EXISTS`, `CREATE TRIGGER IF NOT EXISTS`, `PRAGMA user_version` bump. The
+DDL lives once in `crates/hippo-core/src/schema/agent_eval.sql`, which both the
+fresh-install `SCHEMA` and the migration include (the v28
+`schema/agentic_eval.sql` precedent), so the two cannot drift. `EXPECTED_SCHEMA_VERSION`
 and `ACCEPTED_READ_VERSIONS` in `brain/src/hippo_brain/schema_version.py`
 change in the same commit. No existing table changes.
 
@@ -369,8 +371,10 @@ CREATE INDEX IF NOT EXISTS idx_eval_bench_runs_bench_recorded_at
 - `repo_commit` is the bench version label that `bench.py` writes: a short
   SHA of the `agents` repo with an optional `-dirty` suffix. It is not a
   linkage key, so the 40-hex rule does not apply to it.
-- `scores_json` and `per_case_json` store the producer objects as they are.
-  Scores change with the bench version, and two rows do not justify one
+- `scores_json` and `per_case_json` store the producer values with their
+  content unchanged. Ingest re-serializes the parsed JSON, so object keys are
+  stored in sorted order and whitespace is dropped; values and array order
+  stay as sent. Scores change with the bench version, and two rows do not justify one
   column per score. Readers use `json_extract`.
 - No column is redacted. Bench data is synthetic and already public in the
   `agents` repo.
@@ -510,7 +514,9 @@ missed.
 Value rules: `side` is `+` or `-`. `severity` and `confidence` are `high`,
 `medium`, or `low`. `verdict` is one of the five values in section 3.4.
 `auto` is a JSON boolean. `harness` is a value that the `agentic_sessions`
-`CHECK` accepts. `session_id` without `harness` is rejected. `repo_identity`
+`CHECK` accepts. `session_id` without `harness` is rejected. `repo` must be
+an absolute path; a relative one is rejected as `invalid_field:repo`, because
+`derive_git_repo` would resolve it against the ingest's working directory. `repo_identity`
 is not a record field: hippo derives it from `repo` at ingest, outside the
 write transaction, once per distinct `repo` value.
 
@@ -635,7 +641,10 @@ other outbound flow, and it is off by default.
    `brain/tests/test_eval_isolation.py`. It reads every `.py` file under
    `brain/src/hippo_brain/` and fails when the text matches
    `\beval_(review_runs|findings|verdicts|escapes|bench_runs)\b`, except in an
-   explicit allowlist. The pattern names the five tables exactly. A looser
+   explicit allowlist. It also fails when any `.py` or `.sh` file under
+   `scripts/` or `brain/scripts/` matches, because re-embedding and
+   maintenance scripts sit on the same boundary (section 5.2). The pattern
+   names the five tables exactly. A looser
    `eval_` prefix would match existing identifiers such as `eval_qa_version`
    in `bench/results_store.py`. No file matches the exact pattern today.
    The allowlist holds the
@@ -645,7 +654,8 @@ other outbound flow, and it is off by default.
    A seventh source then needs a deliberate test change.
 2. **Semgrep rule** `eval-table-in-derived-path` in `.semgrep.yml`, scoped
    to `enrichment*.py`, `embeddings.py`, `classification.py`, `jev.py`,
-   `retrieval.py`, `rag.py`, and `mcp_queries.py`. It flags any SQL string
+   `retrieval.py`, `rag.py`, `mcp_queries.py`, and the Python files in
+   `scripts/` and `brain/scripts/`. It flags any SQL string
    that names one of the five eval tables, the same shape as
    `unfiltered-event-table-select` (AP-6). `.semgrep.yml` is not run in CI
    today, so this rule is a local and review aid. The pytest guard is the
@@ -757,7 +767,9 @@ Producer changes the contract needs:
    token usage over all units: `input_tokens`, `output_tokens`,
    `cache_read_tokens`, and `cache_creation_tokens` (from the `usage` keys
    `input_tokens`, `output_tokens`, `cache_read_input_tokens`, and
-   `cache_creation_input_tokens`). `head_sha` read later at `log` time can
+   `cache_creation_input_tokens`), and `session_id` (from
+   `CLAUDE_CODE_SESSION_ID` at review start; the key is absent when that
+   variable is unset). `head_sha` read later at `log` time can
    point to a later commit, so `log` must not read it. If `base` or `HEAD`
    does not resolve to a SHA, `mechanical_review.py` refuses to run, so
    `run.json` always holds both SHAs.
@@ -766,8 +778,10 @@ Producer changes the contract needs:
    `sha256(repo | base_sha | head_sha | input_sha256 | started_at)`. All of
    these come from the out dir, never from `now()`. The id replaces today's
    `run_id = out.name`, which is not unique when an out dir is reused.
-   `session_id` comes from `CLAUDE_CODE_SESSION_ID`, with `harness` set to
-   `claude-code` when that variable is set. `line_text` is the raw source
+   `session_id` comes from `run.json`. Only when `run.json` has no
+   `session_id` key does `log` fall back to `CLAUDE_CODE_SESSION_ID` in its
+   own environment. `harness` is set to `claude-code` whenever a
+   `session_id` is written. `line_text` is the raw source
    line (section 3.7).
 3. **Finding id.** The first 16 hex characters of
    `sha256(run_id | path | unit_hash | side line | claim)`. Today's id omits

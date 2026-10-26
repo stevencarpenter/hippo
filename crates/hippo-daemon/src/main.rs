@@ -2,8 +2,9 @@ mod cli;
 mod install;
 
 use hippo_daemon::{
-    auto_memory_poll, backfill, claude_session, codex_session, commands, cursor_session, daemon,
-    gh_api, gh_poll, opencode_session, pi_session, watch_auto_memory, watch_claude_sessions,
+    agent_eval, auto_memory_poll, backfill, claude_session, codex_session, commands,
+    cursor_session, daemon, gh_api, gh_poll, opencode_session, pi_session, watch_auto_memory,
+    watch_claude_sessions,
 };
 
 use anyhow::{Context, Result};
@@ -969,6 +970,10 @@ async fn run() -> Result<()> {
                 "Cleared payloads from {} retained event rows",
                 report.events_cleared
             );
+            println!(
+                "Cleared agent-eval text from {} finding rows and {} verdict rows",
+                report.eval_findings_cleared, report.eval_verdicts_cleared
+            );
             match report.checkpoint {
                 hippo_core::storage::PayloadCheckpoint::Truncated => {
                     println!("WAL checkpoint completed; this does not erase other copies");
@@ -1316,6 +1321,39 @@ async fn run() -> Result<()> {
                         eprintln!("Error importing pi session: {e:#}");
                         std::process::exit(1);
                     }
+                }
+            }
+            IngestSource::AgentEval { path } => {
+                let input = match std::fs::read(&path) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        eprintln!("Error reading agent-eval file {path}: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                // Builtin patterns always apply, plus the operator's redact.toml.
+                let redaction = [
+                    hippo_core::redaction::RedactionEngine::builtin(),
+                    hippo_daemon::load_redaction_engine(&config),
+                ];
+                let mut conn = hippo_core::storage::open_db(&config.db_path())?;
+                let summary = agent_eval::ingest(
+                    &mut conn,
+                    &input,
+                    &redaction,
+                    chrono::Utc::now().timestamp_millis(),
+                );
+                for (line, reason) in &summary.rejections {
+                    eprintln!("line {line}: rejected: {reason}");
+                }
+                println!(
+                    "written {}, skipped {}, rejected {}",
+                    summary.written,
+                    summary.skipped,
+                    summary.rejections.len()
+                );
+                if !summary.accepted_any() {
+                    std::process::exit(1);
                 }
             }
             IngestSource::ClaudeSessionBackfill {

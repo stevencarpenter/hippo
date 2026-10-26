@@ -1,6 +1,6 @@
 # Capture-Reliability Anti-Patterns
 
-**TL;DR:** Twelve concrete failure modes observed in hippo's capture layer, each with a forbidden behavior, the reason it is forbidden, and the required alternative. Any of these patterns in a PR is a review blocker.
+**TL;DR:** Fourteen concrete failure modes observed in hippo's capture layer, each with a forbidden behavior, the reason it is forbidden, and the required alternative. Any of these patterns in a PR is a review blocker.
 
 For the system reference these rules guard, see [`architecture.md`](architecture.md). For per-source detail, see [`sources.md`](sources.md). Historical design records are archived under [`docs/archive/capture-reliability-overhaul/`](../archive/capture-reliability-overhaul/).
 
@@ -187,3 +187,15 @@ Healthy: `0`.
 **Rule of thumb.** A node delete must also delete the vec0 `knowledge_vectors` row in the same transaction — vec0 has no FK cascade, so a node-only delete silently orphans the vector into similarity search (the FTS row auto-drops via the `knowledge_nodes_fts_ad` trigger, but the vector does not).
 
 **Cross-reference:** I-16 in [`architecture.md`](architecture.md); remediation tool `brain/scripts/dedup-knowledge-nodes.py`; recipe in [`operator-runbook.md`](operator-runbook.md).
+
+## AP-14: Reading `eval_*` rows into a derived index, an enrichment prompt, or an outbound flow
+
+**Forbidden.** Reading `eval_review_runs`, `eval_findings`, `eval_verdicts`, `eval_escapes`, or `eval_bench_runs` into `knowledge_nodes`, `knowledge_fts`, `knowledge_vectors`, an enrichment prompt, entity extraction, or outbound classification. An MCP tool that returns `claim`, `line_text`, or `note` is an outbound flow too: its result goes to the calling model, which may be a cloud model.
+
+**Why it's wrong.** Agent-eval text is private review output about code: claims, raw source lines, and human rationale. It is redacted at ingest but never cleaned for indexing, so it is never indexed. Eval rows share `hippo.db` with the derived indexes, so the separation is enforced in code, not by a file boundary.
+
+**Detection.** `brain/tests/test_eval_isolation.py` fails when any module under `brain/src/hippo_brain/` matches `\beval_(review_runs|findings|verdicts|escapes|bench_runs)\b` outside its allowlist, when any `.py` or `.sh` file under `scripts/` or `brain/scripts/` (re-embedding and maintenance) matches it, and when `ENRICHMENT_SOURCES` gains a seventh source. The Semgrep rule `eval-table-in-derived-path` in `.semgrep.yml` flags the same table names in the enrichment, embedding, classification, retrieval, RAG, and MCP query modules and the Python scripts in those two directories (local and review aid; not run in CI). `crates/hippo-daemon/tests/agent_eval_privacy.rs` proves an ingest changes no `knowledge_nodes`, `knowledge_fts`, or `*_enrichment_queue` row count.
+
+**Use instead.** Read eval rows only in an allowlisted module (the HIPO-66 linkage job and the HIPO-67 scorecard queries add theirs to the test's allowlist). An MCP scorecard returns aggregates and record ids, not the free text. The local CLI report can show the text.
+
+**Cross-reference:** [`docs/superpowers/specs/2026-10-25-agent-eval-schema-design.md`](../superpowers/specs/2026-10-25-agent-eval-schema-design.md) section 5; [`docs/schema.md`](../schema.md#agent-evaluation-records-v29).

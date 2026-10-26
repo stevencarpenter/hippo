@@ -397,7 +397,9 @@ Schema uses `PRAGMA user_version = N`; the authoritative version is in `crates/h
 
 Event outputs and environment references expire 90 days after ingestion.
 `hippo gc-event-payloads --confirm` explicitly clears expired payloads, retains
-ledger rows and metadata, and appends deletion receipts. It is destructive;
+ledger rows and metadata, and appends deletion receipts. The same sweep clears
+expired agent-evaluation finding text and verdict notes, except for accepted
+findings and escapes. It is destructive;
 startup and migration do not run it automatically. See
 [event payload retention](docs/schema.md#event-payload-retention) for evidence
 pins, shared snapshots, checkpoint outcomes and the limits of erasure.

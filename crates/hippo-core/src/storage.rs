@@ -15,14 +15,16 @@ const SCHEMA: &str = concat!(
     "\n",
     include_str!("schema/auto_memory_taxonomy.sql"),
     "\n",
-    include_str!("schema/agentic_eval.sql")
+    include_str!("schema/agentic_eval.sql"),
+    "\n",
+    include_str!("schema/agent_eval.sql")
 );
 
 /// Schema version the daemon expects a healthy DB to be at. Exposed so
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 28;
+pub const EXPECTED_VERSION: i64 = 29;
 
 const PROJECT_SCHEMA: &str = include_str!("schema/projects.sql");
 
@@ -41,6 +43,9 @@ const AUTO_MEMORY_TAXONOMY_SCHEMA: &str = include_str!("schema/auto_memory_taxon
 
 /// Idempotent v27→v28 agent-evaluation indexes and `agentic_session_facts`.
 const AGENTIC_EVAL_SCHEMA: &str = include_str!("schema/agentic_eval.sql");
+
+/// Idempotent v28→v29 `eval_*` tables, indexes, and `eval_verdicts` triggers.
+const AGENT_EVAL_SCHEMA: &str = include_str!("schema/agent_eval.sql");
 
 /// v27→v28 `agentic_sessions` columns, in the order `schema.sql` declares them.
 const AGENTIC_EVAL_COLUMNS: [(&str, &str); 14] = [
@@ -1828,6 +1833,15 @@ pub fn open_db(path: &Path) -> Result<Connection> {
         }
         tx.execute_batch("PRAGMA user_version = 28;")?;
         tx.commit()?;
+    }
+
+    // v28→v29 is additive: the five `eval_*` tables for agent-evaluation
+    // records (`hippo ingest agent-eval`). No existing table changes.
+    if (1..29).contains(&version) {
+        let tx = conn.transaction()?;
+        tx.execute_batch(AGENT_EVAL_SCHEMA)?;
+        tx.execute_batch("PRAGMA user_version = 29;")?;
+        tx.commit()?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -2112,6 +2126,10 @@ pub enum PayloadCheckpoint {
 #[derive(Debug)]
 pub struct PayloadGcReport {
     pub events_cleared: usize,
+    /// `eval_findings` rows whose `line_text` and `claim` were cleared.
+    pub eval_findings_cleared: usize,
+    /// `eval_verdicts` rows whose `note` was cleared.
+    pub eval_verdicts_cleared: usize,
     pub checkpoint: PayloadCheckpoint,
 }
 
@@ -2183,6 +2201,108 @@ fn event_payload_pins(conn: &Connection) -> Result<std::collections::HashSet<i64
     Ok(pins)
 }
 
+/// Finding ids whose effective verdict is `accepted`: the latest human
+/// verdict, else the latest automatic one, ordered by `decided_at` then
+/// `verdict_id`. Their text and all their verdict notes are pinned. Derived in
+/// each GC transaction and never stored, so a later human verdict that
+/// replaces `accepted` removes the pin at the next sweep.
+fn eval_payload_pins(conn: &Connection) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT finding_id FROM (
+             SELECT finding_id, verdict, ROW_NUMBER() OVER (
+                 PARTITION BY finding_id
+                 ORDER BY (auto = 0) DESC, decided_at DESC, verdict_id DESC
+             ) AS rn
+             FROM eval_verdicts
+         )
+         WHERE rn = 1 AND verdict = 'accepted'",
+    )?;
+    let pins = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(pins)
+}
+
+/// Clear expired free-text `fields` of one `eval_*` table in batches of at
+/// most 100 rows, skipping rows whose `finding_id` is pinned. The cursor on
+/// `key` moves past pinned rows, so pins cannot stall the sweep.
+fn gc_eval_payload_table(
+    conn: &Connection,
+    now_ms: i64,
+    table: &str,
+    key: &str,
+    fields: &[&str],
+) -> Result<usize> {
+    let select = format!(
+        "SELECT {key}, finding_id, {} FROM {table}
+         WHERE (?1 IS NULL OR {key} > ?1) AND payload_expiry <= ?2 AND ({})
+         ORDER BY {key} LIMIT 100",
+        fields.join(", "),
+        fields
+            .iter()
+            .map(|f| format!("{f} IS NOT NULL"))
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    );
+    let update = format!(
+        "UPDATE {table} SET {} WHERE {key} = ?1",
+        fields
+            .iter()
+            .map(|f| format!("{f} = NULL"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let mut cursor: Option<String> = None;
+    let mut cleared = 0;
+    loop {
+        let batch = (|| -> Result<(Option<String>, usize, usize)> {
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            let pins = eval_payload_pins(&tx)?;
+            let rows = tx
+                .prepare(&select)?
+                .query_map(rusqlite::params![cursor, now_ms], |row| {
+                    let texts = (0..fields.len())
+                        .map(|i| row.get::<_, Option<String>>(i + 2))
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, texts))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let count = rows.len();
+            let mut last = cursor.clone();
+            let mut changed = 0;
+            for (id, finding_id, texts) in rows {
+                last = Some(id.clone());
+                if pins.contains(&finding_id) {
+                    continue;
+                }
+                for (field, text) in fields.iter().zip(texts) {
+                    if let Some(text) = text {
+                        payload_receipt(&tx, &text, now_ms, &format!("{table}/{id}/{field}"))?;
+                    }
+                }
+                tx.execute(&update, [&id])?;
+                changed += 1;
+            }
+            tx.commit()?;
+            Ok((last, count, changed))
+        })()
+        .with_context(|| {
+            format!(
+                "payload GC stopped after {cleared} committed {table} clears; current batch rolled back"
+            )
+        })?;
+        cleared += batch.2;
+        if batch.1 < 100 {
+            break;
+        }
+        cursor = batch.0;
+    }
+    Ok(cleared)
+}
+
 fn payload_receipt(conn: &Connection, content: &str, now_ms: i64, what: &str) -> Result<()> {
     let hash: String = Sha256::digest(content.as_bytes())
         .iter()
@@ -2203,6 +2323,9 @@ fn payload_receipt(conn: &Connection, content: &str, now_ms: i64, what: &str) ->
 /// committed if a later batch fails; the error states that partial progress.
 /// Old rows use created_at + 90 days until GC touches them. Event ledger rows,
 /// command/metadata, source joins, FTS and vectors are not removed.
+/// The same run then clears expired `eval_findings.line_text`/`claim` and
+/// `eval_verdicts.note`, skipping findings whose effective verdict is
+/// `accepted` and every verdict of such a finding.
 pub fn gc_event_payloads(conn: &Connection, now_ms: i64) -> Result<PayloadGcReport> {
     anyhow::ensure!(
         conn.is_autocommit(),
@@ -2274,8 +2397,21 @@ pub fn gc_event_payloads(conn: &Connection, now_ms: i64) -> Result<PayloadGcRepo
         };
         cursor = next;
     }
+    // Agent-eval free text: findings first, then verdict notes. Escapes are
+    // all pinned, so they carry no expiry and are never visited.
+    let eval_findings_cleared = gc_eval_payload_table(
+        conn,
+        now_ms,
+        "eval_findings",
+        "finding_id",
+        &["line_text", "claim"],
+    )?;
+    let eval_verdicts_cleared =
+        gc_eval_payload_table(conn, now_ms, "eval_verdicts", "verdict_id", &["note"])?;
     Ok(PayloadGcReport {
         events_cleared: cleared,
+        eval_findings_cleared,
+        eval_verdicts_cleared,
         checkpoint: payload_checkpoint(conn),
     })
 }
@@ -6153,7 +6289,6 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, EXPECTED_VERSION);
-        assert_eq!(EXPECTED_VERSION, 28);
         for table in ["agentic_sessions", "agentic_session_facts"] {
             assert_eq!(
                 column_shapes(&migrated, table),
@@ -6193,6 +6328,141 @@ mod tests {
             column_shapes(&rerun, "agentic_sessions"),
             column_shapes(&fresh, "agentic_sessions")
         );
+    }
+
+    const EVAL_TABLES: [&str; 5] = [
+        "eval_review_runs",
+        "eval_findings",
+        "eval_verdicts",
+        "eval_escapes",
+        "eval_bench_runs",
+    ];
+
+    fn trigger_sql(conn: &Connection, table: &str) -> Vec<(String, String)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, sql FROM sqlite_master
+                 WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name",
+            )
+            .unwrap();
+        stmt.query_map([table], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    /// A v28 database is the fresh schema minus the `eval_*` tables. Migrating
+    /// it must reproduce the fresh v29 tables exactly (columns, defaults,
+    /// indexes, triggers), keep existing rows, and stay idempotent on a
+    /// partial-success rerun.
+    #[test]
+    fn test_migrate_v28_to_v29_matches_fresh_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = open_db(&dir.path().join("fresh.db")).unwrap();
+
+        let migrated_path = dir.path().join("migrated.db");
+        {
+            let conn = Connection::open(&migrated_path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            // Children first: eval_findings and eval_verdicts hold foreign keys.
+            for table in EVAL_TABLES.iter().rev() {
+                conn.execute_batch(&format!("DROP TABLE {table};")).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO agentic_sessions
+                    (id, session_id, harness, project_dir, cwd, summary_text,
+                     start_time, end_time)
+                 VALUES (9, 'sess-v28', 'claude-code', 'p', '/p', 'keep me', 1, 2);
+                 PRAGMA user_version = 28;",
+            )
+            .unwrap();
+        }
+        let migrated = open_db(&migrated_path).unwrap();
+
+        let version: i64 = migrated
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+        assert_eq!(EXPECTED_VERSION, 29);
+        for table in EVAL_TABLES {
+            let shape = column_shapes(&fresh, table);
+            assert!(!shape.is_empty(), "{table} missing from the fresh schema");
+            assert_eq!(column_shapes(&migrated, table), shape, "{table} columns");
+            assert_eq!(
+                index_names(&migrated, table),
+                index_names(&fresh, table),
+                "{table} indexes"
+            );
+            assert_eq!(
+                trigger_sql(&migrated, table),
+                trigger_sql(&fresh, table),
+                "{table} triggers"
+            );
+        }
+        assert_eq!(trigger_sql(&fresh, "eval_verdicts").len(), 4);
+        let kept: String = migrated
+            .query_row(
+                "SELECT summary_text FROM agentic_sessions WHERE id = 9",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, "keep me");
+
+        // Partial-success crash: tables present, version not bumped.
+        migrated.execute_batch("PRAGMA user_version = 28;").unwrap();
+        drop(migrated);
+        let rerun = open_db(&migrated_path).unwrap();
+        for table in EVAL_TABLES {
+            assert_eq!(column_shapes(&rerun, table), column_shapes(&fresh, table));
+        }
+    }
+
+    /// `eval_verdicts` is append-only: delete, replace, and edits abort; the
+    /// one permitted update clears `note`.
+    #[test]
+    fn test_eval_verdicts_triggers_enforce_append_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("verdicts.db")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO eval_review_runs (run_id, agent, mode, repo, base, base_sha,
+                head_sha, input_sha256, started_at, finished_at, ingested_at)
+             VALUES ('r1', 'a', 'm', '/r', 'main', 's', 's', 'h', 1, 2, 3);
+             INSERT INTO eval_findings (finding_id, run_id, repo, path, side, line,
+                severity, confidence, logged_at, ingested_at, payload_expiry)
+             VALUES ('f1', 'r1', '/r', 'p', '+', 1, 'high', 'low', 1, 2, 3);
+             INSERT INTO eval_verdicts (verdict_id, finding_id, verdict, note, auto,
+                decided_at, ingested_at, payload_expiry)
+             VALUES ('v1', 'f1', 'accepted', 'why', 0, 1, 2, 3);",
+        )
+        .unwrap();
+        for sql in [
+            "DELETE FROM eval_verdicts WHERE verdict_id = 'v1'",
+            "UPDATE eval_verdicts SET verdict = 'duplicate' WHERE verdict_id = 'v1'",
+            "UPDATE eval_verdicts SET note = 'edited' WHERE verdict_id = 'v1'",
+            "INSERT OR REPLACE INTO eval_verdicts (verdict_id, finding_id, verdict, auto,
+                decided_at, ingested_at, payload_expiry)
+             VALUES ('v1', 'f1', 'duplicate', 1, 9, 9, 9)",
+            "INSERT INTO eval_verdicts (verdict_id, finding_id, verdict, auto,
+                decided_at, ingested_at, payload_expiry)
+             VALUES ('v1', 'f1', 'duplicate', 1, 9, 9, 9) ON CONFLICT DO NOTHING",
+        ] {
+            let err = conn.execute(sql, []).unwrap_err().to_string();
+            assert!(err.contains("eval_verdicts"), "{sql}: {err}");
+        }
+        conn.execute(
+            "UPDATE eval_verdicts SET note = NULL WHERE verdict_id = 'v1'",
+            [],
+        )
+        .unwrap();
+        let row: (String, Option<String>) = conn
+            .query_row(
+                "SELECT verdict, note FROM eval_verdicts WHERE verdict_id = 'v1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("accepted".into(), None));
     }
 
     #[test]

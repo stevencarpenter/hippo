@@ -37,6 +37,7 @@ fn cli_requires_confirmation_and_sweeps_only_the_synthetic_configured_store() {
     );
     let stdout = String::from_utf8_lossy(&applied.stdout);
     assert!(stdout.contains("Cleared payloads from 1 retained event rows"));
+    assert!(stdout.contains("Cleared agent-eval text from 0 finding rows and 0 verdict rows"));
     assert!(stdout.contains("WAL checkpoint completed"));
     assert_eq!(
         conn.query_row("SELECT command,stdout FROM events", [], |r| Ok((

@@ -49,6 +49,7 @@ The Rust migration runner at `storage.rs::open_db` walks every version from the 
 | **v22** | Watcher resume-state rename (SNUG-115 Phase A). | Creates `agentic_session_offsets` (same columns as legacy `claude_session_offsets`) and `INSERT OR IGNORE` copies existing rows. **Does not drop** legacy tables. | Claude FS watcher and backfill CLI read/write `agentic_session_offsets`. Legacy `claude_session_offsets` remains frozen on upgraded DBs until Phase B. |
 | **v26** | Event payload expiry and deletion receipts (HIPO-13). | Adds `events.payload_expiry`, an insert trigger and expiry index, and append-only `deletion_receipts`. No event table rebuild or bulk backfill. | Explicit payload GC retains event metadata and joins. See [Event payload retention](#event-payload-retention). |
 | **v28** | Agent-evaluation metadata, Phase 1 (HIPO-57). | Additive: 14 `agentic_sessions` columns via `add_column_if_missing` (no rebuild), partial indexes `idx_agentic_sessions_agent` (`WHERE agent <> ''`) and `idx_agentic_sessions_model` (`WHERE model <> ''`), and the per-session `agentic_session_facts` table. Index and table DDL lives in [`schema/agentic_eval.sql`](../crates/hippo-core/src/schema/agentic_eval.sql), shared by fresh installs and the migration. Existing rows take the column defaults. | Lets evaluation queries key on subagent type, model, tokens, and hook outcomes. See [Agent-evaluation columns](#agent-evaluation-columns-v28). |
+| **v29** | Agent-evaluation records (HIPO-64). | Additive: creates `eval_review_runs`, `eval_findings`, `eval_verdicts` (with four append-only triggers), `eval_escapes`, `eval_bench_runs`, and their indexes. DDL lives in [`schema/agent_eval.sql`](../crates/hippo-core/src/schema/agent_eval.sql), shared by fresh installs and the migration. No existing table changes. | `hippo ingest agent-eval` writes the tables; payload GC clears their expired free text. No brain path reads them (AP-14). See [Agent-evaluation records](#agent-evaluation-records-v29). |
 
 The v24-to-v25 migration adds optional classification state without rewriting
 knowledge content or vectors. Its authoritative DDL is
@@ -114,6 +115,120 @@ Resumed sessions: when a later file continues a `session_id`, the upsert is per 
 
 `hippo ingest claude-session-backfill <glob>` first repairs subagent identity in the database: claude-code rows whose stored `source_file` is under `subagents/` but carry `is_subagent = 0` (workflow subagents written before v28) get `is_subagent`, `parent_session_id`, and `project_dir` recomputed from that path, even when the transcript is gone, and the count prints as `Subagent rows repaired`. It then re-reads `meta.json` for transcripts still on disk and prints `Subagent agent coverage: <filled> / <rows>`, counting the processed files' `is_subagent = 1` rows by `(session_id, harness)`. The first run after v28 also re-enqueues about 1,300 segments (counted on the development database) whose `Agent` tool-call summaries changed format, because those summaries are part of `content_hash`; later runs re-enqueue nothing for metadata-only changes. The live watcher also re-ingests a subagent transcript when its sibling `meta.json` changes, so `subagent_finished` no longer waits for a backfill. The 30 s reconciliation pass also compares the `meta.json` mtime with `agentic_session_offsets.updated_at` (the start of the last successful ingest), so a `meta.json` write whose filesystem event was dropped, or that landed while the watcher was stopped, is picked up within one pass. These re-ingests change metadata only and enqueue nothing. The first pass after an upgrade re-ingests each subagent transcript whose `meta.json` is newer than its stored offset once.
 
+## Agent-evaluation records (v29)
+
+`hippo ingest agent-eval <file.jsonl>` is the only writer, apart from the payload GC. The record contract (fields, id rules, rejection reasons, exit codes) is in [`docs/superpowers/specs/2026-10-25-agent-eval-schema-design.md`](superpowers/specs/2026-10-25-agent-eval-schema-design.md) section 4. Conventions for all five tables:
+
+- The primary key is the producer's record `id`, the idempotency key. A rerun skips an existing id whose stored fields equal the record and rejects a differing one as `id_conflict`. The comparison leaves out the redacted columns and the hippo-generated ones (`ingested_at`, `payload_expiry`, `line_hash`, `repo_identity`).
+- Times are epoch milliseconds. `ingested_at` is the time hippo wrote the row.
+- `base_sha`, `head_sha`, `commit_sha`, and `fix_commit` hold full 40-character lowercase hex SHAs; ingest rejects any other form.
+- `repo` is the local absolute path; ingest rejects a relative one as `invalid_field:repo`. `repo_identity` is derived at ingest by `git_repo.rs::derive_git_repo` (`owner/repo` from `origin`, else the top-level directory name, else NULL).
+- Redacted columns pass through the builtin `RedactionEngine` patterns and then the operator's `redact.toml` before the insert. Ingest redacts first and then caps `claim` and `note` at 4,000 characters, `line_text` at 1,000, and `category` at 64.
+- `severity`, `confidence`, and `verdict` are validated by the ingest code, not by `CHECK`, so a new value needs a contract version and no table rebuild.
+- `payload_expiry = ingested_at + 7,776,000,000` (90 days), on `eval_findings` and `eval_verdicts` only. See [Event payload retention](#event-payload-retention).
+- No brain enrichment, embedding, FTS, classification, retrieval, or MCP path reads these tables ([AP-14](capture/anti-patterns.md)).
+
+`eval_review_runs`: one row per review invocation. Insert once, never updated. No column is redacted.
+
+| Column | Type / default | Meaning |
+|---|---|---|
+| `run_id` | `TEXT PRIMARY KEY` | Producer run id. |
+| `agent`, `mode` | `TEXT NOT NULL` | Reviewing agent (for example `blind-review`) and mode (for example `mechanical`). |
+| `requested_model` | `TEXT`, NULL | Model argument (for example `haiku`). |
+| `model_id` | `TEXT NOT NULL DEFAULT ''` | Sorted, comma-joined served model ids. |
+| `effort` | `TEXT`, NULL | Requested reasoning effort. |
+| `cli_version` | `TEXT NOT NULL DEFAULT ''` | Reviewer CLI version. |
+| `repo`, `repo_identity` | `TEXT NOT NULL`, `TEXT` | Local path and derived slug. |
+| `base`, `base_sha`, `head_sha` | `TEXT NOT NULL` | Base ref name, that ref resolved at review start, and `HEAD` at review start. |
+| `input_sha256` | `TEXT NOT NULL` | SHA-256 of the sorted per-unit input hashes. |
+| `units_total`, `units_failed` | `INTEGER NOT NULL DEFAULT 0` | Reviewed units and failed units; a failed review stays distinct from a clean one. |
+| `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens` | `INTEGER NOT NULL DEFAULT 0` | Reviewer token sums over all units. |
+| `session_id`, `harness` | `TEXT`, NULL | Orchestrating agent session (soft link to `agentic_sessions` and `agentic_session_facts`; no foreign key). Ingest rejects `session_id` without `harness`. |
+| `started_at`, `finished_at`, `ingested_at` | `INTEGER NOT NULL` | Review start and end; hippo write time. |
+
+Indexes: `idx_eval_review_runs_agent_started_at (agent, started_at)`, `idx_eval_review_runs_session_id_harness (session_id, harness) WHERE session_id IS NOT NULL`, `idx_eval_review_runs_repo_identity_started_at (repo_identity, started_at)`.
+
+`eval_findings`: one row per finding. Insert once; the only later write is the payload-expiry partial `UPDATE`.
+
+| Column | Type / default | Meaning |
+|---|---|---|
+| `finding_id` | `TEXT PRIMARY KEY` | Producer finding id (includes the run id). |
+| `run_id` | `TEXT NOT NULL REFERENCES eval_review_runs (run_id)` | Parent run; ingest rejects an unknown run as `unknown_parent`. |
+| `repo`, `repo_identity` | `TEXT NOT NULL`, `TEXT` | Repeated from the run so linkage can use `idx_eval_findings_repo_path` without a join. |
+| `path`, `line` | `TEXT NOT NULL`, `INTEGER NOT NULL` | Flagged location. |
+| `side` | `TEXT NOT NULL CHECK (side IN ('+', '-'))` | Diff side. |
+| `line_text` | `TEXT`, redacted | Raw source line at the reviewed revision, redacted. NULL after expiry or when absent. |
+| `line_hash` | `TEXT` | `lower_hex(sha256(normalize(raw line_text)))`, where `normalize` drops one trailing `\r` and then ASCII spaces and tabs at both ends. Computed from the raw line before redaction; a producer hash is ignored. NULL when `line_text` is absent. |
+| `severity`, `confidence` | `TEXT NOT NULL` | `high`, `medium`, or `low`. |
+| `category` | `TEXT NOT NULL DEFAULT 'unknown'` | Reviewer category label. |
+| `claim` | `TEXT`, redacted | The finding text. NULL after expiry. |
+| `logged_at`, `ingested_at`, `payload_expiry` | `INTEGER NOT NULL` | Producer log time, hippo write time, text expiry. |
+
+Indexes: `idx_eval_findings_run_id (run_id)`, `idx_eval_findings_repo_path (repo, path)`, `idx_eval_findings_payload_expiry (payload_expiry) WHERE line_text IS NOT NULL OR claim IS NOT NULL`.
+
+`eval_verdicts`: append-only, one row per verdict event. `verdict` is one of `accepted`, `false-positive`, `not-useful`, `duplicate`, `likely-addressed`. `auto = 1` marks a machine verdict, `auto = 0` a human one.
+
+| Column | Type / default | Meaning |
+|---|---|---|
+| `verdict_id` | `TEXT PRIMARY KEY` | Producer verdict id. |
+| `finding_id` | `TEXT NOT NULL REFERENCES eval_findings (finding_id)` | Parent finding; ingest rejects an unknown finding as `unknown_parent`. |
+| `verdict` | `TEXT NOT NULL` | Verdict value. |
+| `commit_sha` | `TEXT`, NULL | Commit that addressed the finding or that a human cites (record field `commit`). |
+| `note` | `TEXT`, redacted | Rationale. NULL after expiry. |
+| `auto` | `INTEGER NOT NULL CHECK (auto IN (0, 1))` | Machine (1) or human (0) verdict. |
+| `decided_at`, `ingested_at`, `payload_expiry` | `INTEGER NOT NULL` | Decision time, hippo write time, note expiry. |
+
+Indexes: `idx_eval_verdicts_finding_id_decided_at (finding_id, decided_at)`, `idx_eval_verdicts_commit_sha (commit_sha) WHERE commit_sha IS NOT NULL`, `idx_eval_verdicts_payload_expiry (payload_expiry) WHERE note IS NOT NULL`.
+
+Triggers (the `deletion_receipts` pattern): `eval_verdicts_no_delete` aborts every `DELETE`; `eval_verdicts_no_update` aborts an `UPDATE` of any column except `note`; `eval_verdicts_note_clear_only` aborts an `UPDATE` that sets `note` to a non-NULL value; `eval_verdicts_no_replace` aborts an insert of an existing `verdict_id`, which covers `INSERT OR REPLACE` and `INSERT ... ON CONFLICT DO NOTHING`. Ingest therefore checks for the id before it inserts.
+
+The effective verdict of a finding is the latest human verdict, else the latest automatic one, ordered by `decided_at` and then `verdict_id`. A finding with no verdict is open.
+
+```sql
+SELECT finding_id, verdict, auto, commit_sha
+FROM (
+    SELECT v.*, ROW_NUMBER() OVER (
+        PARTITION BY finding_id
+        ORDER BY (auto = 0) DESC, decided_at DESC, verdict_id DESC
+    ) AS rn
+    FROM eval_verdicts v
+)
+WHERE rn = 1;
+```
+
+`eval_escapes`: one row per defect that reached review and that no finding reported. Insert once, never updated. Notes never expire, so the table has no `payload_expiry`.
+
+| Column | Type / default | Meaning |
+|---|---|---|
+| `escape_id` | `TEXT PRIMARY KEY` | Producer escape id. |
+| `repo`, `repo_identity` | `TEXT NOT NULL`, `TEXT` | Local path and derived slug. |
+| `path`, `line` | `TEXT NOT NULL`, `INTEGER NOT NULL` | Defect location. |
+| `fix_commit` | `TEXT`, NULL | Commit that fixed the defect. |
+| `note` | `TEXT NOT NULL`, redacted | Description of the escape. |
+| `recorded_at`, `ingested_at` | `INTEGER NOT NULL` | Producer record time; hippo write time. |
+
+Index: `idx_eval_escapes_repo_path (repo, path)`.
+
+`eval_bench_runs`: one row per recorded benchmark run. Insert once, never updated, never expired. No column is redacted; bench data is synthetic.
+
+| Column | Type / default | Meaning |
+|---|---|---|
+| `bench_run_id` | `TEXT PRIMARY KEY` | Producer bench run id. |
+| `bench` | `TEXT NOT NULL` | Benchmark name (for example `blind-review-mechanical`). |
+| `recorded_at`, `ingested_at` | `INTEGER NOT NULL` | Producer record time; hippo write time. |
+| `repo_commit` | `TEXT NOT NULL` | Bench version label (short SHA, optional `-dirty`); not a linkage key. |
+| `cli_version` | `TEXT NOT NULL DEFAULT ''` | Reviewer CLI version. |
+| `model` | `TEXT NOT NULL` | Model argument. |
+| `model_ids_json` | `TEXT NOT NULL DEFAULT '[]'` | JSON array of served model ids (record field `model_ids`). |
+| `effort` | `TEXT`, NULL | Requested effort. |
+| `reps`, `cases` | `INTEGER NOT NULL` | Repetitions and case count. |
+| `cases_sha256`, `brief_sha256` | `TEXT NOT NULL` | Hashes of the case set and the brief. |
+| `failed_reviews`, `tokens` | `INTEGER NOT NULL DEFAULT 0` | Failed reviews and total tokens. |
+| `scores_json` | `TEXT NOT NULL` | Producer score object as JSON (record field `scores`), re-serialized with object keys in sorted order; read with `json_extract`. |
+| `per_case_json` | `TEXT NOT NULL DEFAULT '[]'` | Producer per-case array as JSON (record field `per_case`), re-serialized with object keys in sorted order. |
+
+Index: `idx_eval_bench_runs_bench_recorded_at (bench, recorded_at)`. The JSON columns compare as parsed JSON on a rerun, with numbers compared by value, so `1` and `1.0` are equal.
+
 ## Event payload retention
 
 New event writes set `payload_expiry = created_at + 7,776,000,000` milliseconds
@@ -167,6 +282,20 @@ prove named field removal, not non-existence of the original content. These
 operations do not erase surviving derived knowledge, FTS/vectors, backups,
 capture logs, fallback files, process memory or copies outside the database.
 
+The same sweep then clears agent-evaluation free text whose `payload_expiry`
+has passed: `eval_findings.line_text` and `claim`, then `eval_verdicts.note`. It
+skips every finding whose effective verdict is `accepted`, and every verdict of
+such a finding. `eval_payload_pins` derives that pin set from `eval_verdicts`
+inside each batch transaction; no pin table is stored, so a later human verdict
+that replaces `accepted` removes the pin at the next sweep. A finding accepted
+after its text expired stays without text. All escapes are pinned:
+`eval_escapes` has no expiry and GC does not visit it. Batches hold at most 100
+rows per table, a cursor on the primary key moves past pinned rows, and each
+cleared field gets a receipt such as `eval_findings/<id>/claim` or
+`eval_verdicts/<id>/note` in the same transaction. Every other eval column stays,
+including `path`, `line`, `line_hash`, verdicts, and commits. The CLI prints the
+cleared finding and verdict row counts after the event count.
+
 GC leaves the `hippo_kb_events` gauge unchanged because event ledger rows remain.
 The `hippo_kb_stdout_nonempty` gauge can fall after a sweep; this is expected,
 not lost capture. Both existing gauge names and definitions remain unchanged.
@@ -214,6 +343,7 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 | `knowledge_fts` | FTS5 virtual table over `knowledge_nodes.summary` / `embed_text` / `content`. | Triggers (auto-synced with `knowledge_nodes`) |
 | `knowledge_vectors` | sqlite-vec virtual table holding 768-dim embedding vectors. | `embeddings.py::embed_knowledge_node` (Python brain — Rust daemon doesn't load vec0) |
 | `embed_model_meta` | Single-row tracking table for the model that produced the corpus's vectors. | Same |
+| `eval_review_runs` / `eval_findings` / `eval_verdicts` / `eval_escapes` / `eval_bench_runs` | Agent-evaluation records: review runs, findings, append-only verdicts, escaped defects, benchmark runs (v29). Never read by the brain (AP-14). | `agent_eval.rs::ingest` (`hippo ingest agent-eval`); payload GC clears expired text |
 
 ### Foreign-key relationships (high level)
 
@@ -238,6 +368,10 @@ enrichment_queue   ──> events
 agentic_enrichment_queue ──> agentic_sessions   (shared by supported harnesses)
 browser_enrichment_queue ──> browser_events
 workflow_enrichment_queue ──> workflow_runs
+
+eval_review_runs ──< eval_findings ──< eval_verdicts
+eval_review_runs ··> agentic_sessions (session_id, harness)   (soft link, no FK)
+eval_escapes, eval_bench_runs   (no FKs)
 ```
 
 `storage.rs::open_db` and `vector_store.py::open_conn` enable `PRAGMA foreign_keys`.
