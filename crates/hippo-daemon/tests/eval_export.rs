@@ -273,3 +273,50 @@ fn with_run(mut record: Value, run_id: &str) -> Value {
     record["run_id"] = json!(run_id);
     record
 }
+
+/// Synthetic PEM block; the body is not a real key.
+const PEM: &str = "-----BEGIN RSA PRIVATE KEY-----\nQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2\nd3h5ejAxMjM0NTY3ODkrL0FCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaYWJjZGVm\n-----END RSA PRIVATE KEY-----\n";
+
+#[test]
+fn multi_line_secrets_are_redacted_across_lines() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    // f1: a PEM block in the fixed file (base) is redacted as a whole block.
+    // f2: a PEM block in the defective file would change its line count.
+    let bad = commit(&repo, "src/auth.py", DEFECTIVE);
+    let good = commit(&repo, "src/auth.py", &format!("{FIXED}{PEM}"));
+    git(&repo, &["checkout", "-q", "-b", "other", &bad]);
+    let bad2 = commit(&repo, "src/auth.py", &format!("{DEFECTIVE}{PEM}"));
+    let good2 = commit(&repo, "src/auth.py", FIXED);
+    let repo = repo.canonicalize().unwrap();
+    let mut conn = db(tmp.path());
+    let line = "    if user.is_admin or True:";
+    let mut run2 = run(&repo, &bad2);
+    run2["id"] = json!("r2");
+    load(
+        &mut conn,
+        &[
+            run(&repo, &bad),
+            run2,
+            finding("f1", &repo, "+", 2, line),
+            verdict("v1", "f1", "accepted", false, Some(&good), 6),
+            with_run(finding("f2", &repo, "+", 2, line), "r2"),
+            verdict("v2", "f2", "accepted", false, Some(&good2), 6),
+        ],
+    );
+    let out = tmp.path().join("cases");
+    let summary = export(&conn, &out);
+    assert_eq!(summary.written, 1, "{summary:?}");
+    assert_eq!(
+        summary.skipped.get("redaction_changed_line_count"),
+        Some(&1)
+    );
+    let text = std::fs::read_to_string(out.join("f-f1.json")).unwrap();
+    assert!(text.contains("[REDACTED]"), "{text}");
+    for body in PEM.lines().filter(|l| !l.starts_with("-----")) {
+        assert!(!text.contains(body), "PEM body leaked: {text}");
+    }
+    assert!(!out.join("f-f2.json").exists());
+}

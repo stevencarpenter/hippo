@@ -216,11 +216,17 @@ fn build_case(c: &Candidate, redaction: &[RedactionEngine]) -> Result<Json, &'st
             .iter()
             .fold(text.to_owned(), |acc, engine| engine.redact(&acc).text)
     };
-    if redact(raw_anchor) != raw_anchor {
+    // Whole files, so multi-line patterns (PEM blocks) apply. A match that
+    // joins lines in the defective file would move the anchor: skip it.
+    let redacted_fixed = redact(&fixed);
+    let redacted_defective = redact(&defective);
+    let redacted_lines: Vec<&str> = redacted_defective.split('\n').collect();
+    if redacted_lines.len() != lines.len() {
+        return Err("redaction_changed_line_count");
+    }
+    if redacted_lines[anchor - 1] != raw_anchor {
         return Err("redaction_changed_anchor");
     }
-    // Line by line, so a pattern cannot join lines and move the anchor.
-    let redact_file = |text: &str| text.split('\n').map(redact).collect::<Vec<_>>().join("\n");
 
     let mut trap = json!({
         "id": "defect",
@@ -233,18 +239,12 @@ fn build_case(c: &Candidate, redaction: &[RedactionEngine]) -> Result<Json, &'st
     if let Some(severity) = &c.severity {
         trap["severity"] = json!(severity);
     }
-    let file = |text: &str| {
-        Json::Object(
-            [(c.path.clone(), json!(redact_file(text)))]
-                .into_iter()
-                .collect(),
-        )
-    };
+    let file = |text: String| Json::Object([(c.path.clone(), json!(text))].into_iter().collect());
     Ok(json!({
         "id": c.case_id,
         "description": c.description,
-        "base": file(&fixed),
-        "head": file(&defective),
+        "base": file(redacted_fixed),
+        "head": file(redacted_defective),
         "traps": [trap],
     }))
 }
