@@ -286,12 +286,12 @@ fn build_case(c: &Candidate, redaction: &[RedactionEngine]) -> Result<Json, &'st
             .iter()
             .fold(text.to_owned(), |acc, engine| engine.redact(&acc).text)
     };
-    // Per line first, so line-anchored operator patterns (`^`, `$`) apply;
-    // then the whole file, so multi-line patterns apply (the PEM rule also
-    // matches a key body after a redacted BEGIN line).
+    // Whole file first, so a multi-line match (a quoted secret, a PEM block)
+    // sees its opening delimiter intact; then per line, so line-anchored
+    // operator patterns (`^`, `$`) apply; then the whole file again.
     let per_line = |text: &str| text.split('\n').map(redact).collect::<Vec<_>>().join("\n");
-    let redacted_fixed = redact(&per_line(&fixed));
-    let redacted_defective = redact(&per_line(&defective));
+    let redacted_fixed = redact(&per_line(&redact(&fixed)));
+    let redacted_defective = redact(&per_line(&redact(&defective)));
     // Fail closed: a pattern that still matches the output skips the case.
     if [&redacted_fixed, &redacted_defective]
         .iter()
@@ -340,6 +340,7 @@ fn added_rows(repo: &Path, from: &str, to: &str, path: &str) -> Vec<usize> {
         "--no-renames",
         "--histogram",
         "-U0",
+        "--inter-hunk-context=0", // config can merge hunks over unchanged lines
         from,
         to,
         "--",

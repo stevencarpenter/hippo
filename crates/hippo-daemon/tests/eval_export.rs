@@ -492,3 +492,62 @@ fn finding_without_line_hash_is_anchor_not_found() {
         "{summary:?}"
     );
 }
+
+#[test]
+fn multi_line_quoted_secret_is_redacted_as_a_whole() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    // The per-line pass alone would redact the first line and leave the tail.
+    let secret = "password=\"first segment\nlast-secret-segment-synthetic\"\n";
+    let bad = commit(&repo, "src/auth.py", DEFECTIVE);
+    let good = commit(&repo, "src/auth.py", &format!("{FIXED}{secret}"));
+    let repo = repo.canonicalize().unwrap();
+    let mut conn = db(tmp.path());
+    load(
+        &mut conn,
+        &[
+            run(&repo, &bad),
+            finding("f1", &repo, "+", 2, "    if user.is_admin or True:"),
+            verdict("v1", "f1", "accepted", false, Some(&good), 6),
+        ],
+    );
+    let out = tmp.path().join("cases");
+    let summary = export(&conn, &out);
+    assert_eq!(summary.written, 1, "{summary:?}");
+    let text = std::fs::read_to_string(out.join("f-f1.json")).unwrap();
+    assert!(
+        !text.contains("last-secret-segment"),
+        "secret tail leaked: {text}"
+    );
+}
+
+#[test]
+fn inter_hunk_context_is_not_an_added_row() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "diff.interHunkContext", "1"]);
+    let bad = commit(&repo, "src/auth.py", "one = 1\nunchanged = 2\nthree = 3\n");
+    let good = commit(
+        &repo,
+        "src/auth.py",
+        "one = 10\nunchanged = 2\nthree = 30\n",
+    );
+    let repo = repo.canonicalize().unwrap();
+    let mut conn = db(tmp.path());
+    load(
+        &mut conn,
+        &[
+            run(&repo, &bad),
+            finding("f1", &repo, "+", 2, "unchanged = 2"),
+            verdict("v1", "f1", "accepted", false, Some(&good), 6),
+        ],
+    );
+    let out = tmp.path().join("cases");
+    let summary = export(&conn, &out);
+    assert_eq!(summary.written, 0, "{summary:?}");
+    assert_eq!(summary.skipped.get("anchor_not_changed_by_fix"), Some(&1));
+}
