@@ -88,11 +88,11 @@ def _verdict(conn, verdict_id, finding_id, verdict, auto, decided_at,
     )
 
 
-def _escape(conn, escape_id, repo, recorded_at):
+def _escape(conn, escape_id, repo, identity, recorded_at):
     conn.execute(
-        "INSERT INTO eval_escapes (escape_id, repo, path, line, note, recorded_at, ingested_at) "
-        "VALUES (?, ?, 'src/b.py', 1, 'SECRET ESCAPE NOTE', ?, 0)",
-        (escape_id, repo, recorded_at),
+        "INSERT INTO eval_escapes (escape_id, repo, repo_identity, path, line, note, "
+        "recorded_at, ingested_at) VALUES (?, ?, ?, 'src/b.py', 1, 'SECRET ESCAPE NOTE', ?, 0)",
+        (escape_id, repo, identity, recorded_at),
     )
 
 
@@ -120,12 +120,12 @@ def seeded(db):
     _facts(conn, "sub-c", 50_000, 0.25)
     _segment(conn, "sub-probe", 0, 3_500_000, 3_600_000, tokens=(9_999,) * 5, probe="probe-1")
     _segment(conn, "main-1", 0, 900_000, 2_100_000, agent="", parent=None, subagent=0)
-    _segment(conn, "sub-d", 0, 4_000_000, 4_010_000, agent="blind-review", parent="main-3")
+    _segment(conn, "sub-d", 0, 4_000_000, 4_010_000, agent="blind-reviewer", parent="main-3")
 
     _run(conn, "run-1", "code-reviewer", "/home/dev/alpha", "dev/alpha", "opus", OPUS, 1_000_000)
     _run(conn, "run-2", "code-reviewer", "/home/dev/beta", "dev/beta", "haiku", HAIKU, 5_000_000,
          failed=1, units=3)  # fmt: skip
-    _run(conn, "run-3", "blind-review", "/home/dev/alpha", "dev/alpha", "opus", OPUS, 3_000_000)
+    _run(conn, "run-3", "blind-reviewer", "/home/dev/alpha", "dev/alpha", "opus", OPUS, 3_000_000)
     for finding_id, run_id, severity, category in [
         ("f1", "run-1", "high", "security"),
         ("f2", "run-1", "high", "correctness"),
@@ -150,16 +150,23 @@ def seeded(db):
     _verdict(conn, "v6", "f6", "likely-addressed", 1, 10, note=None)
     _verdict(conn, "v7", "f7", "duplicate", 0, 10)
     _verdict(conn, "v8", "f8", "false-positive", 0, 10)
-    _escape(conn, "x1", "/home/dev/alpha", 2_000_000)  # after run-1 only
-    _escape(conn, "x2", "/home/dev/beta", 4_000_000)  # before run-2: no agent
-    _escape(conn, "x3", "/home/dev/gamma", 9_000_000)  # no run in the repo
-    _escape(conn, "x4", "/home/dev/alpha", 9_000_000)  # after run-1 and run-3
+    _escape(conn, "x1", "/home/dev/alpha", "dev/alpha", 2_000_000)  # latest prior: run-1
+    _escape(conn, "x2", "/home/dev/beta", "dev/beta", 4_000_000)  # before run-2: no agent
+    _escape(conn, "x3", "/home/dev/gamma", "dev/gamma", 9_000_000)  # no run in the repo
+    _escape(conn, "x4", "/home/dev/alpha", "dev/alpha", 9_000_000)  # latest prior: run-3
+    # Same path, other repository: no run matches both repo and repo_identity.
+    _escape(conn, "x5", "/home/dev/alpha", "other/alpha", 9_000_000)
 
-    _bench(conn, "b1", "code-reviewer-mechanical", 100, "aaa", {"recall": 0.8, "extra": 0.1})
-    _bench(conn, "b2", "code-reviewer-mechanical", 200, "bbb", {"recall": 0.5, "extra": 0.9})
-    _bench(conn, "b3", "code-reviewer-mechanical", 300, "aaa",
+    _bench(conn, "b1", "code-reviewer", 100, "aaa", {"recall": 0.8, "extra": 0.1})
+    _bench(conn, "b2", "code-reviewer", 200, "bbb", {"recall": 0.5, "extra": 0.9})
+    _bench(conn, "b3", "code-reviewer", 300, "aaa",
            {"recall": 0.9, "extra": 0.05, "stable": True, "label": "SECRET BENCH TEXT"})  # fmt: skip
-    _bench(conn, "b4", "code-reviewer2-mechanical", 400, "aaa", {"recall": 0.1})
+    # Same bench and cases, another model, latest of all: its own entry, never b3's previous.
+    _bench(conn, "b5", "code-reviewer", 500, "aaa", {"recall": 0.2}, model="haiku")
+    # Exact names only: neither bench belongs to code-reviewer.
+    _bench(conn, "b4", "code-reviewer2", 400, "aaa", {"recall": 0.1})
+    _bench(conn, "b6", "code-reviewer-mechanical", 400, "aaa", {"recall": 0.1})
+    _bench(conn, "b7", "blind-review-mechanical", 400, "aaa", {"recall": 0.7})
     conn.commit()
     return conn, db_path
 
@@ -206,6 +213,16 @@ def test_session_filters_and_probe_exclusion(seeded):
         assert sessions["invocations"] == 1
         assert sessions["tokens"]["token_count"] == 20
         assert sessions["cost_usd"] == {"total": 0.25, "denominator": 1}
+
+
+def test_duration_without_facts_spans_every_segment(db):
+    conn, _ = db
+    _segment(conn, "multi", 0, 1_000, 11_000)
+    _segment(conn, "multi", 1, 20_000, 25_000)
+    _segment(conn, "multi", 2, 40_000, 61_000)
+    conn.commit()
+    duration = agent_scorecard(conn, "code-reviewer")["sessions"]["duration_ms"]
+    assert duration == {"median": 60_000, "p90": 60_000, "denominator": 1, "from_facts": 0}
     # The probe row (agent code-reviewer, 9,999 tokens) never counts.
     everything = agent_scorecard(conn, "code-reviewer")["sessions"]
     assert everything["tokens"]["input_tokens"] < 9_999
@@ -255,29 +272,61 @@ def test_low_sample_when_fewer_than_five_judged(seeded):
     assert agent_scorecard(conn, "code-reviewer", model="haiku")["findings"]["total"] == 2
 
 
-def test_escapes_attach_to_runs_in_the_same_repo_before_the_escape(seeded):
+def _escapes(conn, agent, **filters):
+    return agent_scorecard(conn, agent, **filters)["escapes"]
+
+
+def test_escape_goes_only_to_the_latest_prior_run_in_the_repo(seeded):
     conn, _ = seeded
-    assert agent_scorecard(conn, "code-reviewer")["escapes"] == 2
-    assert agent_scorecard(conn, "blind-review")["escapes"] == 1
-    assert agent_scorecard(conn, "code-reviewer", since_ms=3_000_000)["escapes"] == 0
+    # x4 follows run-1 (code-reviewer) and run-3 (blind-reviewer); only run-3 gets it.
+    assert _escapes(conn, "code-reviewer") == {"count": 1, "attribution": "latest-run-in-repo"}
+    assert _escapes(conn, "blind-reviewer")["count"] == 1
+    assert _escapes(conn, "code-reviewer", since_ms=3_000_000)["count"] == 0
 
 
-def test_latest_benchmark_trend_uses_the_previous_run_with_the_same_cases(seeded):
+def test_escape_attribution_with_two_agents_and_one_escape(db):
+    conn, _ = db
+    _run(conn, "early", "code-reviewer", "/home/dev/alpha", "dev/alpha", "opus", OPUS, 1_000)
+    _run(conn, "late", "blind-reviewer", "/home/dev/alpha", "dev/alpha", "opus", OPUS, 2_000)
+    _run(conn, "after", "code-reviewer", "/home/dev/alpha", "dev/alpha", "opus", OPUS, 9_000)
+    _run(conn, "same-path", "code-reviewer", "/home/dev/alpha", "other/alpha", "opus", OPUS, 2_500)
+    _escape(conn, "x", "/home/dev/alpha", "dev/alpha", 3_000)
+    conn.commit()
+    assert _escapes(conn, "blind-reviewer")["count"] == 1
+    assert _escapes(conn, "code-reviewer")["count"] == 0
+
+
+def test_latest_benchmark_trend_uses_the_previous_run_with_the_same_cases_and_model(seeded):
     conn, _ = seeded
-    [bench] = agent_scorecard(conn, "code-reviewer")["benchmarks"]
-    assert bench["bench"] == "code-reviewer-mechanical"
-    assert bench["bench_run_id"] == "b3"
-    assert bench["scores"] == {"recall": 0.9, "extra": 0.05, "stable": True}
-    assert bench["previous"]["bench_run_id"] == "b1"
-    assert bench["trend"] == {"recall": 0.1, "extra": -0.05}
-    assert bench["trend"]["recall"] > 0
-    assert agent_scorecard(conn, "code-reviewer", model="haiku")["benchmarks"] == []
+    haiku, opus = agent_scorecard(conn, "code-reviewer")["benchmarks"]  # ordered by model
+    assert (opus["bench"], opus["model"], opus["bench_run_id"]) == ("code-reviewer", "opus", "b3")
+    assert opus["scores"] == {"recall": 0.9, "extra": 0.05, "stable": True}
+    assert opus["previous"]["bench_run_id"] == "b1"
+    assert opus["trend"] == {"recall": 0.1, "extra": -0.05}
+    assert (haiku["model"], haiku["bench_run_id"], haiku["previous"]) == ("haiku", "b5", None)
+    assert haiku["trend"] == {}
+    assert agent_scorecard(conn, "code-reviewer", model=HAIKU)["benchmarks"] == []
 
 
-def test_all_agents_lists_both_sources_and_skips_main_sessions(seeded):
+def test_benchmarks_match_exact_bench_names(seeded):
+    conn, _ = seeded
+    assert agent_scorecard(conn, "code")["benchmarks"] == []
+    [bench] = agent_scorecard(conn, "blind-reviewer")["benchmarks"]
+    assert bench["bench"] == "blind-review-mechanical"
+    [bench] = agent_scorecard(conn, "code-reviewer2")["benchmarks"]
+    assert bench["bench_run_id"] == "b4"
+
+
+def test_all_agents_lists_every_source_and_skips_main_sessions(seeded):
     conn, _ = seeded
     result = agent_scorecards(conn)
-    assert [card["agent"] for card in result["scorecards"]] == ["blind-review", "code-reviewer"]
+    # code-reviewer-mechanical and code-reviewer2 have only benchmarks.
+    assert [card["agent"] for card in result["scorecards"]] == [
+        "blind-reviewer",
+        "code-reviewer",
+        "code-reviewer-mechanical",
+        "code-reviewer2",
+    ]
     assert result["low_sample_min"] == 5
     only_beta = agent_scorecards(conn, project="beta")
     assert [card["agent"] for card in only_beta["scorecards"]] == ["code-reviewer"]
@@ -334,7 +383,7 @@ def test_canary_fixture_never_leaves_through_the_mcp_tool(db):
     previous = mcp._state.db_path
     mcp._state.db_path = str(db_path)
     try:
-        result = asyncio.run(mcp.get_agent_scorecard(agent="blind-review"))
+        result = asyncio.run(mcp.get_agent_scorecard(agent="blind-reviewer"))
     finally:
         mcp._state.db_path = previous
 
@@ -342,7 +391,7 @@ def test_canary_fixture_never_leaves_through_the_mcp_tool(db):
     findings = result["scorecards"][0]["findings"]
     assert findings["total"] == 2
     assert findings["by_verdict"] == {"accepted": 2}
-    assert result["scorecards"][0]["escapes"] == 1
+    assert result["scorecards"][0]["escapes"]["count"] == 1
     assert "ghp_" not in body
     for text in texts:
         assert text not in body

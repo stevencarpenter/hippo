@@ -6,9 +6,11 @@ flow) and the brain endpoint ``GET /agents/scorecard``. It holds counts, sums,
 rates, and record ids only. No query here selects ``claim``, ``line_text``, or
 ``note``; the one ``note`` reference is a ``LIKE`` test that yields a boolean.
 
-The ``agent`` identity is the registry agent name in both sources:
-``agentic_sessions.agent`` (the Claude Code subagent type) and
-``eval_review_runs.agent``.
+The ``agent`` identity is the registry agent name, and both sources must carry
+it: ``agentic_sessions.agent`` (the Claude Code subagent type) and
+``eval_review_runs.agent``. A producer that writes a different name for the same
+agent produces a second, split scorecard. Benchmarks have no agent column; see
+``BENCHES_BY_AGENT``.
 """
 
 from __future__ import annotations
@@ -30,6 +32,14 @@ TOKEN_COLUMNS = (
     "cache_creation_tokens",
     "token_count",
 )
+# Benchmarks carry no agent column. An agent owns the benches listed here, else
+# only the bench named exactly like the agent. Exact names, not a prefix rule, so
+# agent ``code`` never claims bench ``code-reviewer``.
+BENCHES_BY_AGENT: dict[str, tuple[str, ...]] = {
+    "blind-reviewer": ("blind-review", "blind-review-mechanical", "blind-review-private"),
+}
+AGENT_BY_BENCH = {bench: agent for agent, benches in BENCHES_BY_AGENT.items() for bench in benches}
+ESCAPE_ATTRIBUTION = "latest-run-in-repo"
 # Marker the HIPO-66 linkage job writes on inferred (not observed) fix commits.
 INFERRED_NOTE_PREFIX = "inferred:"
 
@@ -103,32 +113,39 @@ _RUNS_SQL = f"""
     WHERE r.agent = :agent AND {_RUN_SCOPE}
 """
 
-# An escape counts against an agent when one of the agent's runs reviewed the
-# same repository before the escape was recorded. Runs do not record the paths
-# they reviewed, so attribution is per repository, not per path.
+# Each escape goes to one run: the latest run of any agent in the same repository
+# (same ``repo`` path and same ``repo_identity``) that started before the escape
+# was recorded. It counts for this agent when that run is the agent's and passes
+# the filters. Runs do not record the paths they reviewed, so attribution is per
+# repository, not per path.
 _ESCAPES_SQL = f"""
     SELECT COUNT(*)
     FROM eval_escapes x
-    WHERE x.recorded_at >= :since
-      AND EXISTS (
-        SELECT 1 FROM eval_review_runs r
-        WHERE r.agent = :agent AND {_RUN_SCOPE}
-          AND r.started_at <= x.recorded_at
-          AND (r.repo = x.repo OR r.repo_identity = x.repo_identity)
-      )
+    JOIN eval_review_runs r ON r.run_id = (
+        SELECT p.run_id FROM eval_review_runs p
+        WHERE p.repo = x.repo AND p.repo_identity IS x.repo_identity
+          AND p.started_at < x.recorded_at
+        ORDER BY p.started_at DESC, p.run_id DESC
+        LIMIT 1
+    )
+    WHERE x.recorded_at >= :since AND r.agent = :agent AND {_RUN_SCOPE}
 """
 
-# Benchmarks carry no agent column: bench ``blind-review-mechanical`` belongs to
-# agent ``blind-review``. ``since`` and ``project`` do not apply to benchmarks.
-_BENCH_SQL = """
+# ``since`` and ``project`` do not apply to benchmarks.
+_BENCH_MODEL_SCOPE = """
+    (:model IS NULL OR model = :model
+     OR EXISTS (SELECT 1 FROM json_each(model_ids_json) WHERE value = :model))
+"""
+
+_BENCH_SQL = f"""
     SELECT bench_run_id, bench, recorded_at, model, repo_commit, reps, cases,
            cases_sha256, failed_reviews, tokens, scores_json
     FROM eval_bench_runs
-    WHERE (bench = :agent OR substr(bench, 1, length(:agent) + 1) = :agent || '-')
-      AND (:model IS NULL OR model = :model
-           OR EXISTS (SELECT 1 FROM json_each(model_ids_json) WHERE value = :model))
-    ORDER BY bench, recorded_at DESC, bench_run_id DESC
+    WHERE bench IN (SELECT value FROM json_each(:benches)) AND {_BENCH_MODEL_SCOPE}
+    ORDER BY bench, model, recorded_at DESC, bench_run_id DESC
 """
+
+_BENCH_NAMES_SQL = f"SELECT DISTINCT bench FROM eval_bench_runs WHERE {_BENCH_MODEL_SCOPE}"
 
 _AGENTS_SQL = f"""
     SELECT agent FROM (
@@ -139,7 +156,6 @@ _AGENTS_SQL = f"""
         UNION
         SELECT r.agent FROM eval_review_runs r WHERE {_RUN_SCOPE}
     )
-    ORDER BY agent
 """
 
 
@@ -233,11 +249,13 @@ def _review_runs(conn: sqlite3.Connection, params: dict[str, Any]) -> dict[str, 
 
 
 def _bench(conn: sqlite3.Connection, params: dict[str, Any]) -> list[dict[str, Any]]:
-    by_bench: dict[str, list[tuple]] = {}
-    for row in conn.execute(_BENCH_SQL, params):
-        by_bench.setdefault(row[1], []).append(row)
+    benches = BENCHES_BY_AGENT.get(params["agent"], (params["agent"],))
+    # One entry per (bench, model): a trend never compares two models.
+    by_bench: dict[tuple[str, str], list[tuple]] = {}
+    for row in conn.execute(_BENCH_SQL, params | {"benches": json.dumps(benches)}):
+        by_bench.setdefault((row[1], row[3]), []).append(row)
     out = []
-    for bench, rows in by_bench.items():
+    for (bench, _model), rows in by_bench.items():
         latest = rows[0]
         scores = _numeric_scores(latest[10])
         previous = next((row for row in rows[1:] if row[7] == latest[7]), None)
@@ -298,7 +316,10 @@ def agent_scorecard(
         "sessions": _sessions(conn, params),
         "review_runs": _review_runs(conn, params),
         "findings": _findings(conn, params),
-        "escapes": conn.execute(_ESCAPES_SQL, params).fetchone()[0],
+        "escapes": {
+            "count": conn.execute(_ESCAPES_SQL, params).fetchone()[0],
+            "attribution": ESCAPE_ATTRIBUTION,
+        },
         "benchmarks": _bench(conn, params),
     }
 
@@ -316,7 +337,13 @@ def agent_scorecards(
         agents = [agent]
     else:
         params = _params("", since_ms, project, model)
-        agents = [row[0] for row in conn.execute(_AGENTS_SQL, params)]
+        names = {row[0] for row in conn.execute(_AGENTS_SQL, params)}
+        # Benchmarks carry no project, so a project filter leaves bench-only agents out.
+        if not project:
+            names |= {
+                AGENT_BY_BENCH.get(row[0], row[0]) for row in conn.execute(_BENCH_NAMES_SQL, params)
+            }
+        agents = sorted(names)
     return {
         "filters": {"agent": agent, "since_ms": since_ms, "project": project, "model": model},
         "low_sample_min": LOW_SAMPLE_MIN,

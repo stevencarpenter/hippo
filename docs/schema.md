@@ -133,7 +133,7 @@ Resumed sessions: when a later file continues a `session_id`, the upsert is per 
 | Column | Type / default | Meaning |
 |---|---|---|
 | `run_id` | `TEXT PRIMARY KEY` | Producer run id. |
-| `agent`, `mode` | `TEXT NOT NULL` | Reviewing agent (for example `blind-review`) and mode (for example `mechanical`). |
+| `agent`, `mode` | `TEXT NOT NULL` | Reviewing agent, the registry agent name (for example `blind-reviewer`) and mode (for example `mechanical`). |
 | `requested_model` | `TEXT`, NULL | Model argument (for example `haiku`). |
 | `model_id` | `TEXT NOT NULL DEFAULT ''` | Sorted, comma-joined served model ids. |
 | `effort` | `TEXT`, NULL | Requested reasoning effort. |

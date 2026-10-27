@@ -307,13 +307,13 @@ Lessons graduate only after 2+ occurrences (single failures stay in `lesson_pend
 
 Per-agent scorecards: session usage, review findings, verdict rates, escapes, and benchmark trends. Read-only. The result holds counts, sums, rates, and record ids only: no finding `claim`, source `line_text`, or verdict or escape `note` leaves through this tool (AP-14, [design §5.2](superpowers/specs/2026-10-25-agent-eval-schema-design.md)). The brain serves the same JSON at `GET /agents/scorecard`, and `hippo agents report` prints it as one table per agent.
 
-**Which `agent` values join.** Both sources store the registry agent name: `agentic_sessions.agent` (for Claude Code, the subagent type from the subagent's `meta.json`; empty for main sessions) and `eval_review_runs.agent` (the reviewing agent, for example `blind-review`). Benchmarks have no agent column: bench `<agent>` and every bench named `<agent>-<suffix>` (for example `blind-review-mechanical`) belong to `<agent>`.
+**Which `agent` values join.** The scorecard joins on exact equality, so both sources must carry the registry agent name: `agentic_sessions.agent` (for Claude Code, the subagent type from the subagent's `meta.json`; empty for main sessions) and `eval_review_runs.agent` (the reviewing agent, for example `blind-reviewer`). A producer that writes a different name for the same agent produces a second, split scorecard. Benchmarks have no agent column. `BENCHES_BY_AGENT` in `brain/src/hippo_brain/scorecard_queries.py` lists the benches an agent owns by exact name: `blind-reviewer` owns `blind-review`, `blind-review-mechanical`, and `blind-review-private`. Any other agent owns only the bench named exactly like the agent, so agent `code` never claims bench `code-reviewer`.
 
 **Arguments**
 
 | Name | Type | Default | Notes |
 |---|---|---|---|
-| `agent` | `str` | `""` | Exact registry agent name. Empty returns one scorecard per agent that has a non-probe session or a review run under the other filters, sorted by name. |
+| `agent` | `str` | `""` | Exact registry agent name. Empty returns one scorecard per agent that has a non-probe session or a review run under the other filters, or, when `project` is empty, a benchmark that matches `model` (a bench maps to its owning agent, else to an agent of the same name). Sorted by name. |
 | `since` | `str` | `""` | See [Common arguments](#common-arguments). Applies to an invocation's first segment `start_time`, a run's `started_at`, and an escape's `recorded_at`. It does not apply to benchmarks. `filters.since_ms` in the result shows the threshold applied (0 = all time). The HTTP endpoint rejects a malformed window with 400. |
 | `project` | `str` | `""` | Substring of a session's `cwd` or `project_dir`, or of a run's `repo_identity` or `repo`. Does not apply to benchmarks. |
 | `model` | `str` | `""` | Exact match on a session's `model` or `requested_model`, a run's `requested_model` or one id in its comma-joined `model_id`, and a benchmark's `model` or one id in its `model_ids_json`. |
@@ -328,8 +328,8 @@ Per-agent scorecards: session usage, review findings, verdict rates, escapes, an
 | `sessions.distinct_sessions` | Distinct parent sessions: `parent_session_id`, or the invocation's own `session_id` when it has no parent. | |
 | `sessions.distinct_projects` | Distinct `project_dir` values. | |
 | `sessions.duration_ms.median`, `.p90` | Per invocation, `agentic_session_facts.duration_ms` when present, else the last segment `end_time` minus the first `start_time`. Median of those values (integer ms); p90 is the nearest-rank 90th percentile. `null` with no invocations. | `duration_ms.denominator` (= `invocations`); `from_facts` counts values taken from facts |
-| `sessions.tokens` | Sums over matching segments of `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, and `token_count`. | |
-| `sessions.cost_usd.total` | Sum of `agentic_session_facts.cost_usd`; `null` when no invocation has a cost. | `cost_usd.denominator`: invocations with a non-NULL cost |
+| `sessions.tokens` | Sums over matching segments of `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, and `token_count`. `token_count` is the segment total as each writer defines it ([`docs/schema.md`](schema.md#agent-evaluation-columns-v28), `token_count` row): for Claude Code via the daemon it is `input_tokens + output_tokens` without cache tokens, and for opencode it can include cache tokens. It is not the sum of the four other columns. | |
+| `sessions.cost_usd.total` | Sum of `agentic_session_facts.cost_usd`; `null` when no invocation has a cost. Claude Code writes the cost from `cost-state` records, which subagent transcripts usually do not carry, so a subagent's cost is usually n/a. | `cost_usd.denominator`: invocations with a non-NULL cost |
 | `review_runs.runs`, `.failed_runs` | `eval_review_runs` rows for the agent under `since`, `project`, `model`; failed means `units_failed > 0`. | |
 | `review_runs.units_total`, `.units_failed`, `.tokens` | Sums over those runs; `tokens` holds the four reviewer token columns. | |
 | `findings.total` | `eval_findings` rows of those runs. | |
@@ -338,15 +338,15 @@ Per-agent scorecards: session usage, review findings, verdict rates, escapes, an
 | `findings.by_verdict` | Judged findings per effective verdict (includes `duplicate`). | `judged` |
 | `findings.verdict_rates.{accepted,false-positive,not-useful,likely-addressed}` | `{count, denominator, rate, low_sample}`: `count` findings whose effective verdict has that value, `rate = count / denominator` (4 decimals, `null` when the denominator is 0), `low_sample` true when the denominator is below 5. | `judged` |
 | `findings.likely_addressed_inferred` | Effective `likely-addressed` verdicts whose fix commit was inferred by the linkage job (note starts with `inferred:`), not observed. Only the boolean leaves; the note does not. | `by_verdict["likely-addressed"]` |
-| `escapes` | `eval_escapes` rows (`recorded_at` at or after `since`) in a repository where one of the agent's runs under the filters started at or before the escape was recorded. Matched on `repo` or `repo_identity`. Runs do not record the paths they reviewed, so attribution is per repository, not per path. | |
-| `benchmarks[]` | One entry per bench that belongs to the agent and matches `model`: the latest run (`bench_run_id`, `recorded_at`, `model`, `repo_commit`, `reps`, `cases`, `cases_sha256`, `failed_reviews`, `tokens`) and its `scores` (number and boolean values from `scores_json`; other values are dropped). `previous` is the latest earlier run of the same `bench` with the same `cases_sha256` (`bench_run_id`, `recorded_at`, `scores`), or `null`. `trend` maps each numeric score present in both to `latest - previous`. | |
+| `escapes` | `{count, attribution}`. `attribution` is `"latest-run-in-repo"`: each `eval_escapes` row goes to one run, the latest run of any agent in the same repository that started before the escape's `recorded_at`. The repository match requires the same `repo` (local path) and the same `repo_identity`, so two repositories with the same path or the same name do not collide. `count` is the escapes (`recorded_at` at or after `since`) whose run belongs to this agent and passes the `since`, `project`, and `model` filters. Runs do not record the paths they reviewed, so attribution is per repository, not per path. | |
+| `benchmarks[]` | One entry per `(bench, model)` pair for the benches the agent owns, filtered by `model`, sorted by bench and then model: the latest run (`bench_run_id`, `recorded_at`, `model`, `repo_commit`, `reps`, `cases`, `cases_sha256`, `failed_reviews`, `tokens`) and its `scores` (number and boolean values from `scores_json`; other values are dropped). `previous` is the latest earlier run with the same `bench`, `model`, and `cases_sha256` (`bench_run_id`, `recorded_at`, `scores`), or `null`, so a trend never compares two models or two case sets. `trend` maps each numeric score present in both to `latest - previous`. | |
 
 The effective verdict follows [design §3.4](superpowers/specs/2026-10-25-agent-eval-schema-design.md): the latest human verdict (`auto = 0`) wins, else the latest automatic one, ordered by `decided_at` and then `verdict_id`. A finding with no verdict is open.
 
 **Example**
 
 ```
-get_agent_scorecard({"agent": "blind-review", "since": "30d"})
+get_agent_scorecard({"agent": "blind-reviewer", "since": "30d"})
 ```
 
 ## Common pitfalls

@@ -97,7 +97,8 @@ fn tokens(value: &Value, pointer: &str) -> String {
         ("output", "output_tokens"),
         ("cache read", "cache_read_tokens"),
         ("cache creation", "cache_creation_tokens"),
-        ("total", "token_count"),
+        // Per-writer segment total (docs/schema.md); not the sum of the four above.
+        ("token_count", "token_count"),
     ]
     .iter()
     .filter_map(|(label, key)| {
@@ -219,7 +220,15 @@ fn render_card(out: &mut String, card: &Value, low_sample_min: i64) {
         "  likely-addressed   {} with an inferred fix commit",
         int(card, "/findings/likely_addressed_inferred")
     );
-    let _ = writeln!(out, "  escapes            {}", int(card, "/escapes"));
+    let attribution = card
+        .pointer("/escapes/attribution")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let _ = writeln!(
+        out,
+        "  escapes            {} (attribution: {attribution})",
+        int(card, "/escapes/count")
+    );
 
     let benches = card
         .get("benchmarks")
@@ -345,7 +354,7 @@ mod tests {
                     },
                     "likely_addressed_inferred": 1
                 },
-                "escapes": 2,
+                "escapes": {"count": 2, "attribution": "latest-run-in-repo"},
                 "benchmarks": [{
                     "bench": "code-reviewer-mechanical", "bench_run_id": "b3",
                     "recorded_at": 1792800000000_i64,
@@ -369,7 +378,8 @@ mod tests {
         assert!(text.contains("by severity        high 3, low 2, medium 2"));
         assert!(text.contains("    accepted         33.3%    2/6\n"));
         assert!(text.contains("    not-useful       0.0%     0/4  low sample (<5 judged)\n"));
-        assert!(text.contains("escapes            2"));
+        assert!(text.contains("escapes            2 (attribution: latest-run-in-repo)\n"));
+        assert!(text.contains("cache creation 55, token_count 3411\n"));
         assert!(text.contains("code-reviewer-mechanical b3 (2026-10-24, vs b1)"));
         assert!(text.contains("recall                   0.9 (+0.1)"));
         assert!(text.contains("extra                    0.05 (-0.05)"));

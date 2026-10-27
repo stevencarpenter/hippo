@@ -695,7 +695,7 @@ async def get_agent_scorecard(
 
     Args:
         agent: Registry agent name (Claude subagent type or review agent, e.g.
-            'blind-review'). Empty returns a scorecard for every agent seen.
+            'blind-reviewer'). Empty returns a scorecard for every agent seen.
         since: Window like '24h', '30d'. Empty means all time.
         project: Substring of the session cwd or project dir, or of the review
             repository slug or path.
