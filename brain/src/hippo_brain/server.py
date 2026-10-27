@@ -73,7 +73,7 @@ from hippo_brain.opencode_sessions import (
     write_opencode_knowledge_node,
 )
 from hippo_brain.rag import ask as rag_ask
-from hippo_brain.scorecard_queries import agent_scorecards
+from hippo_brain.scorecard_queries import ScorecardSchemaError, agent_scorecards
 from hippo_brain.schema_version import (
     ACCEPTED_READ_VERSIONS,
     EXPECTED_SCHEMA_VERSION,
@@ -1293,6 +1293,8 @@ class BrainServer:
                 project=params.get("project", ""),
                 model=params.get("model", ""),
             )
+        except ScorecardSchemaError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=503)
         finally:
             conn.close()
         return JSONResponse(result)

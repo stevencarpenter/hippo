@@ -318,6 +318,8 @@ Per-agent scorecards: session usage, review findings, verdict rates, escapes, an
 | `project` | `str` | `""` | Substring of a session's `cwd` or `project_dir`, or of a run's `repo_identity` or `repo`. Does not apply to benchmarks. |
 | `model` | `str` | `""` | Exact match on a session's `model` or `requested_model`, a run's `requested_model` or one id in its comma-joined `model_id`, and a benchmark's `model` or one id in its `model_ids_json`. |
 
+**Schema**: the tool needs schema v29 (`eval_*` tables) and v28 (session facts). On an older database it raises an error naming both versions and asking for `mise run install`; `GET /agents/scorecard` returns that message as `{"error": ...}` with status 503, and `hippo agents report` prints it.
+
 **Returns**: `{filters, low_sample_min, scorecards}`. `filters` echoes `agent`, `since_ms`, `project`, `model`. `low_sample_min` is 5. Each entry of `scorecards`:
 
 | Field | Definition | Denominator |
@@ -338,6 +340,7 @@ Per-agent scorecards: session usage, review findings, verdict rates, escapes, an
 | `findings.by_verdict` | Judged findings per effective verdict (includes `duplicate`). | `judged` |
 | `findings.verdict_rates.{accepted,false-positive,not-useful,likely-addressed}` | `{count, denominator, rate, low_sample}`: `count` findings whose effective verdict has that value, `rate = count / denominator` (4 decimals, `null` when the denominator is 0), `low_sample` true when the denominator is below 5. | `judged` |
 | `findings.likely_addressed_inferred` | Effective `likely-addressed` verdicts whose fix commit was inferred by the linkage job (note starts with `inferred:`), not observed. Only the boolean leaves; the note does not. | `by_verdict["likely-addressed"]` |
+| `findings.likely_addressed_provenance_unknown` | Effective automatic `likely-addressed` verdicts whose `note` payload GC has cleared (`payload_expiry` passed, finding not pinned). The `inferred:` marker lived in that note, so these may be observed or inferred; they are not counted in `likely_addressed_inferred`. | `by_verdict["likely-addressed"]` |
 | `escapes` | `{count, attribution}`. `attribution` is `"latest-run-in-repo"`: each `eval_escapes` row goes to one run, the latest run of any agent in the same repository that started before the escape's `recorded_at`. The repository match requires the same `repo` (local path) and the same `repo_identity`, so two repositories with the same path or the same name do not collide. `count` is the escapes (`recorded_at` at or after `since`) whose run belongs to this agent and passes the `since`, `project`, and `model` filters. Runs do not record the paths they reviewed, so attribution is per repository, not per path. | |
 | `benchmarks[]` | One entry per `(bench, model)` pair for the benches the agent owns, filtered by `model`, sorted by bench and then model: the latest run (`bench_run_id`, `recorded_at`, `model`, `repo_commit`, `reps`, `cases`, `cases_sha256`, `failed_reviews`, `tokens`) and its `scores` (number and boolean values from `scores_json`; other values are dropped). `previous` is the latest earlier run with the same `bench`, `model`, and `cases_sha256` (`bench_run_id`, `recorded_at`, `scores`), or `null`, so a trend never compares two models or two case sets. `trend` maps each numeric score present in both to `latest - previous`. | |
 

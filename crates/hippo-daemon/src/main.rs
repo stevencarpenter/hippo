@@ -10,8 +10,8 @@ use hippo_daemon::{
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
-    AgentsAction, AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction,
-    EvalAction, IngestSource, RedactAction, SendEventSource, WatchdogAction,
+    AgentsAction, AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, EvalAction,
+    IngestSource, RedactAction, SendEventSource, WatchdogAction,
 };
 use hippo_core::config::HippoConfig;
 use hippo_daemon::probe;

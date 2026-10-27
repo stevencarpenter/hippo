@@ -42,6 +42,13 @@ AGENT_BY_BENCH = {bench: agent for agent, benches in BENCHES_BY_AGENT.items() fo
 ESCAPE_ATTRIBUTION = "latest-run-in-repo"
 # Marker the HIPO-66 linkage job writes on inferred (not observed) fix commits.
 INFERRED_NOTE_PREFIX = "inferred:"
+# v28 adds the session facts and columns, v29 the eval_* tables.
+MIN_SCHEMA_VERSION = 29
+
+
+class ScorecardSchemaError(RuntimeError):
+    """The database predates the tables the scorecard reads."""
+
 
 # Filters shared by the per-agent and the all-agents queries; the agent clause is
 # added by each query.
@@ -79,10 +86,14 @@ _INVOCATIONS_SQL = f"""
 """
 
 _EFFECTIVE_VERDICTS_SQL = f"""
-    SELECT finding_id, verdict, inferred
+    SELECT finding_id, verdict, inferred, provenance_unknown
     FROM (
         SELECT v.finding_id, v.verdict,
                v.note LIKE '{INFERRED_NOTE_PREFIX}%' AS inferred,
+               -- Payload GC clears an expired note, and with it the inferred marker.
+               v.auto = 1 AND v.note IS NULL
+                   AND v.payload_expiry <= CAST(strftime('%s', 'now') AS INTEGER) * 1000
+                   AS provenance_unknown,
                ROW_NUMBER() OVER (
                    PARTITION BY v.finding_id
                    ORDER BY (v.auto = 0) DESC, v.decided_at DESC, v.verdict_id DESC
@@ -98,7 +109,8 @@ _FINDINGS_SQL = f"""
     ),
          effective AS ({_EFFECTIVE_VERDICTS_SQL})
     SELECT f.severity, f.category, e.verdict,
-           e.verdict = 'likely-addressed' AND e.inferred
+           e.verdict = 'likely-addressed' AND e.inferred,
+           e.verdict = 'likely-addressed' AND e.provenance_unknown
     FROM eval_findings f
     JOIN runs USING (run_id)
     LEFT JOIN effective e USING (finding_id)
@@ -234,6 +246,7 @@ def _findings(conn: sqlite3.Connection, params: dict[str, Any]) -> dict[str, Any
         "by_verdict": verdicts,
         "verdict_rates": {name: rate(verdicts.get(name, 0), len(judged)) for name in VERDICT_RATES},
         "likely_addressed_inferred": sum(1 for row in judged if row[3]),
+        "likely_addressed_provenance_unknown": sum(1 for row in judged if row[4]),
     }
 
 
@@ -332,7 +345,16 @@ def agent_scorecards(
     project: str = "",
     model: str = "",
 ) -> dict[str, Any]:
-    """Return scorecards for one agent, or for every agent seen under the filters."""
+    """Return scorecards for one agent, or for every agent seen under the filters.
+
+    Raises ScorecardSchemaError on a database older than MIN_SCHEMA_VERSION.
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version < MIN_SCHEMA_VERSION:
+        raise ScorecardSchemaError(
+            f"agent scorecards need schema v{MIN_SCHEMA_VERSION}; the database is "
+            f"v{version}. Run `mise run install` so the daemon migrates it."
+        )
     if agent:
         agents = [agent]
     else:

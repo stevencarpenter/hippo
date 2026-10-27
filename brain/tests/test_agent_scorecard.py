@@ -15,7 +15,13 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from hippo_brain import mcp
-from hippo_brain.scorecard_queries import agent_scorecard, agent_scorecards, percentile, rate
+from hippo_brain.scorecard_queries import (
+    ScorecardSchemaError,
+    agent_scorecard,
+    agent_scorecards,
+    percentile,
+    rate,
+)
 from hippo_brain.server import BrainServer
 from tests.test_eval_isolation import FIXTURE, _load_fixture
 
@@ -80,11 +86,11 @@ def _finding(conn, finding_id, run_id, severity, category, repo="/home/dev/alpha
 
 
 def _verdict(conn, verdict_id, finding_id, verdict, auto, decided_at,
-             note: str | None = "SECRET NOTE TEXT"):  # fmt: skip
+             note: str | None = "SECRET NOTE TEXT", expiry=1):  # fmt: skip
     conn.execute(
         "INSERT INTO eval_verdicts (verdict_id, finding_id, verdict, note, auto, decided_at, "
-        "ingested_at, payload_expiry) VALUES (?, ?, ?, ?, ?, ?, 0, 1)",
-        (verdict_id, finding_id, verdict, note, auto, decided_at),
+        "ingested_at, payload_expiry) VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+        (verdict_id, finding_id, verdict, note, auto, decided_at, expiry),
     )
 
 
@@ -395,3 +401,33 @@ def test_canary_fixture_never_leaves_through_the_mcp_tool(db):
     assert "ghp_" not in body
     for text in texts:
         assert text not in body
+
+
+def test_auto_verdict_with_a_cleared_note_has_unknown_provenance(db):
+    """Payload GC clears an expired note, so an inferred fix can no longer be told apart."""
+    conn, _ = db
+    _run(conn, "run-1", "code-reviewer", "/home/dev/alpha", "dev/alpha", "opus", OPUS, 1_000_000)
+    for finding_id in ("f1", "f2", "f3"):
+        _finding(conn, finding_id, "run-1", "high", "security")
+    _verdict(conn, "v1", "f1", "likely-addressed", 1, 10, note=None)  # expired, cleared
+    _verdict(conn, "v2", "f2", "likely-addressed", 1, 10, note=None, expiry=2**62)  # observed
+    _verdict(conn, "v3", "f3", "likely-addressed", 1, 10, note="inferred: x", expiry=2**62)
+    conn.commit()
+
+    findings = agent_scorecard(conn, "code-reviewer")["findings"]
+
+    assert findings["likely_addressed_inferred"] == 1
+    assert findings["likely_addressed_provenance_unknown"] == 1
+
+
+def test_database_before_v29_raises_an_actionable_error(db, tmp_path):
+    conn, db_path = db
+    conn.execute("PRAGMA user_version = 28")
+    conn.commit()
+
+    with pytest.raises(ScorecardSchemaError, match="need schema v29; the database is v28"):
+        agent_scorecards(conn)
+    server = BrainServer(db_path=str(db_path), data_dir=str(tmp_path))
+    resp = TestClient(Starlette(routes=server.get_routes())).get("/agents/scorecard")
+    assert resp.status_code == 503
+    assert "mise run install" in resp.json()["error"]

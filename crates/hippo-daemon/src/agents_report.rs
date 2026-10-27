@@ -217,8 +217,9 @@ fn render_card(out: &mut String, card: &Value, low_sample_min: i64) {
     }
     let _ = writeln!(
         out,
-        "  likely-addressed   {} with an inferred fix commit",
-        int(card, "/findings/likely_addressed_inferred")
+        "  likely-addressed   {} with an inferred fix commit, {} with unknown provenance",
+        int(card, "/findings/likely_addressed_inferred"),
+        int(card, "/findings/likely_addressed_provenance_unknown")
     );
     let attribution = card
         .pointer("/escapes/attribution")
@@ -352,7 +353,8 @@ mod tests {
                         "not-useful": rate(0, 4, 0.0, true),
                         "likely-addressed": rate(2, 6, 0.3333, false)
                     },
-                    "likely_addressed_inferred": 1
+                    "likely_addressed_inferred": 1,
+                    "likely_addressed_provenance_unknown": 0
                 },
                 "escapes": {"count": 2, "attribution": "latest-run-in-repo"},
                 "benchmarks": [{
