@@ -58,6 +58,7 @@ from hippo_brain.enrichment import (
 from hippo_brain.enrichment_sources import claim_all_sources, enrich_all_sources
 from hippo_brain.enrichment_state import read_state
 from hippo_brain.redaction import index_text
+from hippo_brain.mcp_queries import parse_since
 from hippo_brain.memory_query import (
     MemoryQueryRequest,
     query_memory_current,
@@ -72,6 +73,7 @@ from hippo_brain.opencode_sessions import (
     write_opencode_knowledge_node,
 )
 from hippo_brain.rag import ask as rag_ask
+from hippo_brain.scorecard_queries import ScorecardSchemaError, agent_scorecards
 from hippo_brain.schema_version import (
     ACCEPTED_READ_VERSIONS,
     EXPECTED_SCHEMA_VERSION,
@@ -155,6 +157,8 @@ MAX_ANSWER_TOKENS_CEILING = 16384
 # accidentally serializing tens of thousands of rows into one response.
 MAX_LIST_LIMIT = 500
 
+# The window format parse_since accepts; the scorecard endpoint rejects others.
+_SINCE_RE = re.compile(r"\d+[mhd]")
 _LOCAL_AUTHORITY = re.compile(r"(localhost|127\.0\.0\.1|\[::1\])(?::([0-9]{1,5}))?", re.I)
 
 
@@ -1272,6 +1276,29 @@ class BrainServer:
         self._resume_event.set()
         return JSONResponse({"resumed_at": _dt.datetime.now(tz=_dt.UTC).isoformat()})
 
+    async def agent_scorecard(self, request: Request) -> JSONResponse:
+        """Per-agent scorecards; the same aggregates as the MCP tool get_agent_scorecard."""
+        params = request.query_params
+        since = params.get("since", "").strip()
+        if since and not _SINCE_RE.fullmatch(since):
+            return JSONResponse(
+                {"error": "since must be <digits><m|h|d>, for example 30d"}, status_code=400
+            )
+        conn = self._get_conn()
+        try:
+            result = agent_scorecards(
+                conn,
+                params.get("agent", ""),
+                since_ms=parse_since(since),
+                project=params.get("project", ""),
+                model=params.get("model", ""),
+            )
+        except ScorecardSchemaError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        finally:
+            conn.close()
+        return JSONResponse(result)
+
     async def openapi_json(self, request: Request) -> JSONResponse:
         """Serve the explicit OpenAPI contract for the Starlette brain API."""
         return JSONResponse(build_openapi_spec())
@@ -2328,6 +2355,7 @@ class BrainServer:
             Route("/memory/history", self.memory_history, methods=["POST"]),
             Route("/control/pause", self.control_pause, methods=["POST"]),
             Route("/control/resume", self.control_resume, methods=["POST"]),
+            Route("/agents/scorecard", self.agent_scorecard, methods=["GET"]),
             Route("/openapi.json", self.openapi_json, methods=["GET"]),
         ]
 

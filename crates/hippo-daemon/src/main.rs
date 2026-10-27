@@ -2,7 +2,7 @@ mod cli;
 mod install;
 
 use hippo_daemon::{
-    agent_eval, auto_memory_poll, backfill, claude_session, codex_session, commands,
+    agent_eval, agents_report, auto_memory_poll, backfill, claude_session, codex_session, commands,
     cursor_session, daemon, gh_api, gh_poll, opencode_session, pi_session, watch_auto_memory,
     watch_claude_sessions,
 };
@@ -10,8 +10,8 @@ use hippo_daemon::{
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
-    AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, EvalAction, IngestSource,
-    RedactAction, SendEventSource, WatchdogAction,
+    AgentsAction, AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, EvalAction,
+    IngestSource, RedactAction, SendEventSource, WatchdogAction,
 };
 use hippo_core::config::HippoConfig;
 use hippo_daemon::probe;
@@ -1510,6 +1510,25 @@ async fn run() -> Result<()> {
                 commands::handle_alarms_prune(&config)?;
             }
         },
+        Commands::Agents {
+            action:
+                AgentsAction::Report {
+                    agent,
+                    since,
+                    project,
+                    model,
+                },
+        } => {
+            let filters = agents_report::ReportFilters {
+                agent: agent.as_deref(),
+                since: since.as_deref(),
+                project: project.as_deref(),
+                model: model.as_deref(),
+            };
+            let base_url = format!("http://localhost:{}", config.brain.port);
+            let body = agents_report::fetch(&base_url, &filters).await?;
+            print!("{}", agents_report::render(&body));
+        }
         Commands::Enrichment { action } => {
             let now_ms = chrono::Utc::now().timestamp_millis();
             println!("{}", commands::handle_enrichment(&config, &action, now_ms)?);

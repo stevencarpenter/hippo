@@ -43,6 +43,7 @@ def test_openapi_spec_lists_all_brain_routes():
         "/memory/history",
         "/control/pause",
         "/control/resume",
+        "/agents/scorecard",
         "/openapi.json",
     }
     assert set(paths) == expected_paths
@@ -59,6 +60,7 @@ def test_openapi_spec_lists_all_brain_routes():
     assert paths["/memory/history"]["post"]["operationId"] == "memoryHistory"
     assert paths["/control/pause"]["post"]["operationId"] == "pauseEnrichment"
     assert paths["/control/resume"]["post"]["operationId"] == "resumeEnrichment"
+    assert paths["/agents/scorecard"]["get"]["operationId"] == "getAgentScorecard"
     assert paths["/openapi.json"]["get"]["operationId"] == "getOpenApiSpec"
 
 

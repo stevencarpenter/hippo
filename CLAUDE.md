@@ -29,6 +29,7 @@ local LLMs.
     hippo ask "<question>"    # RAG query: synthesized answer from knowledge base
     hippo enrichment pause|resume|status   # Operator pause of LLM enrichment (state in <data_dir>/enrichment-state.json)
     hippo eval export-bench-cases --out DIR   # Private blind-review bench cases from accepted findings and escapes (DIR outside any git checkout)
+    hippo agents report [--agent A] [--since 30d] [--project P] [--model M]   # Per-agent scorecards via brain GET /agents/scorecard
 
 ### Rust (daemon + CLI)
 
@@ -50,7 +51,7 @@ local LLMs.
 
     uv run --project brain hippo-mcp    # Start MCP server (stdio transport)
 
-The MCP server exposes 12 read-only tools: `ask`, `search_knowledge`, `search_hybrid`, `search_events`, `get_entities`, `get_context`, `agent_query`, `get_ci_status`, `get_lessons`, `list_projects`, `query_memory`, `query_memory_history`. Reference: `docs/mcp-reference.md`.
+The MCP server exposes 13 read-only tools: `ask`, `search_knowledge`, `search_hybrid`, `search_events`, `get_entities`, `get_context`, `agent_query`, `get_ci_status`, `get_lessons`, `get_agent_scorecard`, `list_projects`, `query_memory`, `query_memory_history`. Reference: `docs/mcp-reference.md`.
 Configure in your MCP config (e.g., `~/.claude/settings.json`):
 
 ```json

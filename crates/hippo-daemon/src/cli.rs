@@ -147,6 +147,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: AlarmsAction,
     },
+    /// Per-agent scorecards from agent sessions and review records
+    Agents {
+        #[command(subcommand)]
+        action: AgentsAction,
+    },
     /// Pause or resume LLM enrichment, or show its state
     Enrichment {
         #[command(subcommand)]
@@ -175,6 +180,31 @@ pub enum Commands {
         /// Run in bench mode: skip FSEvents watcher and LaunchAgent guards.
         #[arg(long)]
         bench: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentsAction {
+    /// Print a scorecard table per agent: sessions, duration, tokens, cost,
+    /// review findings, verdict rates, escapes, and benchmark trends.
+    ///
+    /// Reads `GET /agents/scorecard` from the brain server, the same
+    /// aggregates as the MCP tool `get_agent_scorecard`. Every rate shows its
+    /// denominator; a rate over fewer than 5 judged findings is marked low
+    /// sample. Probe sessions are excluded.
+    Report {
+        /// Registry agent name (Claude subagent type or review agent); omit for every agent
+        #[arg(long)]
+        agent: Option<String>,
+        /// Window as <digits><m|h|d>, e.g. "30d"; omit for all time
+        #[arg(long)]
+        since: Option<String>,
+        /// Substring of the session cwd or project dir, or of the review repo slug or path
+        #[arg(long)]
+        project: Option<String>,
+        /// Exact model id or requested model alias
+        #[arg(long)]
+        model: Option<String>,
     },
 }
 

@@ -241,6 +241,22 @@ def build_openapi_spec() -> dict:
                     "responses": {"200": _json_response("#/components/schemas/ResumeResponse")},
                 }
             },
+            "/agents/scorecard": {
+                "get": {
+                    "operationId": "getAgentScorecard",
+                    "summary": "Return per-agent scorecards (aggregates only).",
+                    "parameters": [
+                        _string_query_param("agent", "Registry agent name; empty for every agent."),
+                        _string_query_param("since", "Window <digits><m|h|d>, e.g. 30d."),
+                        _string_query_param("project", "Substring of cwd, project dir, or repo."),
+                        _string_query_param("model", "Exact model id or requested alias."),
+                    ],
+                    "responses": {
+                        "200": _json_response("#/components/schemas/AgentScorecardResponse"),
+                        "400": _error_response("Invalid since window."),
+                    },
+                }
+            },
             "/openapi.json": {
                 "get": {
                     "operationId": "getOpenApiSpec",
@@ -253,6 +269,19 @@ def build_openapi_spec() -> dict:
         },
         "components": {
             "schemas": {
+                "AgentScorecardResponse": {
+                    "type": "object",
+                    "required": ["filters", "low_sample_min", "scorecards"],
+                    "description": "Field definitions: docs/mcp-reference.md#get_agent_scorecard.",
+                    "properties": {
+                        "filters": {"type": "object", "additionalProperties": True},
+                        "low_sample_min": {"type": "integer"},
+                        "scorecards": {
+                            "type": "array",
+                            "items": {"type": "object", "additionalProperties": True},
+                        },
+                    },
+                },
                 "ErrorResponse": {
                     "type": "object",
                     "required": ["error"],

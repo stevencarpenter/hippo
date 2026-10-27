@@ -33,6 +33,7 @@ from hippo_brain.mcp_queries import (
     get_entities_impl,
     get_lessons_impl,
     list_projects_impl,
+    parse_since,
     search_events_impl,
     search_knowledge_lexical,
 )
@@ -46,6 +47,7 @@ from hippo_brain.rag import ask as rag_ask
 from hippo_brain.rag import format_rag_response
 from hippo_brain.retrieval_eligibility import include_excluded_from_env
 from hippo_brain.schema_version import require_accepted_schema
+from hippo_brain.scorecard_queries import agent_scorecards
 from hippo_brain.telemetry import add as _add
 from hippo_brain.telemetry import get_meter
 from hippo_brain.telemetry import get_tracer as _get_tracer
@@ -675,6 +677,50 @@ async def get_lessons(
             _add(_tool_errors, tool="get_lessons")
             logger.exception("get_lessons failed")
             raise
+
+
+@mcp.tool(annotations=READ_ONLY)
+@_query_priority
+async def get_agent_scorecard(
+    agent: str = "",
+    since: str = "",
+    project: str = "",
+    model: str = "",
+) -> dict:
+    """Return per-agent scorecards: usage, review findings, verdict rates, escapes, benchmarks.
+
+    Aggregates only: no finding claim, source line, or verdict or escape note
+    is returned. Every rate carries its denominator; a rate over fewer than 5
+    judged findings has low_sample true.
+
+    Args:
+        agent: Registry agent name (Claude subagent type or review agent, e.g.
+            'blind-reviewer'). Empty returns a scorecard for every agent seen.
+        since: Window like '24h', '30d'. Empty means all time.
+        project: Substring of the session cwd or project dir, or of the review
+            repository slug or path.
+        model: Exact model id or requested model alias.
+    """
+    _add(_tool_calls, tool="get_agent_scorecard")
+    t0 = time.monotonic()
+    try:
+        conn = _get_conn()
+        try:
+            result = agent_scorecards(
+                conn, agent, since_ms=parse_since(since), project=project, model=model
+            )
+        finally:
+            conn.close()
+        elapsed = time.monotonic() - t0
+        count = len(result["scorecards"])
+        _hist(_tool_duration, elapsed * 1000, tool="get_agent_scorecard")
+        _record_result("get_agent_scorecard", count)
+        logger.info("get_agent_scorecard completed: %d agents in %.3fs", count, elapsed)
+        return result
+    except Exception:
+        _add(_tool_errors, tool="get_agent_scorecard")
+        logger.exception("get_agent_scorecard failed")
+        raise
 
 
 def _result_to_dict(result) -> dict:

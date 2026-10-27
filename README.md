@@ -161,6 +161,7 @@ hippo events --since 2h                 # Recent shell events
 hippo ask "how did I fix that build error"  # RAG query (synthesized answer)
 hippo query --raw "cargo build"         # Raw lexical search (no brain needed)
 hippo entities                          # Known projects, tools, files, env vars
+hippo agents report --since 30d         # Per-agent scorecards (needs the brain)
 hippo export-training --since 30d --out ./export  # Export training data
 hippo redact test "password=hunter2"    # Test redaction patterns
 ```
@@ -230,6 +231,7 @@ The MCP server lets Claude Code (or any MCP client) query your knowledge base mi
 | `search_events` | Search raw events (shell commands, Claude sessions, browser visits) |
 | `get_entities` | List extracted entities (projects, tools, files, env vars, concepts) |
 | `list_projects` / `get_context` / `get_ci_status` / `get_lessons` | Discovery + auxiliary lookups |
+| `get_agent_scorecard` | Per-agent aggregates: usage, review findings, verdict rates, escapes, benchmarks (no finding text) |
 
 Full reference with arguments, return shapes, examples, and selection guide: [`docs/mcp-reference.md`](docs/mcp-reference.md).
 
