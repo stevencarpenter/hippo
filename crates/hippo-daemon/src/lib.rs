@@ -7,6 +7,7 @@ pub mod codex_session;
 pub mod commands;
 pub mod cursor_session;
 pub mod daemon;
+pub mod eval_export;
 pub mod framing;
 pub mod gh_api;
 pub mod gh_poll;

@@ -101,6 +101,11 @@ pub enum Commands {
         #[command(subcommand)]
         source: IngestSource,
     },
+    /// Agent-evaluation tools
+    Eval {
+        #[command(subcommand)]
+        action: EvalAction,
+    },
     /// Run one pass of the GitHub Actions poller.
     GhPoll {
         /// Override watched repos; mainly for testing.
@@ -374,6 +379,34 @@ pub enum IngestSource {
         /// Print matched files and summary without writing to the database
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum EvalAction {
+    /// Write private blind-review bench cases from accepted findings and fixed escapes
+    ///
+    /// One `<case id>.json` per accepted finding (side `+`, with a fix commit from
+    /// its accepted verdict or its latest automatic `likely-addressed` verdict) and
+    /// per escape with a `fix_commit`. `base` is the fixed file, `head` the defective
+    /// file (the review's `head_sha`, or the parent of `fix_commit`), and the trap is
+    /// the flagged line as an added row. File text, claims, and notes pass through the
+    /// ingest redaction engines. Case ids are `f-<finding id>` and `e-<escape id>`, so
+    /// a rerun overwrites the same files. Other `f-*.json` and `e-*.json` files in the
+    /// directory are removed, so it is a snapshot of this run (filtered by `--since` and
+    /// `--repo` when given). Refuses an output directory inside a git checkout, with a
+    /// `..` component, or non-empty without case files. Prints the case count, the
+    /// removed count, and the skips per reason.
+    ExportBenchCases {
+        /// Output directory, outside every git checkout (created with mode 0700)
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Only findings logged and escapes recorded within this duration (e.g. "90d")
+        #[arg(long)]
+        since: Option<String>,
+        /// Only records whose repository path is PATH
+        #[arg(long, value_name = "PATH")]
+        repo: Option<String>,
     },
 }
 
