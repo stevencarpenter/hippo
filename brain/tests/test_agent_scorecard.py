@@ -431,3 +431,16 @@ def test_database_before_v29_raises_an_actionable_error(db, tmp_path):
     resp = TestClient(Starlette(routes=server.get_routes())).get("/agents/scorecard")
     assert resp.status_code == 503
     assert "mise run install" in resp.json()["error"]
+
+
+def test_model_and_project_filters_match_literally(db):
+    """`_` and `%` are LIKE wildcards; a filter must not match a lookalike id or path."""
+    conn, _ = db
+    _run(conn, "run-q", "code-reviewer", "/home/dev/a_b", "dev/a_b", "local", "Q4_K_M,other", 1)
+    _run(conn, "run-x", "code-reviewer", "/home/dev/aXb", "dev/aXb", "local", "Q4XKXM", 2)
+    _finding(conn, "fq", "run-q", "high", "security", repo="/home/dev/a_b")
+    _finding(conn, "fx", "run-x", "high", "security", repo="/home/dev/aXb")
+    conn.commit()
+
+    assert agent_scorecard(conn, "code-reviewer", model="Q4_K_M")["findings"]["total"] == 1
+    assert agent_scorecard(conn, "code-reviewer", project="a_b")["findings"]["total"] == 1

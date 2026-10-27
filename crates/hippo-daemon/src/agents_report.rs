@@ -254,7 +254,8 @@ fn render_card(out: &mut String, card: &Value, low_sample_min: i64) {
             );
         let _ = writeln!(
             out,
-            "  benchmark          {name} {run} ({}, {previous})",
+            "  benchmark          {name} [{}] {run} ({}, {previous})",
+            bench.get("model").and_then(Value::as_str).unwrap_or("?"),
             date(int(bench, "/recorded_at"))
         );
         let trend = bench.get("trend");
@@ -358,7 +359,7 @@ mod tests {
                 },
                 "escapes": {"count": 2, "attribution": "latest-run-in-repo"},
                 "benchmarks": [{
-                    "bench": "code-reviewer-mechanical", "bench_run_id": "b3",
+                    "bench": "code-reviewer-mechanical", "bench_run_id": "b3", "model": "opus",
                     "recorded_at": 1792800000000_i64,
                     "scores": {"recall": 0.9, "extra": 0.05, "stable": true},
                     "previous": {"bench_run_id": "b1"},
@@ -382,7 +383,7 @@ mod tests {
         assert!(text.contains("    not-useful       0.0%     0/4  low sample (<5 judged)\n"));
         assert!(text.contains("escapes            2 (attribution: latest-run-in-repo)\n"));
         assert!(text.contains("cache creation 55, token_count 3411\n"));
-        assert!(text.contains("code-reviewer-mechanical b3 (2026-10-24, vs b1)"));
+        assert!(text.contains("code-reviewer-mechanical [opus] b3 (2026-10-24, vs b1)"));
         assert!(text.contains("recall                   0.9 (+0.1)"));
         assert!(text.contains("extra                    0.05 (-0.05)"));
         assert!(text.contains("stable                   true\n"));

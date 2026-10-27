@@ -54,15 +54,17 @@ class ScorecardSchemaError(RuntimeError):
 # added by each query.
 _SESSION_SCOPE = """
     s.probe_tag IS NULL
-    AND (:project IS NULL OR s.cwd LIKE :project OR s.project_dir LIKE :project)
+    AND (:project IS NULL OR s.cwd LIKE :project ESCAPE '\\'
+         OR s.project_dir LIKE :project ESCAPE '\\')
     AND (:model IS NULL OR s.model = :model OR s.requested_model = :model)
 """
 
 _RUN_SCOPE = """
     r.started_at >= :since
-    AND (:project IS NULL OR r.repo_identity LIKE :project OR r.repo LIKE :project)
+    AND (:project IS NULL OR r.repo_identity LIKE :project ESCAPE '\\'
+         OR r.repo LIKE :project ESCAPE '\\')
     AND (:model IS NULL OR r.requested_model = :model
-         OR ',' || r.model_id || ',' LIKE '%,' || :model || ',%')
+         OR instr(',' || r.model_id || ',', ',' || :model || ',') > 0)
 """
 
 # One row per invocation, a (session_id, harness) pair: a subagent transcript
@@ -305,11 +307,16 @@ def _bench(conn: sqlite3.Connection, params: dict[str, Any]) -> list[dict[str, A
     return out
 
 
+def _like_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _params(agent: str, since_ms: int, project: str, model: str) -> dict[str, Any]:
     return {
         "agent": agent,
         "since": since_ms,
-        "project": f"%{project}%" if project else None,
+        # Literal substring: escape LIKE's wildcards (`_` and `%` are common in paths).
+        "project": f"%{_like_escape(project)}%" if project else None,
         "model": model or None,
     }
 
