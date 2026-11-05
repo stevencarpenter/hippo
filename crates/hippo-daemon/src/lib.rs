@@ -2,6 +2,7 @@ pub mod agent_eval;
 pub mod agents_report;
 pub mod auto_memory_poll;
 pub mod backfill;
+pub mod backup;
 pub mod browser_health;
 pub mod claude_session;
 pub mod codex_session;

@@ -374,3 +374,10 @@ alarm_threshold = 25      # orphan count above which I-14 alarms
 # `gh api` which PRs contain the commit. That sends the repository slug and the
 # commit SHA to GitHub, so it is off by default.
 gh_pr_lookup = false
+
+# [backup]
+# Encrypted knowledge-base backups (docs: hippo backup). Off until both
+# destination and recipient are set.
+# destination = ""   # existing directory that receives artifacts; hippo never creates it
+# recipient = ""     # public age X25519 recipient (age1...); the private key stays in 1Password
+# identity_ref = ""  # reference to the private identity used by restore, for example an op:// URI

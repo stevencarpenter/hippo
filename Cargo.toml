@@ -20,7 +20,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "7"
 regex = "1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
@@ -46,6 +46,9 @@ opentelemetry-appender-tracing = "0.33"
 tracing-opentelemetry = "0.34"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 sha2 = "0.11"
+age = "0.12"
+zstd = "0.14"
+tar = "0.4"
 
 [profile.release]
 lto = "thin"

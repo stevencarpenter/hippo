@@ -49,6 +49,9 @@ which = "8.0.2"
 glob = "0.3"
 notify = "8"
 walkdir = "2"
+age.workspace = true
+zstd.workspace = true
+tar.workspace = true
 
 [features]
 default = ["otel"]
