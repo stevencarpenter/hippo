@@ -1,7 +1,7 @@
 //! One-step SQLite snapshot used by every backup path.
 
 use anyhow::{Context, Result, ensure};
-use rusqlite::backup::Backup;
+use rusqlite::backup::{Backup, StepResult};
 use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -57,7 +57,11 @@ pub fn take_snapshot(src: &Path, dst: &Path) -> Result<SnapshotInfo> {
         .with_context(|| format!("create {}", dst.display()))?;
     let mut target = Connection::open(dst)?;
     // shortcut: step(-1) holds a read lock for the whole copy; fine at current DB size.
-    Backup::new(&source, &mut target)?.step(-1)?;
+    let step = Backup::new(&source, &mut target)?.step(-1)?;
+    ensure!(
+        step == StepResult::Done,
+        "snapshot incomplete: backup step returned {step:?}"
+    );
     drop(source);
 
     target.pragma_update(None, "journal_mode", "DELETE")?;
@@ -169,24 +173,51 @@ mod tests {
 
     #[test]
     fn snapshot_completes_under_concurrent_writes() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
         let dir = tempfile::tempdir().unwrap();
         let (src, dst) = (dir.path().join("src.db"), dir.path().join("snap.db"));
         fixture(&src);
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (s2, p2) = (stop.clone(), src.clone());
+        // Pad the DB so the copy takes long enough for writes to overlap it.
+        let c = Connection::open(&src).unwrap();
+        let tx = c.unchecked_transaction().unwrap();
+        for _ in 0..4000 {
+            tx.execute(
+                "INSERT INTO kv_vector_chunks00(vectors) VALUES (zeroblob(4096))",
+                [],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        drop(c);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let ok_writes = Arc::new(AtomicUsize::new(0));
+        let (s2, n2, p2) = (stop.clone(), ok_writes.clone(), src.clone());
         let writer = std::thread::spawn(move || {
             let c = Connection::open(p2).unwrap();
             c.busy_timeout(Duration::from_millis(5000)).unwrap();
-            while !s2.load(std::sync::atomic::Ordering::Relaxed) {
-                let _ = c.execute("INSERT INTO events(body) VALUES ('w')", []);
+            while !s2.load(SeqCst) {
+                if c.execute("INSERT INTO events(body) VALUES ('w')", [])
+                    .is_ok()
+                {
+                    n2.fetch_add(1, SeqCst);
+                }
             }
         });
+        while ok_writes.load(SeqCst) == 0 {
+            std::thread::yield_now();
+        }
+        let before = ok_writes.load(SeqCst);
         let start = Instant::now();
         let res = take_snapshot(&src, &dst);
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let during = ok_writes.load(SeqCst) - before;
+        stop.store(true, SeqCst);
         writer.join().unwrap();
-        res.unwrap();
+        let info = res.unwrap();
         assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(during > 0, "no insert succeeded while the snapshot ran");
+        assert!(info.row_counts["events"] >= 1000);
         let qc: String = Connection::open(&dst)
             .unwrap()
             .pragma_query_value(None, "quick_check", |r| r.get(0))
