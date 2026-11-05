@@ -1534,8 +1534,42 @@ async fn run() -> Result<()> {
             println!("{}", commands::handle_enrichment(&config, &action, now_ms)?);
         }
         Commands::Backup { action } => {
-            use hippo_daemon::backup::{keys, run, status};
+            use hippo_daemon::backup::{keys, restore, run, status};
             let report = match action {
+                BackupAction::Verify { id } => {
+                    restore::verify(&config, id.as_deref())?;
+                    return Ok(());
+                }
+                BackupAction::Restore {
+                    id,
+                    before,
+                    yes,
+                    extract,
+                    identity,
+                    destination,
+                } => {
+                    let target = match (id, before) {
+                        (Some(id), _) => restore::RestoreTarget::Id(id),
+                        (None, Some(b)) => {
+                            restore::RestoreTarget::Before(restore::parse_before(&b)?)
+                        }
+                        (None, None) => restore::RestoreTarget::Latest,
+                    };
+                    let opts = restore::RestoreOpts {
+                        yes,
+                        extract,
+                        identity,
+                        destination,
+                    };
+                    restore::restore_with(
+                        &config,
+                        target,
+                        &opts,
+                        &mut install::LaunchdServices::new(),
+                        &mut std::io::stdin().lock(),
+                    )?;
+                    return Ok(());
+                }
                 BackupAction::Init {
                     destination,
                     op_vault,

@@ -466,6 +466,71 @@ pub fn service_bootstrap(domain: &str, plist: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Stops every loaded `com.hippo.*` LaunchAgent around `hippo backup restore`, then
+/// restarts exactly the ones it stopped.
+pub struct LaunchdServices {
+    domain: String,
+    stopped: Vec<PathBuf>,
+}
+
+impl LaunchdServices {
+    pub fn new() -> Self {
+        // SAFETY: getuid takes no arguments and has no preconditions.
+        let uid = unsafe { libc::getuid() };
+        Self {
+            domain: format!("gui/{uid}"),
+            stopped: Vec::new(),
+        }
+    }
+}
+
+impl hippo_daemon::backup::restore::ServiceControl for LaunchdServices {
+    fn stop(&mut self) -> Result<()> {
+        let dir = dirs::home_dir()
+            .context("cannot determine home directory")?
+            .join("Library/LaunchAgents");
+        let mut plists: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .with_context(|| format!("read {}", dir.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.extension().is_some_and(|x| x == "plist")
+                    && p.file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with("com.hippo."))
+            })
+            .collect();
+        plists.sort();
+        for plist in plists {
+            let label = plist
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            if !service_is_loaded(&label) {
+                continue;
+            }
+            service_bootout(&self.domain, &plist);
+            self.stopped.push(plist);
+            anyhow::ensure!(
+                !service_is_loaded(&label),
+                "{label} is still loaded after launchctl bootout"
+            );
+            println!("Stopped {label}.");
+        }
+        Ok(())
+    }
+
+    fn start(&mut self) -> Result<()> {
+        let errors: Vec<String> = self
+            .stopped
+            .drain(..)
+            .filter_map(|p| service_bootstrap(&self.domain, &p).err())
+            .map(|e| format!("{e:#}"))
+            .collect();
+        anyhow::ensure!(errors.is_empty(), "{}", errors.join("; "));
+        Ok(())
+    }
+}
+
 /// Sends SIGTERM to the brain process and waits up to `timeout` for graceful exit.
 ///
 /// Lets uvicorn finish in-flight HTTP requests before the process stops. Prints progress

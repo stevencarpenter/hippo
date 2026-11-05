@@ -234,6 +234,34 @@ pub enum BackupAction {
         #[arg(long)]
         op_vault: Option<String>,
     },
+    /// Decrypt an artifact, rebuild its database, and check it (default: newest verified)
+    Verify {
+        /// Artifact id from the manifest
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Replace the live database with a backup (default: newest verified). Checkpoints the
+    /// current database first and stops hippo services during the swap.
+    Restore {
+        /// Artifact id from the manifest
+        #[arg(long, conflicts_with = "before")]
+        id: Option<String>,
+        /// Newest verified backup created before this time (RFC 3339 or YYYY-MM-DD, UTC)
+        #[arg(long)]
+        before: Option<String>,
+        /// Skip the typed confirmation
+        #[arg(long)]
+        yes: bool,
+        /// Only rebuild the backup into this missing or empty directory; touches nothing live
+        #[arg(long)]
+        extract: Option<std::path::PathBuf>,
+        /// Private key reference (op://... or file:<path>); overrides [backup] identity_ref
+        #[arg(long)]
+        identity: Option<String>,
+        /// Folder holding manifest.json; overrides [backup] destination
+        #[arg(long)]
+        destination: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]

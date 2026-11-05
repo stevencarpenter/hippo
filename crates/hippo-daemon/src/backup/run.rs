@@ -24,7 +24,7 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 const SKIP_WITHIN_MS: i64 = 20 * 3_600_000;
-const CHECKPOINT_LOCK_WAIT: Duration = Duration::from_secs(600);
+pub(crate) const CHECKPOINT_LOCK_WAIT: Duration = Duration::from_secs(600);
 const ARTIFACT_EXT: &str = ".tar.zst.age";
 const ENTRY_EXT: &str = ".entry.json";
 const PAGEHASHES_FILE: &str = "pagehashes.bin";
@@ -78,13 +78,7 @@ pub fn run_backup(config: &HippoConfig, mode: RunMode, now_ms: i64) -> Result<Ru
         .mode(0o700)
         .create(&outbox)
         .with_context(|| format!("create {}", outbox.display()))?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
-        .open(work.join("lock"))
-        .context("open backup lock")?;
+    let lock = open_lock(&work)?;
     let wait = match mode {
         RunMode::Scheduled => None,
         RunMode::Checkpoint { .. } => Some(CHECKPOINT_LOCK_WAIT),
@@ -118,9 +112,20 @@ pub fn run_backup(config: &HippoConfig, mode: RunMode, now_ms: i64) -> Result<Ru
     Ok(report)
 }
 
+/// `<work_dir>/lock`, which serializes runs and every other `status.json` writer.
+pub(crate) fn open_lock(work: &Path) -> Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(work.join("lock"))
+        .context("open backup lock")
+}
+
 /// Takes the lock; `None` tries once, `Some(d)` polls with backoff for up to `d`.
 /// Returns `false` only when a single try finds the lock held.
-fn acquire(lock: &File, wait: Option<Duration>) -> Result<bool> {
+pub(crate) fn acquire(lock: &File, wait: Option<Duration>) -> Result<bool> {
     let deadline = wait.map(|d| Instant::now() + d);
     let mut delay = Duration::from_millis(50);
     loop {
@@ -145,10 +150,10 @@ fn acquire(lock: &File, wait: Option<Duration>) -> Result<bool> {
 }
 
 /// Removed on drop, so every exit path cleans up partial snapshot and diff files.
-struct RunTmp(PathBuf);
+pub(crate) struct RunTmp(pub(crate) PathBuf);
 
 impl RunTmp {
-    fn create(path: PathBuf) -> Result<Self> {
+    pub(crate) fn create(path: PathBuf) -> Result<Self> {
         // Left over from a crashed run; the lock guarantees no run uses it now.
         let _ = fs::remove_dir_all(&path);
         DirBuilder::new()
@@ -326,7 +331,7 @@ fn tolerate<T>(checkpoint: bool, notes: &mut Vec<String>, r: Result<T>) -> Resul
 
 /// `file` is the only manifest value joined to a path, so it must be the plain
 /// `<id>.tar.zst.age` name built by `artifact_id` (no `/` or `.` in the id).
-fn valid_entry(e: &ManifestEntry) -> bool {
+pub(crate) fn valid_entry(e: &ManifestEntry) -> bool {
     let id = &e.meta.id;
     id.starts_with("hippo-")
         && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
@@ -562,7 +567,7 @@ fn pending_upload(manifest: &Manifest) -> Vec<PendingUpload> {
         .collect()
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes.iter().fold(String::new(), |mut s, b| {
         let _ = write!(s, "{b:02x}");
