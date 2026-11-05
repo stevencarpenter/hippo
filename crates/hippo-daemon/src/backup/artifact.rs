@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,7 +108,54 @@ fn append_bytes<W: Write>(tar: &mut tar::Builder<W>, name: &str, data: &[u8]) ->
     Ok(())
 }
 
-/// Appends the file at `src` (symlinks followed) as `name`.
+/// Yields exactly `remaining` bytes from `inner`; EOF before that is an error, bytes past it are ignored.
+struct ExactReader<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R: Read> Read for ExactReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.remaining == 0 || buf.is_empty() {
+            return Ok(0);
+        }
+        let max = buf
+            .len()
+            .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..max])?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "source shrank below the size recorded in the tar header",
+            ));
+        }
+        self.remaining -= n as u64;
+        Ok(n)
+    }
+}
+
+/// Appends `len` bytes from `reader`; a short source is an error, never a misaligned tar.
+fn append_exact<W: Write>(
+    tar: &mut tar::Builder<W>,
+    name: &str,
+    len: u64,
+    mtime: u64,
+    reader: impl Read,
+) -> Result<()> {
+    let mut h = tar::Header::new_gnu();
+    h.set_size(len);
+    h.set_mode(0o600);
+    h.set_mtime(mtime);
+    let reader = ExactReader {
+        inner: reader,
+        remaining: len,
+    };
+    tar.append_data(&mut h, name, reader)
+        .with_context(|| format!("archive {name}"))
+}
+
+/// Appends the file at `src` (symlinks followed) as `name`, truncated to its length
+/// at open time so a concurrently appended file cannot misalign the archive.
 fn append_file<W: Write>(tar: &mut tar::Builder<W>, name: &str, src: &Path) -> Result<()> {
     let file = File::open(src).with_context(|| format!("open {}", src.display()))?;
     let md = file.metadata()?;
@@ -117,12 +164,7 @@ fn append_file<W: Write>(tar: &mut tar::Builder<W>, name: &str, src: &Path) -> R
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_secs());
-    let mut h = tar::Header::new_gnu();
-    h.set_size(md.len());
-    h.set_mode(0o600);
-    h.set_mtime(mtime);
-    tar.append_data(&mut h, name, file)?;
-    Ok(())
+    append_exact(tar, name, md.len(), mtime, file)
 }
 
 fn build<W: Write>(
@@ -244,6 +286,9 @@ pub fn extract_artifact(
             .open(&dest)?;
         io::copy(&mut entry, &mut f)?;
     }
+    // Drain to EOF so the zstd frame end and the age final-chunk MAC are verified.
+    io::copy(&mut archive.into_inner(), &mut io::sink())
+        .context("artifact stream is truncated or corrupt")?;
     let meta = fs::read(dest_dir.join("meta.json")).context("artifact has no meta.json")?;
     Ok(serde_json::from_slice(&meta)?)
 }
@@ -399,6 +444,49 @@ mod tests {
         let err = extract_artifact(&out, &id, &dest).unwrap_err();
         assert!(err.to_string().contains("unsafe path"), "{err:#}");
         assert!(!fx.root.join("escape").exists());
+    }
+
+    #[test]
+    fn short_source_is_error_and_growth_is_truncated() {
+        let mut tar = tar::Builder::new(Vec::new());
+        let err = append_exact(&mut tar, "a", 10, 0, &b"short"[..]).unwrap_err();
+        assert!(format!("{err:#}").contains("shrank"), "{err:#}");
+
+        let mut tar = tar::Builder::new(Vec::new());
+        append_exact(&mut tar, "a", 4, 0, &b"abcdEXTRA"[..]).unwrap();
+        append_exact(&mut tar, "b", 2, 0, &b"zz"[..]).unwrap();
+        let bytes = tar.into_inner().unwrap();
+        let mut ar = tar::Archive::new(&bytes[..]);
+        let got: Vec<(String, Vec<u8>)> = ar
+            .entries()
+            .unwrap()
+            .map(|e| {
+                let mut e = e.unwrap();
+                let mut v = Vec::new();
+                e.read_to_end(&mut v).unwrap();
+                (e.path().unwrap().to_string_lossy().into_owned(), v)
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![("a".into(), b"abcd".to_vec()), ("b".into(), b"zz".to_vec())]
+        );
+    }
+
+    #[test]
+    fn truncated_ciphertext_is_rejected() {
+        let fx = fixture();
+        let (id, r) = keys();
+        let out = fx.root.join("a.tar.zst.age");
+        write(&fx, &r, &out).unwrap();
+        let bytes = fs::read(&out).unwrap();
+        for cut in [1, 20, 200] {
+            fs::write(&out, &bytes[..bytes.len() - cut]).unwrap();
+            assert!(
+                extract_artifact(&out, &id, &fx.root.join(format!("d{cut}"))).is_err(),
+                "cut {cut}"
+            );
+        }
     }
 
     #[test]
