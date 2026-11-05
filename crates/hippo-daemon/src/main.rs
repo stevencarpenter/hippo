@@ -1534,8 +1534,16 @@ async fn run() -> Result<()> {
             println!("{}", commands::handle_enrichment(&config, &action, now_ms)?);
         }
         Commands::Backup { action } => {
-            use hippo_daemon::backup::{run, status};
+            use hippo_daemon::backup::{keys, run, status};
             let report = match action {
+                BackupAction::Init {
+                    destination,
+                    op_vault,
+                } => {
+                    let config_path = config.storage.config_dir.join("config.toml");
+                    keys::init(&config_path, &destination, op_vault.as_deref())?;
+                    return Ok(());
+                }
                 BackupAction::Status => {
                     print!("{}", status::report(&config));
                     return Ok(());

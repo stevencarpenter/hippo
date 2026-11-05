@@ -225,6 +225,15 @@ pub enum BackupAction {
     },
     /// Show the last run, pending uploads, and the newest artifact of each kind
     Status,
+    /// Generate the age key pair, store the private key in 1Password, and write `[backup]`
+    Init {
+        /// Existing directory that receives encrypted artifacts
+        #[arg(long)]
+        destination: std::path::PathBuf,
+        /// 1Password vault for the key item (default: the account's default vault)
+        #[arg(long)]
+        op_vault: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
