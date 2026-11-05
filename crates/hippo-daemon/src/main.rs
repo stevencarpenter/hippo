@@ -10,8 +10,8 @@ use hippo_daemon::{
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
-    AgentsAction, AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, EvalAction,
-    IngestSource, RedactAction, SendEventSource, WatchdogAction,
+    AgentsAction, AlarmsAction, BackupAction, BrainAction, Cli, Commands, ConfigAction,
+    DaemonAction, EvalAction, IngestSource, RedactAction, SendEventSource, WatchdogAction,
 };
 use hippo_core::config::HippoConfig;
 use hippo_daemon::probe;
@@ -1532,6 +1532,39 @@ async fn run() -> Result<()> {
         Commands::Enrichment { action } => {
             let now_ms = chrono::Utc::now().timestamp_millis();
             println!("{}", commands::handle_enrichment(&config, &action, now_ms)?);
+        }
+        Commands::Backup { action } => {
+            use hippo_daemon::backup::{run, status};
+            let report = match action {
+                BackupAction::Status => {
+                    print!("{}", status::report(&config));
+                    return Ok(());
+                }
+                BackupAction::Run => run::run_backup(
+                    &config,
+                    run::RunMode::Scheduled,
+                    chrono::Utc::now().timestamp_millis(),
+                )?,
+                BackupAction::Now { label } => {
+                    let report = run::checkpoint(&config, label.as_deref().unwrap_or("manual"))?;
+                    if report == run::RunReport::NotConfigured {
+                        eprintln!(
+                            "hippo backup: not configured (set [backup] destination and recipient)"
+                        );
+                        std::process::exit(3);
+                    }
+                    report
+                }
+            };
+            match report {
+                run::RunReport::NotConfigured => {
+                    eprintln!("hippo backup: not configured; nothing to do");
+                }
+                run::RunReport::Skipped { reason } => println!("backup skipped: {reason}"),
+                run::RunReport::Done { id, kind, .. } => {
+                    println!("backup {kind:?} {id} shipped");
+                }
+            }
         }
         Commands::ClaudeSessionWatch => {
             watch_claude_sessions::run(&config).await?;

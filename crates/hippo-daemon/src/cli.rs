@@ -157,6 +157,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: EnrichmentAction,
     },
+    /// Encrypted knowledge-base backups
+    Backup {
+        #[command(subcommand)]
+        action: BackupAction,
+    },
     /// Watch ~/.claude/projects/**/*.jsonl for new session content (FSEvents, KeepAlive service)
     ClaudeSessionWatch,
     /// Poll opencode's SQLite DB for new sessions (LaunchAgent, OneShot)
@@ -206,6 +211,20 @@ pub enum AgentsAction {
         #[arg(long)]
         model: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum BackupAction {
+    /// Scheduled run (launchd, hourly). Skips when a backup succeeded within 20 h.
+    Run,
+    /// Take a labeled checkpoint now. Exits 3 when `[backup]` is not configured.
+    Now {
+        /// Label added to the artifact id (default "manual")
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Show the last run, pending uploads, and the newest artifact of each kind
+    Status,
 }
 
 #[derive(Subcommand)]

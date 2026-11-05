@@ -62,7 +62,7 @@ pub fn is_uploaded(file: &Path, drive_fs: bool) -> Result<bool> {
     }
 }
 
-fn sha256_of(path: &Path) -> io::Result<[u8; 32]> {
+pub(crate) fn sha256_of(path: &Path) -> io::Result<[u8; 32]> {
     let mut f = File::open(path)?;
     let mut h = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];

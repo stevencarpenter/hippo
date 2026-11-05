@@ -1,0 +1,408 @@
+//! Integration tests for one backup run: snapshot, kind choice, ship, manifest, status.
+
+use hippo_core::config::HippoConfig;
+use hippo_daemon::backup::artifact::{ArtifactKind, extract_artifact};
+use hippo_daemon::backup::manifest::Manifest;
+use hippo_daemon::backup::pagediff::apply_diff;
+use hippo_daemon::backup::run::{RunMode, RunReport, checkpoint, run_backup};
+use hippo_daemon::backup::status;
+use rusqlite::Connection;
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+const H: i64 = 3_600_000;
+const DAY: i64 = 24 * H;
+/// Monday 2026-11-02 01:00:00 UTC (ISO week 45).
+const T0: i64 = 1_793_581_200_000;
+
+struct Fx {
+    t: tempfile::TempDir,
+    config: HippoConfig,
+    identity: age::x25519::Identity,
+    dest: PathBuf,
+    work: PathBuf,
+}
+
+fn fixture() -> Fx {
+    let t = tempfile::tempdir().unwrap();
+    let (data, cfg, dest) = (
+        t.path().join("data"),
+        t.path().join("config"),
+        t.path().join("dest"),
+    );
+    for d in [&data, &cfg, &dest] {
+        fs::create_dir_all(d).unwrap();
+    }
+    fs::write(cfg.join("config.toml"), "[backup]\n").unwrap();
+    let c = Connection::open(data.join("hippo.db")).unwrap();
+    c.pragma_update(None, "journal_mode", "WAL").unwrap();
+    c.execute_batch(
+        "CREATE TABLE events(id INTEGER PRIMARY KEY, body TEXT); PRAGMA user_version = 29;",
+    )
+    .unwrap();
+    drop(c);
+    let identity = age::x25519::Identity::generate();
+    let mut config = HippoConfig::default();
+    config.storage.data_dir = data;
+    config.storage.config_dir = cfg;
+    config.backup.destination = dest.to_string_lossy().into_owned();
+    config.backup.recipient = identity.to_public().to_string();
+    let work = config.backup_work_dir();
+    let fx = Fx {
+        t,
+        config,
+        identity,
+        dest,
+        work,
+    };
+    add_rows(&fx, 200);
+    fx
+}
+
+fn add_rows(fx: &Fx, n: usize) {
+    let c = Connection::open(fx.config.db_path()).unwrap();
+    let tx = c.unchecked_transaction().unwrap();
+    for i in 0..n {
+        tx.execute(
+            "INSERT INTO events(body) VALUES (?1)",
+            [format!("{i:0>200}")],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+}
+
+fn done(r: RunReport) -> (String, ArtifactKind) {
+    match r {
+        RunReport::Done { id, kind, shipped } => {
+            assert!(shipped);
+            (id, kind)
+        }
+        other => panic!("expected Done, got {other:?}"),
+    }
+}
+
+fn outbox_artifacts(fx: &Fx) -> usize {
+    fs::read_dir(fx.work.join("outbox"))
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tar.zst.age")
+        })
+        .count()
+}
+
+fn names(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().fold(String::new(), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+#[test]
+fn first_run_writes_full_then_delta() {
+    let fx = fixture();
+    let (full_id, kind) = done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+    assert_eq!(kind, ArtifactKind::Full);
+    add_rows(&fx, 300);
+    let (delta_id, kind) = done(run_backup(&fx.config, RunMode::Scheduled, T0 + 21 * H).unwrap());
+    assert_eq!(kind, ArtifactKind::Delta);
+
+    let m = Manifest::load(&fx.dest).unwrap();
+    assert_eq!(m.entries.len(), 2);
+    assert_eq!(m.entries[0].meta.id, full_id);
+    assert_eq!(m.entries[1].meta.id, delta_id);
+    assert_eq!(m.entries[1].meta.base_id.as_deref(), Some(full_id.as_str()));
+    assert!(m.entries.iter().all(|e| e.verified && e.uploaded));
+    assert!(m.entries.iter().all(|e| e.shipped_ms.is_some()));
+    assert_eq!(outbox_artifacts(&fx), 0);
+
+    // The delta applied to the full reproduces the database the delta recorded.
+    let x = fx.t.path().join("x");
+    extract_artifact(
+        &fx.dest.join(&m.entries[0].file),
+        &fx.identity,
+        &x.join("f"),
+    )
+    .unwrap();
+    extract_artifact(
+        &fx.dest.join(&m.entries[1].file),
+        &fx.identity,
+        &x.join("d"),
+    )
+    .unwrap();
+    let out = x.join("restored.db");
+    apply_diff(&x.join("f/hippo.db"), &x.join("d/hippo.db.pagediff"), &out).unwrap();
+    assert_eq!(
+        hex(&Sha256::digest(fs::read(&out).unwrap())),
+        m.entries[1].meta.db_sha256
+    );
+    let n: i64 = Connection::open(&out)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 500);
+
+    let s = status::load(&fx.work);
+    assert_eq!(s.last_success_ms, Some(T0 + 21 * H));
+    assert_eq!(s.last_kind, Some(ArtifactKind::Delta));
+    assert_eq!(s.last_error, None);
+    assert!(s.pending_upload.is_empty());
+    assert_eq!(s.outbox_count, 0);
+}
+
+#[test]
+fn scheduled_run_skips_within_20h() {
+    let fx = fixture();
+    done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+    let r = run_backup(&fx.config, RunMode::Scheduled, T0 + 19 * H).unwrap();
+    assert!(matches!(r, RunReport::Skipped { .. }), "{r:?}");
+    assert_eq!(Manifest::load(&fx.dest).unwrap().entries.len(), 1);
+}
+
+#[test]
+fn new_iso_week_forces_full() {
+    let fx = fixture();
+    done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+    add_rows(&fx, 10);
+    // Sunday 01:00 is still ISO week 45.
+    let (_, kind) = done(run_backup(&fx.config, RunMode::Scheduled, T0 + 6 * DAY).unwrap());
+    assert_eq!(kind, ArtifactKind::Delta);
+    add_rows(&fx, 10);
+    // Monday 01:00 starts ISO week 46.
+    let (_, kind) = done(run_backup(&fx.config, RunMode::Scheduled, T0 + 7 * DAY).unwrap());
+    assert_eq!(kind, ArtifactKind::Full);
+}
+
+#[test]
+fn page_size_change_forces_full() {
+    let fx = fixture();
+    done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+    let c = Connection::open(fx.config.db_path()).unwrap();
+    c.pragma_update(None, "journal_mode", "DELETE").unwrap();
+    c.pragma_update(None, "page_size", 8192).unwrap();
+    c.execute_batch("VACUUM").unwrap();
+    let ps: i64 = c
+        .pragma_query_value(None, "page_size", |r| r.get(0))
+        .unwrap();
+    assert_eq!(ps, 8192);
+    drop(c);
+    let (_, kind) = done(run_backup(&fx.config, RunMode::Scheduled, T0 + 21 * H).unwrap());
+    assert_eq!(kind, ArtifactKind::Full);
+}
+
+#[test]
+fn destination_missing_keeps_outbox_and_does_not_prune() {
+    let fx = fixture();
+    done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+    let away = fx.t.path().join("dest.away");
+    fs::rename(&fx.dest, &away).unwrap();
+    let manifest_before = fs::read(away.join("manifest.json")).unwrap();
+    add_rows(&fx, 50);
+
+    assert!(run_backup(&fx.config, RunMode::Scheduled, T0 + 21 * H).is_err());
+    assert_eq!(outbox_artifacts(&fx), 1);
+    assert!(!fx.dest.exists(), "destination must never be created");
+    assert_eq!(
+        fs::read(away.join("manifest.json")).unwrap(),
+        manifest_before
+    );
+    let s = status::load(&fx.work);
+    assert_eq!(s.last_success_ms, Some(T0));
+    assert!(s.last_error.is_some());
+    assert_eq!(s.outbox_count, 1);
+
+    // A later scheduled run during the outage does not add another artifact.
+    assert!(run_backup(&fx.config, RunMode::Scheduled, T0 + 22 * H).is_err());
+    assert_eq!(outbox_artifacts(&fx), 1);
+
+    fs::rename(&away, &fx.dest).unwrap();
+    let stuck_id = fs::read_dir(fx.work.join("outbox"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .find_map(|n| n.strip_suffix(".tar.zst.age").map(str::to_owned))
+        .unwrap();
+    done(run_backup(&fx.config, RunMode::Scheduled, T0 + 23 * H).unwrap());
+    assert_eq!(outbox_artifacts(&fx), 0);
+    assert!(names(&fx.work.join("outbox")).is_empty());
+    let m = Manifest::load(&fx.dest).unwrap();
+    let stuck = m.entries.iter().find(|e| e.meta.id == stuck_id).unwrap();
+    assert!(stuck.verified && stuck.shipped_ms == Some(T0 + 23 * H));
+    assert!(fx.dest.join(&stuck.file).is_file());
+    assert_eq!(m.entries.len(), 3);
+    let s = status::load(&fx.work);
+    assert_eq!(s.last_success_ms, Some(T0 + 23 * H));
+    assert_eq!(s.last_error, None);
+}
+
+#[test]
+fn failed_run_leaves_state_unchanged() {
+    let fx = fixture();
+    done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+    let hashes = fs::read(fx.work.join("pagehashes.bin")).unwrap();
+    let manifest = fs::read(fx.dest.join("manifest.json")).unwrap();
+    let outbox = fx.work.join("outbox");
+    fs::set_permissions(&outbox, fs::Permissions::from_mode(0o500)).unwrap();
+    add_rows(&fx, 50);
+
+    let res = run_backup(&fx.config, RunMode::Scheduled, T0 + 21 * H);
+    fs::set_permissions(&outbox, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(res.is_err());
+    assert_eq!(fs::read(fx.work.join("pagehashes.bin")).unwrap(), hashes);
+    assert_eq!(fs::read(fx.dest.join("manifest.json")).unwrap(), manifest);
+    assert_eq!(
+        names(&fx.work),
+        ["lock", "outbox", "pagehashes.bin", "status.json"]
+    );
+    assert!(names(&outbox).is_empty());
+    assert_eq!(names(&fx.dest).len(), 2, "manifest and the full only");
+    let s = status::load(&fx.work);
+    assert_eq!(s.last_success_ms, Some(T0));
+    assert!(s.last_error.is_some());
+}
+
+#[test]
+fn scheduled_run_skips_when_locked() {
+    let fx = fixture();
+    fs::create_dir_all(&fx.work).unwrap();
+    let lock = fs::File::create(fx.work.join("lock")).unwrap();
+    lock.lock().unwrap();
+    let r = run_backup(&fx.config, RunMode::Scheduled, T0).unwrap();
+    assert!(matches!(r, RunReport::Skipped { .. }), "{r:?}");
+    assert!(Manifest::load(&fx.dest).unwrap().entries.is_empty());
+    drop(lock);
+    done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+}
+
+#[test]
+fn checkpoint_waits_for_lock() {
+    let fx = fixture();
+    fs::create_dir_all(&fx.work).unwrap();
+    let lock = fs::File::create(fx.work.join("lock")).unwrap();
+    lock.lock().unwrap();
+    let hold = Duration::from_millis(1500);
+    let holder = std::thread::spawn(move || {
+        std::thread::sleep(hold);
+        drop(lock);
+    });
+    let start = Instant::now();
+    let (id, kind) = done(checkpoint(&fx.config, "pre-migration v30").unwrap());
+    assert!(start.elapsed() >= hold);
+    holder.join().unwrap();
+    assert_eq!(kind, ArtifactKind::Checkpoint);
+    assert!(id.ends_with("-pre-migration-v30"), "{id}");
+    // A checkpoint never becomes a delta base.
+    assert!(!fx.work.join("pagehashes.bin").exists());
+}
+
+#[test]
+fn now_unconfigured_exits_3() {
+    let root = tempfile::tempdir().unwrap();
+    let config_root = root.path().join("config");
+    let data_root = root.path().join("data");
+    fs::create_dir_all(config_root.join("hippo")).unwrap();
+    fs::write(
+        config_root.join("hippo/config.toml"),
+        "[telemetry]\nenabled=false\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hippo"))
+        .env("HOME", root.path())
+        .env("XDG_CONFIG_HOME", &config_root)
+        .env("XDG_DATA_HOME", &data_root)
+        .args(["backup", "now"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn success_prunes_expired_artifacts_from_destination() {
+    use hippo_daemon::backup::artifact::ArtifactMeta;
+    use hippo_daemon::backup::manifest::ManifestEntry;
+    let fx = fixture();
+    let old = ManifestEntry {
+        meta: ArtifactMeta {
+            id: "hippo-delta-old".into(),
+            kind: ArtifactKind::Delta,
+            label: None,
+            created_ms: T0 - 100 * DAY,
+            base_id: Some("gone".into()),
+            hippo_version: "0".into(),
+            schema_version: 29,
+            db_sha256: "x".into(),
+            row_counts: Default::default(),
+        },
+        file: "hippo-delta-old.tar.zst.age".into(),
+        ciphertext_sha256: "y".into(),
+        verified: true,
+        shipped_ms: Some(T0 - 100 * DAY),
+        uploaded: true,
+    };
+    fs::write(fx.dest.join(&old.file), b"old").unwrap();
+    Manifest {
+        version: 1,
+        entries: vec![old.clone()],
+    }
+    .save(&fx.dest)
+    .unwrap();
+
+    let (id, _) = done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+    let m = Manifest::load(&fx.dest).unwrap();
+    assert_eq!(
+        m.entries
+            .iter()
+            .map(|e| e.meta.id.as_str())
+            .collect::<Vec<_>>(),
+        [id.as_str()]
+    );
+    assert!(!fx.dest.join(&old.file).exists());
+}
+
+#[test]
+fn outbox_entry_shipped_before_a_crash_is_recorded() {
+    let fx = fixture();
+    let away = fx.t.path().join("dest.away");
+    fs::rename(&fx.dest, &away).unwrap();
+    assert!(run_backup(&fx.config, RunMode::Scheduled, T0).is_err());
+    fs::rename(&away, &fx.dest).unwrap();
+    // Simulate a crash after `ship` moved the artifact but before the manifest save.
+    let outbox = fx.work.join("outbox");
+    let file = names(&outbox)
+        .into_iter()
+        .find(|n| n.ends_with(".tar.zst.age"))
+        .unwrap();
+    fs::rename(outbox.join(&file), fx.dest.join(&file)).unwrap();
+
+    let r = run_backup(
+        &fx.config,
+        RunMode::Checkpoint { label: "x".into() },
+        T0 + H,
+    )
+    .unwrap();
+    assert_eq!(done(r).1, ArtifactKind::Checkpoint);
+    let m = Manifest::load(&fx.dest).unwrap();
+    assert!(m.entries.iter().any(|e| e.file == file && e.verified));
+    assert!(names(&outbox).is_empty());
+}

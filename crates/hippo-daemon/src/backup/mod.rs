@@ -4,5 +4,7 @@ pub mod artifact;
 pub mod manifest;
 pub mod pagediff;
 pub mod retention;
+pub mod run;
 pub mod ship;
 pub mod snapshot;
+pub mod status;
