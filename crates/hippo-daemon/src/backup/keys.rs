@@ -2,7 +2,7 @@
 //! logged, or passed on a command line.
 
 use std::ffi::OsString;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -10,35 +10,64 @@ use age::secrecy::{ExposeSecret, SecretString};
 use anyhow::{Context, Result, bail};
 
 #[cfg(test)]
-use std::ffi::OsStr;
-#[cfg(test)]
 use std::path::PathBuf;
 
 const FIELD: &str = "private_key";
 
+/// Why `KeyStore::store` failed. The two cases need different handling by the caller.
+#[derive(Debug)]
+pub enum StoreError {
+    /// The store was unreachable or rejected the request; nothing was saved.
+    Unavailable(String),
+    /// The store may have saved the key but the result is unusable; the operator must check.
+    MaybeCreated(String),
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(m) | Self::MaybeCreated(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {}
+
 /// Secret store that holds the private key. Tests inject a fake; production uses `OnePassword`.
 pub trait KeyStore {
     /// Saves `key` and returns the `identity_ref` that `read` resolves.
-    fn store(&self, title: &str, vault: Option<&str>, key: &SecretString) -> Result<String>;
+    fn store(
+        &self,
+        title: &str,
+        vault: Option<&str>,
+        key: &SecretString,
+    ) -> Result<String, StoreError>;
     fn read(&self, reference: &str) -> Result<SecretString>;
 }
 
-/// The `op` CLI. `path` overrides the `PATH` used to find it (tests).
-#[derive(Default)]
+/// The `op` CLI at an explicit program path ("op" in production, a fake in tests).
 pub struct OnePassword {
-    path: Option<OsString>,
+    program: OsString,
+}
+
+impl Default for OnePassword {
+    fn default() -> Self {
+        Self {
+            program: OsString::from("op"),
+        }
+    }
 }
 
 impl OnePassword {
     #[cfg(test)]
-    fn with_path(path: &OsStr) -> Self {
+    fn with_program(program: impl Into<OsString>) -> Self {
         Self {
-            path: Some(path.to_os_string()),
+            program: program.into(),
         }
     }
 
     fn run(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
-        let mut cmd = Command::new("op");
+        let mut cmd = Command::new(&self.program);
         cmd.args(args)
             .stdin(if stdin.is_some() {
                 Stdio::piped()
@@ -47,9 +76,6 @@ impl OnePassword {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(p) = &self.path {
-            cmd.env("PATH", p);
-        }
         let mut child = cmd.spawn().context("failed to run `op`")?;
         if let Some(bytes) = stdin {
             // The secret goes over a pipe, never argv. Dropping the handle closes it.
@@ -75,7 +101,12 @@ impl OnePassword {
 }
 
 impl KeyStore for OnePassword {
-    fn store(&self, title: &str, vault: Option<&str>, key: &SecretString) -> Result<String> {
+    fn store(
+        &self,
+        title: &str,
+        vault: Option<&str>,
+        key: &SecretString,
+    ) -> Result<String, StoreError> {
         let template = serde_json::json!({
             "title": title,
             "category": "SECURE_NOTE",
@@ -84,19 +115,31 @@ impl KeyStore for OnePassword {
                 "value": key.expose_secret(),
             }],
         });
-        let body = serde_json::to_vec(&template)?;
+        let body =
+            serde_json::to_vec(&template).map_err(|e| StoreError::Unavailable(e.to_string()))?;
         let mut args = vec!["item", "create", "--format", "json"];
         if let Some(v) = vault {
             args.extend(["--vault", v]);
         }
         args.push("-");
-        let out = self.run(&args, Some(&body))?;
+        let out = self
+            .run(&args, Some(&body))
+            .map_err(|e| StoreError::Unavailable(format!("{e:#}")))?;
+        // `op` exited 0, so the item exists even if its output is unusable.
+        let maybe = |detail: String| {
+            StoreError::MaybeCreated(format!(
+                "op created an item titled \"{title}\" but its output was unusable ({detail}); \
+                 an item may exist in 1Password, check for it and delete it before retrying"
+            ))
+        };
         let created: serde_json::Value =
-            serde_json::from_slice(&out).context("op returned unparseable JSON")?;
-        let id = created["id"].as_str().context("op output has no item id")?;
+            serde_json::from_slice(&out).map_err(|_| maybe("not JSON".into()))?;
+        let id = created["id"]
+            .as_str()
+            .ok_or_else(|| maybe("no item id".into()))?;
         let vault_id = created["vault"]["id"]
             .as_str()
-            .context("op output has no vault id")?;
+            .ok_or_else(|| maybe(format!("no vault id, item id {id}")))?;
         Ok(format!("op://{vault_id}/{id}/{FIELD}"))
     }
 
@@ -143,6 +186,7 @@ pub fn init(config_path: &Path, destination: &Path, op_vault: Option<&str>) -> R
         &OnePassword::default(),
         &mut std::io::stdin().lock(),
         &mut std::io::stdout(),
+        std::io::stdout().is_terminal(),
         config_path,
         destination,
         op_vault,
@@ -150,10 +194,15 @@ pub fn init(config_path: &Path, destination: &Path, op_vault: Option<&str>) -> R
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "every argument is an injected seam (store, io, tty flag); a struct would only rename them"
+)]
 fn init_with(
     store: &dyn KeyStore,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
+    stdout_is_terminal: bool,
     config_path: &Path,
     destination: &Path,
     op_vault: Option<&str>,
@@ -181,6 +230,9 @@ fn init_with(
             destination.display()
         );
     }
+    // Relative paths would resolve against launchd's working directory, not this one.
+    let destination = std::path::absolute(destination)
+        .with_context(|| format!("cannot resolve {}", destination.display()))?;
     let dest_str = destination
         .to_str()
         .context("destination is not valid UTF-8")?;
@@ -206,8 +258,15 @@ fn init_with(
             }
             reference
         }
+        Err(e @ StoreError::MaybeCreated(_)) => bail!("{e}"),
         Err(e) => {
-            eprintln!("hippo backup: 1Password storage failed ({e:#}); manual storage required");
+            if !stdout_is_terminal {
+                bail!(
+                    "1Password storage failed ({e}) and stdout is not a terminal; \
+                     run `hippo backup init` in an interactive terminal so the key is not written to a file"
+                );
+            }
+            eprintln!("hippo backup: 1Password storage failed ({e}); manual storage required");
             writeln!(
                 out,
                 "Store this private key somewhere safe. It is shown only once.\n"
@@ -272,9 +331,19 @@ mod tests {
     }
 
     impl KeyStore for FakeStore {
-        fn store(&self, title: &str, _vault: Option<&str>, key: &SecretString) -> Result<String> {
+        fn store(
+            &self,
+            title: &str,
+            _vault: Option<&str>,
+            key: &SecretString,
+        ) -> Result<String, StoreError> {
             if self.mode == "fail" {
-                bail!("op unavailable");
+                return Err(StoreError::Unavailable("op unavailable".into()));
+            }
+            if self.mode == "maybe" {
+                return Err(StoreError::MaybeCreated(format!(
+                    "an item may exist titled \"{title}\""
+                )));
             }
             *self.argv_title.borrow_mut() = title.to_string();
             *self.stored.borrow_mut() = Some(key.clone());
@@ -299,11 +368,22 @@ mod tests {
     }
 
     fn run(store: &dyn KeyStore, cfg: &Path, dest: &Path, input: &str) -> (Result<()>, String) {
+        run_tty(store, cfg, dest, input, true)
+    }
+
+    fn run_tty(
+        store: &dyn KeyStore,
+        cfg: &Path,
+        dest: &Path,
+        input: &str,
+        tty: bool,
+    ) -> (Result<()>, String) {
         let mut out = Vec::new();
         let r = init_with(
             store,
             &mut Cursor::new(input.to_string()),
             &mut out,
+            tty,
             cfg,
             dest,
             None,
@@ -435,25 +515,107 @@ mod tests {
         assert!(std::fs::read_to_string(&cfg).unwrap().contains("[backup]"));
     }
 
+    /// Writes a fake `op` that records argv and stdin under `dir` and prints `create_out`
+    /// for `item create`. For `read` it echoes the key found in the recorded stdin template.
+    fn fake_op(dir: &Path, create_out: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("op");
+        let body = format!(
+            "#!/bin/sh\necho \"$@\" > '{d}/argv'\nif [ \"$1\" = item ]; then cat > '{d}/stdin'; printf '%s' '{create_out}'; \
+             else sed -n 's/.*\"value\":\"\\([^\"]*\\)\".*/\\1/p' '{d}/stdin'; fi\n",
+            d = dir.display()
+        );
+        std::fs::write(&script, body).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
     #[test]
-    fn one_password_without_op_on_path_is_an_error() {
-        let empty = tempfile::tempdir().unwrap();
-        let op = OnePassword::with_path(empty.path().as_os_str());
+    fn nonexistent_program_fails_at_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let op = OnePassword::with_program(dir.path().join("no-such-op"));
         let key = age::x25519::Identity::generate().to_string();
-        // A spawn failure (not an `op` exit status) proves the real binary was never run.
-        let e = format!("{:#}", op.store("t", None, &key).unwrap_err());
-        assert!(e.contains("failed to run `op`"), "{e}");
+        let e = op.store("t", None, &key).unwrap_err();
+        assert!(matches!(e, StoreError::Unavailable(_)), "{e}");
+        assert!(e.to_string().contains("failed to run `op`"), "{e}");
         let e = format!("{:#}", op.read("op://a/b/c").err().unwrap());
         assert!(e.contains("failed to run `op`"), "{e}");
     }
 
     #[test]
-    fn init_without_op_falls_back_to_manual_storage() {
-        let empty = tempfile::tempdir().unwrap();
-        let op = OnePassword::with_path(empty.path().as_os_str());
+    fn init_with_unavailable_op_falls_back_to_manual_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let op = OnePassword::with_program(dir.path().join("no-such-op"));
         let (_d, cfg, dest) = setup("[a]\nx = 1\n");
         let (r, out) = run(&op, &cfg, &dest, "stored\n");
         r.unwrap();
         assert!(out.contains("AGE-SECRET-KEY-1"));
+    }
+
+    #[test]
+    fn fake_op_gets_secret_on_stdin_only_and_round_trips() {
+        let bin = tempfile::tempdir().unwrap();
+        let op =
+            OnePassword::with_program(fake_op(bin.path(), r#"{"id":"I1","vault":{"id":"V1"}}"#));
+        let (_d, cfg, dest) = setup("");
+        let (r, out) = run(&op, &cfg, &dest, "");
+        r.unwrap();
+        assert!(!out.contains("AGE-SECRET-KEY"));
+        let argv = std::fs::read_to_string(bin.path().join("argv")).unwrap();
+        assert!(!argv.contains("AGE-SECRET-KEY"), "{argv}");
+        let stdin = std::fs::read_to_string(bin.path().join("stdin")).unwrap();
+        assert!(stdin.contains("\"AGE-SECRET-KEY-1"));
+        assert!(stdin.contains("\"category\":\"SECURE_NOTE\""));
+        let text = std::fs::read_to_string(&cfg).unwrap();
+        assert!(text.contains("identity_ref = \"op://V1/I1/private_key\""));
+    }
+
+    #[test]
+    fn unparseable_create_output_is_maybe_created_and_does_not_print_key() {
+        for bad in ["not json", r#"{"id":"I9"}"#, r#"{"vault":{"id":"V"}}"#] {
+            let bin = tempfile::tempdir().unwrap();
+            let op = OnePassword::with_program(fake_op(bin.path(), bad));
+            let (_d, cfg, dest) = setup("[a]\nx = 1\n");
+            let (r, out) = run(&op, &cfg, &dest, "stored\n");
+            let e = format!("{:#}", r.unwrap_err());
+            assert!(
+                e.contains("may exist") && e.contains("hippo backup key (testhost)"),
+                "{e}"
+            );
+            assert!(!out.contains("AGE-SECRET-KEY") && !e.contains("AGE-SECRET-KEY"));
+            assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "[a]\nx = 1\n");
+        }
+    }
+
+    #[test]
+    fn maybe_created_from_store_never_falls_back() {
+        let (_d, cfg, dest) = setup("");
+        let (r, out) = run(&FakeStore::new("maybe"), &cfg, &dest, "stored\n");
+        assert!(r.is_err());
+        assert!(!out.contains("AGE-SECRET-KEY"));
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "");
+    }
+
+    #[test]
+    fn fallback_refuses_when_stdout_is_not_a_terminal() {
+        let (_d, cfg, dest) = setup("[a]\nx = 1\n");
+        let (r, out) = run_tty(&FakeStore::new("fail"), &cfg, &dest, "stored\n", false);
+        let e = format!("{:#}", r.unwrap_err());
+        assert!(e.contains("interactive terminal"), "{e}");
+        assert!(!out.contains("AGE-SECRET-KEY"));
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "[a]\nx = 1\n");
+    }
+
+    #[test]
+    fn init_writes_absolute_destination_for_relative_input() {
+        let (_d, cfg, _dest) = setup("");
+        let (r, _) = run(&FakeStore::new("ok"), &cfg, Path::new("src"), "");
+        r.unwrap();
+        let parsed: toml::Table = toml::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let want = std::env::current_dir().unwrap().join("src");
+        assert_eq!(
+            parsed["backup"]["destination"].as_str().unwrap(),
+            want.to_str().unwrap()
+        );
     }
 }
