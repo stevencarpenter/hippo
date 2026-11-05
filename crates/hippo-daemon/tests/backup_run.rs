@@ -1,8 +1,8 @@
 //! Integration tests for one backup run: snapshot, kind choice, ship, manifest, status.
 
 use hippo_core::config::HippoConfig;
-use hippo_daemon::backup::artifact::{ArtifactKind, extract_artifact};
-use hippo_daemon::backup::manifest::Manifest;
+use hippo_daemon::backup::artifact::{ArtifactKind, ArtifactMeta, extract_artifact};
+use hippo_daemon::backup::manifest::{Manifest, ManifestEntry};
 use hippo_daemon::backup::pagediff::apply_diff;
 use hippo_daemon::backup::run::{RunMode, RunReport, checkpoint, run_backup};
 use hippo_daemon::backup::status;
@@ -105,6 +105,32 @@ fn names(dir: &Path) -> Vec<String> {
         .collect();
     v.sort();
     v
+}
+
+/// Adds a verified delta created 100 days before `T0` (expired) to the manifest in `dest`.
+fn seed_expired(dest: &Path, id: &str, file: &str) -> ManifestEntry {
+    let e = ManifestEntry {
+        meta: ArtifactMeta {
+            id: id.into(),
+            kind: ArtifactKind::Delta,
+            label: None,
+            created_ms: T0 - 100 * DAY,
+            base_id: Some("gone".into()),
+            hippo_version: "0".into(),
+            schema_version: 29,
+            db_sha256: "x".into(),
+            row_counts: Default::default(),
+        },
+        file: file.into(),
+        ciphertext_sha256: "y".into(),
+        verified: true,
+        shipped_ms: Some(T0 - 100 * DAY),
+        uploaded: true,
+    };
+    let mut m = Manifest::load(dest).unwrap();
+    m.entries.push(e.clone());
+    m.save(dest).unwrap();
+    e
 }
 
 fn hex(b: &[u8]) -> String {
@@ -211,6 +237,8 @@ fn page_size_change_forces_full() {
 fn destination_missing_keeps_outbox_and_does_not_prune() {
     let fx = fixture();
     done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+    let old = seed_expired(&fx.dest, "hippo-delta-old", "hippo-delta-old.tar.zst.age");
+    fs::write(fx.dest.join(&old.file), b"old").unwrap();
     let away = fx.t.path().join("dest.away");
     fs::rename(&fx.dest, &away).unwrap();
     let manifest_before = fs::read(away.join("manifest.json")).unwrap();
@@ -219,6 +247,7 @@ fn destination_missing_keeps_outbox_and_does_not_prune() {
     assert!(run_backup(&fx.config, RunMode::Scheduled, T0 + 21 * H).is_err());
     assert_eq!(outbox_artifacts(&fx), 1);
     assert!(!fx.dest.exists(), "destination must never be created");
+    assert!(away.join(&old.file).is_file(), "failed run must not prune");
     assert_eq!(
         fs::read(away.join("manifest.json")).unwrap(),
         manifest_before
@@ -245,7 +274,10 @@ fn destination_missing_keeps_outbox_and_does_not_prune() {
     let stuck = m.entries.iter().find(|e| e.meta.id == stuck_id).unwrap();
     assert!(stuck.verified && stuck.shipped_ms == Some(T0 + 23 * H));
     assert!(fx.dest.join(&stuck.file).is_file());
+    // Full, the stuck delta, the new delta; the expired entry is pruned on success.
     assert_eq!(m.entries.len(), 3);
+    assert!(m.entries.iter().all(|e| e.meta.id != old.meta.id));
+    assert!(!fx.dest.join(&old.file).exists());
     let s = status::load(&fx.work);
     assert_eq!(s.last_success_ms, Some(T0 + 23 * H));
     assert_eq!(s.last_error, None);
@@ -339,34 +371,9 @@ fn now_unconfigured_exits_3() {
 
 #[test]
 fn success_prunes_expired_artifacts_from_destination() {
-    use hippo_daemon::backup::artifact::ArtifactMeta;
-    use hippo_daemon::backup::manifest::ManifestEntry;
     let fx = fixture();
-    let old = ManifestEntry {
-        meta: ArtifactMeta {
-            id: "hippo-delta-old".into(),
-            kind: ArtifactKind::Delta,
-            label: None,
-            created_ms: T0 - 100 * DAY,
-            base_id: Some("gone".into()),
-            hippo_version: "0".into(),
-            schema_version: 29,
-            db_sha256: "x".into(),
-            row_counts: Default::default(),
-        },
-        file: "hippo-delta-old.tar.zst.age".into(),
-        ciphertext_sha256: "y".into(),
-        verified: true,
-        shipped_ms: Some(T0 - 100 * DAY),
-        uploaded: true,
-    };
+    let old = seed_expired(&fx.dest, "hippo-delta-old", "hippo-delta-old.tar.zst.age");
     fs::write(fx.dest.join(&old.file), b"old").unwrap();
-    Manifest {
-        version: 1,
-        entries: vec![old.clone()],
-    }
-    .save(&fx.dest)
-    .unwrap();
 
     let (id, _) = done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
     let m = Manifest::load(&fx.dest).unwrap();
@@ -405,4 +412,118 @@ fn outbox_entry_shipped_before_a_crash_is_recorded() {
     let m = Manifest::load(&fx.dest).unwrap();
     assert!(m.entries.iter().any(|e| e.file == file && e.verified));
     assert!(names(&outbox).is_empty());
+}
+
+#[test]
+fn prune_saves_manifest_first_and_tolerates_undeletable_file() {
+    let fx = fixture();
+    let old = seed_expired(&fx.dest, "hippo-delta-old", "hippo-delta-old.tar.zst.age");
+    // A non-empty directory under the artifact name makes remove_file fail.
+    fs::create_dir_all(fx.dest.join(&old.file).join("x")).unwrap();
+
+    done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+    let m = Manifest::load(&fx.dest).unwrap();
+    assert!(m.entries.iter().all(|e| e.meta.id != old.meta.id));
+    assert!(fx.dest.join(&old.file).exists());
+    assert_eq!(status::load(&fx.work).last_success_ms, Some(T0));
+    let r = run_backup(&fx.config, RunMode::Scheduled, T0 + H).unwrap();
+    assert!(matches!(r, RunReport::Skipped { .. }), "{r:?}");
+}
+
+#[test]
+fn manifest_entry_with_traversal_path_is_never_deleted() {
+    let fx = fixture();
+    let victim = fx.t.path().join("victim");
+    fs::write(&victim, b"keep me").unwrap();
+    seed_expired(&fx.dest, "hippo-delta-old", "../victim");
+    seed_expired(&fx.dest, "../victim", "../victim.tar.zst.age");
+
+    done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+    assert_eq!(fs::read(&victim).unwrap(), b"keep me");
+    let m = Manifest::load(&fx.dest).unwrap();
+    assert!(m.entries.iter().any(|e| e.file == "../victim"));
+    assert!(m.entries.iter().any(|e| e.meta.id == "../victim"));
+}
+
+#[test]
+fn missing_manifest_over_existing_artifacts_refuses_to_save() {
+    let fx = fixture();
+    let orphan = fx.dest.join("hippo-full-20261001T000000Z.tar.zst.age");
+    fs::write(&orphan, b"earlier artifact").unwrap();
+
+    let err = run_backup(&fx.config, RunMode::Scheduled, T0).unwrap_err();
+    assert!(format!("{err:#}").contains("no manifest.json"), "{err:#}");
+    assert!(!fx.dest.join("manifest.json").exists());
+    assert_eq!(names(&fx.dest), ["hippo-full-20261001T000000Z.tar.zst.age"]);
+    assert_eq!(fs::read(&orphan).unwrap(), b"earlier artifact");
+
+    // A checkpoint still lands in the local outbox.
+    let r = run_backup(
+        &fx.config,
+        RunMode::Checkpoint { label: "m".into() },
+        T0 + H,
+    )
+    .unwrap();
+    assert!(matches!(r, RunReport::Done { shipped: false, .. }), "{r:?}");
+    assert!(!fx.dest.join("manifest.json").exists());
+    assert_eq!(outbox_artifacts(&fx), 1);
+}
+
+#[test]
+fn checkpoint_with_destination_missing_stays_in_outbox() {
+    let fx = fixture();
+    let away = fx.t.path().join("dest.away");
+    fs::rename(&fx.dest, &away).unwrap();
+
+    let r = run_backup(
+        &fx.config,
+        RunMode::Checkpoint {
+            label: "pre".into(),
+        },
+        T0,
+    )
+    .unwrap();
+    let RunReport::Done { id, kind, shipped } = r else {
+        panic!("expected Done, got {r:?}");
+    };
+    assert_eq!(kind, ArtifactKind::Checkpoint);
+    assert!(!shipped);
+    assert_eq!(
+        names(&fx.work.join("outbox")),
+        [format!("{id}.entry.json"), format!("{id}.tar.zst.age")]
+    );
+    assert!(!fx.dest.exists());
+    let s = status::load(&fx.work);
+    assert_eq!(s.last_success_ms, None);
+    assert!(s.last_error.is_some());
+    assert_eq!(s.outbox_count, 1);
+
+    // Once the destination is back, the next run ships it with its manifest entry.
+    fs::rename(&away, &fx.dest).unwrap();
+    done(run_backup(&fx.config, RunMode::Scheduled, T0 + H).unwrap());
+    let m = Manifest::load(&fx.dest).unwrap();
+    assert!(m.entries.iter().any(|e| e.meta.id == id && e.verified));
+}
+
+#[test]
+fn checkpoint_succeeds_with_corrupt_sidecar_in_outbox() {
+    let fx = fixture();
+    let outbox = fx.work.join("outbox");
+    fs::create_dir_all(&outbox).unwrap();
+    let bad = outbox.join("hippo-full-20261001T000000Z.entry.json");
+    fs::write(&bad, b"{not json").unwrap();
+
+    let (_, kind) =
+        done(run_backup(&fx.config, RunMode::Checkpoint { label: "c".into() }, T0).unwrap());
+    assert_eq!(kind, ArtifactKind::Checkpoint);
+    let s = status::load(&fx.work);
+    assert_eq!(s.last_success_ms, Some(T0));
+    assert!(
+        s.last_error.as_deref().is_some_and(|e| e.contains("parse")),
+        "{s:?}"
+    );
+    assert!(bad.exists());
+
+    // A scheduled run still treats it as an error.
+    assert!(run_backup(&fx.config, RunMode::Scheduled, T0 + H).is_err());
 }

@@ -45,7 +45,8 @@ pub enum RunReport {
     Skipped {
         reason: String,
     },
-    /// `shipped` is always true: an artifact left in the outbox makes the run an error.
+    /// `shipped: false` only for a checkpoint left in the outbox; a scheduled run that
+    /// cannot ship returns an error instead.
     Done {
         id: String,
         kind: ArtifactKind,
@@ -95,15 +96,18 @@ pub fn run_backup(config: &HippoConfig, mode: RunMode, now_ms: i64) -> Result<Ru
     }
 
     let mut st = status::load(&work);
-    let result = run_locked(config, &mode, now_ms, &work, &mut st);
+    let mut notes = Vec::new();
+    let result = run_locked(config, &mode, now_ms, &work, &mut st, &mut notes);
     st.outbox_count = pending_entries(&outbox).map_or(st.outbox_count, |v| {
         u32::try_from(v.len()).unwrap_or(u32::MAX)
     });
     match &result {
-        Ok(RunReport::Done { kind, .. }) => {
-            st.last_success_ms = Some(now_ms);
-            st.last_kind = Some(*kind);
-            st.last_error = None;
+        Ok(RunReport::Done { kind, shipped, .. }) => {
+            if *shipped {
+                st.last_success_ms = Some(now_ms);
+                st.last_kind = Some(*kind);
+            }
+            st.last_error = (!notes.is_empty()).then(|| notes.join("; "));
         }
         Ok(_) => {}
         Err(e) => st.last_error = Some(format!("{e:#}")),
@@ -167,14 +171,26 @@ fn run_locked(
     now_ms: i64,
     work: &Path,
     st: &mut BackupStatus,
+    notes: &mut Vec<String>,
 ) -> Result<RunReport> {
     let dest = Path::new(&config.backup.destination);
     let outbox = work.join("outbox");
-    let mut manifest = Manifest::load(dest)?;
+    // A checkpoint is written to the local outbox, so destination problems do not fail it.
+    let cp = matches!(mode, RunMode::Checkpoint { .. });
+    let mut manifest = tolerate(cp, notes, load_manifest(dest, &outbox))?.flatten();
 
-    let waiting = ship_outbox(&outbox, dest, &mut manifest, now_ms)?;
-    refresh_uploaded(dest, &mut manifest)?;
-    st.pending_upload = pending_upload(&manifest);
+    let waiting = match manifest.as_mut() {
+        Some(m) => {
+            let (waiting, errors) = ship_outbox(&outbox, dest, m, now_ms)?;
+            for e in errors {
+                tolerate::<()>(cp, notes, Err(e))?;
+            }
+            tolerate(cp, notes, refresh_uploaded(dest, m))?;
+            st.pending_upload = pending_upload(m);
+            waiting
+        }
+        None => pending_entries(&outbox)?.len(),
+    };
 
     let label = match mode {
         RunMode::Scheduled => {
@@ -203,9 +219,9 @@ fn run_locked(
     let snap = tmp.0.join("hippo.db");
     let info = take_snapshot(&config.db_path(), &snap)?;
     let hashes_path = work.join(PAGEHASHES_FILE);
-    let base = match mode {
-        RunMode::Scheduled => delta_base(&hashes_path, &manifest, info.page_size, now_ms),
-        RunMode::Checkpoint { .. } => None,
+    let base = match (mode, &manifest) {
+        (RunMode::Scheduled, Some(m)) => delta_base(&hashes_path, m, info.page_size, now_ms),
+        _ => None,
     };
     let kind = match (mode, &base) {
         (RunMode::Checkpoint { .. }, _) => ArtifactKind::Checkpoint,
@@ -264,32 +280,30 @@ fn run_locked(
     }
     drop(tmp);
 
-    ensure!(
-        ship_pending(&sidecar, &outbox, dest, &mut manifest, now_ms)?,
-        "destination {} unavailable; {id} waits in the outbox",
-        dest.display()
-    );
+    let shipped_into = match manifest.as_mut() {
+        Some(m) => tolerate(cp, notes, ship_pending(&sidecar, &outbox, dest, m, now_ms))?
+            .unwrap_or(false)
+            .then_some(m),
+        None => None,
+    };
+    let Some(manifest) = shipped_into else {
+        let msg = format!(
+            "{id} was not shipped to {} and waits in the outbox",
+            dest.display()
+        );
+        ensure!(cp, "{msg}");
+        notes.push(msg);
+        return Ok(RunReport::Done {
+            id,
+            kind,
+            shipped: false,
+        });
+    };
     if let Some(h) = new_hashes.filter(|_| kind == ArtifactKind::Full) {
         h.write(&hashes_path).context("write pagehashes.bin")?;
     }
-
-    let doomed = plan_prune(&manifest.entries, now_ms);
-    if !doomed.is_empty() {
-        for e in manifest
-            .entries
-            .iter()
-            .filter(|e| doomed.contains(&e.meta.id))
-        {
-            match fs::remove_file(dest.join(&e.file)) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err).with_context(|| format!("prune {}", e.file)),
-            }
-        }
-        manifest.entries.retain(|e| !doomed.contains(&e.meta.id));
-        manifest.save(dest)?;
-    }
-    st.pending_upload = pending_upload(&manifest);
+    prune(dest, manifest, now_ms, notes);
+    st.pending_upload = pending_upload(manifest);
     Ok(RunReport::Done {
         id,
         kind,
@@ -297,14 +311,97 @@ fn run_locked(
     })
 }
 
+/// Ok for a checkpoint: the error goes to `notes` (and `last_error`). Fatal for a scheduled run.
+fn tolerate<T>(checkpoint: bool, notes: &mut Vec<String>, r: Result<T>) -> Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if checkpoint => {
+            tracing::warn!("backup checkpoint: {e:#}");
+            notes.push(format!("{e:#}"));
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// `file` is the only manifest value joined to a path, so it must be the plain
+/// `<id>.tar.zst.age` name built by `artifact_id` (no `/` or `.` in the id).
+fn valid_entry(e: &ManifestEntry) -> bool {
+    let id = &e.meta.id;
+    id.starts_with("hippo-")
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && e.file == format!("{id}{ARTIFACT_EXT}")
+}
+
+/// The manifest, or `None` when the destination folder is unavailable. Refuses an
+/// empty manifest over existing artifacts: saving it would erase their record (for
+/// example, Drive lists the folder before `manifest.json` has synced). An artifact whose
+/// sidecar is still in the outbox is ours, shipped just before a crash.
+fn load_manifest(dest: &Path, outbox: &Path) -> Result<Option<Manifest>> {
+    if !dest.is_dir() {
+        return Ok(None);
+    }
+    let m = Manifest::load(dest)?;
+    if m.entries.is_empty() && fs::symlink_metadata(dest.join("manifest.json")).is_err() {
+        for e in fs::read_dir(dest).with_context(|| format!("read {}", dest.display()))? {
+            let name = e?.file_name().to_string_lossy().into_owned();
+            let ours = |id: &str| outbox.join(format!("{id}{ENTRY_EXT}")).is_file();
+            ensure!(
+                name.strip_suffix(ARTIFACT_EXT).is_none_or(ours),
+                "destination {} holds artifacts (for example {name}) but no manifest.json; \
+                 refusing to write a new manifest",
+                dest.display()
+            );
+        }
+    }
+    for e in m.entries.iter().filter(|e| !valid_entry(e)) {
+        tracing::warn!(id = %e.meta.id, file = %e.file, "backup: ignoring invalid manifest entry");
+    }
+    Ok(Some(m))
+}
+
+/// Removes expired entries from the manifest and saves it before deleting their files,
+/// so the manifest never lists a deleted artifact. Deletion is best effort. Invalid
+/// entries are never pruned.
+fn prune(dest: &Path, manifest: &mut Manifest, now_ms: i64, notes: &mut Vec<String>) {
+    let valid: Vec<ManifestEntry> = manifest
+        .entries
+        .iter()
+        .filter(|e| valid_entry(e))
+        .cloned()
+        .collect();
+    let doomed = plan_prune(&valid, now_ms);
+    if doomed.is_empty() {
+        return;
+    }
+    let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut manifest.entries)
+        .into_iter()
+        .partition(|e| valid_entry(e) && doomed.contains(&e.meta.id));
+    manifest.entries = kept;
+    if let Err(e) = manifest.save(dest) {
+        tracing::warn!("backup: prune manifest save: {e:#}");
+        notes.push(format!("prune skipped: {e:#}"));
+        return;
+    }
+    for e in gone {
+        match fs::remove_file(dest.join(&e.file)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => tracing::warn!("backup: prune {}: {err}", e.file),
+        }
+    }
+}
+
 /// Page hashes to diff against, or `None` when this run must be a Full.
 fn delta_base(path: &Path, manifest: &Manifest, page_size: u32, now_ms: i64) -> Option<PageHashes> {
     // Missing or unreadable hashes: start a new Full rather than trust them.
     let base = PageHashes::read(path).ok()?;
-    let entry = manifest
-        .entries
-        .iter()
-        .find(|e| e.verified && e.meta.kind == ArtifactKind::Full && e.meta.id == base.base_id)?;
+    let entry = manifest.entries.iter().find(|e| {
+        e.verified
+            && e.meta.kind == ArtifactKind::Full
+            && e.meta.id == base.base_id
+            && valid_entry(e)
+    })?;
     let week = |ms| chrono::DateTime::from_timestamp_millis(ms).map(|t| t.iso_week());
     let same_week = week(entry.meta.created_ms)
         .zip(week(now_ms))
@@ -316,33 +413,51 @@ fn delta_base(path: &Path, manifest: &Manifest, page_size: u32, now_ms: i64) -> 
 fn pending_entries(outbox: &Path) -> Result<Vec<PathBuf>> {
     let mut v: Vec<PathBuf> = fs::read_dir(outbox)
         .with_context(|| format!("read {}", outbox.display()))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.to_string_lossy().ends_with(ENTRY_EXT))
-        .collect();
+        .map(|e| e.map(|e| e.path()))
+        .filter(|p| {
+            p.as_ref()
+                .map_or(true, |p| p.to_string_lossy().ends_with(ENTRY_EXT))
+        })
+        .collect::<std::io::Result<_>>()
+        .with_context(|| format!("read {}", outbox.display()))?;
     v.sort();
     Ok(v)
 }
 
-/// Ships every pending outbox artifact and returns how many still wait for the destination.
-/// Files with no sidecar (temp files and artifacts from a crashed run) are removed.
-fn ship_outbox(outbox: &Path, dest: &Path, manifest: &mut Manifest, now_ms: i64) -> Result<usize> {
+/// Ships every pending outbox artifact. Returns how many still wait for the destination
+/// and the per-file errors; a failed file stays in the outbox. Files with no sidecar
+/// (temp files and artifacts from a crashed run) are removed.
+fn ship_outbox(
+    outbox: &Path,
+    dest: &Path,
+    manifest: &mut Manifest,
+    now_ms: i64,
+) -> Result<(usize, Vec<anyhow::Error>)> {
+    let mut errors = Vec::new();
     for e in fs::read_dir(outbox).with_context(|| format!("read {}", outbox.display()))? {
         let name = e?.file_name().to_string_lossy().into_owned();
         let owned = name
             .strip_suffix(ARTIFACT_EXT)
             .is_some_and(|id| outbox.join(format!("{id}{ENTRY_EXT}")).exists());
-        if !name.ends_with(ENTRY_EXT) && !owned {
-            fs::remove_file(outbox.join(&name))
-                .with_context(|| format!("remove stale outbox file {name}"))?;
+        if !name.ends_with(ENTRY_EXT)
+            && !owned
+            && let Err(e) = fs::remove_file(outbox.join(&name))
+        {
+            errors.push(anyhow!(e).context(format!("remove stale outbox file {name}")));
         }
     }
     let mut waiting = 0;
     for sidecar in pending_entries(outbox)? {
-        if !ship_pending(&sidecar, outbox, dest, manifest, now_ms)? {
-            waiting += 1;
+        match ship_pending(&sidecar, outbox, dest, manifest, now_ms) {
+            Ok(true) => {}
+            Ok(false) => waiting += 1,
+            Err(e) => {
+                waiting += 1;
+                errors.push(e);
+            }
         }
     }
-    Ok(waiting)
+    Ok((waiting, errors))
 }
 
 /// Ships one outbox artifact and records its manifest entry. Returns `false` when the
@@ -358,6 +473,11 @@ fn ship_pending(
         &fs::read(sidecar).with_context(|| format!("read {}", sidecar.display()))?,
     )
     .with_context(|| format!("parse {}", sidecar.display()))?;
+    ensure!(
+        valid_entry(&entry),
+        "invalid outbox entry {}",
+        sidecar.display()
+    );
     let expected = unhex(&entry.ciphertext_sha256)?;
     let artifact = outbox.join(&entry.file);
     let dest_file = if artifact.exists() {
@@ -414,7 +534,11 @@ fn uploaded(file: &Path, dest: &Path) -> bool {
 
 fn refresh_uploaded(dest: &Path, manifest: &mut Manifest) -> Result<()> {
     let mut changed = false;
-    for e in manifest.entries.iter_mut().filter(|e| !e.uploaded) {
+    for e in manifest
+        .entries
+        .iter_mut()
+        .filter(|e| !e.uploaded && valid_entry(e))
+    {
         if uploaded(&dest.join(&e.file), dest) {
             e.uploaded = true;
             changed = true;

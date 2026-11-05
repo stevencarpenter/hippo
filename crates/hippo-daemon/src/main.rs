@@ -1561,8 +1561,13 @@ async fn run() -> Result<()> {
                     eprintln!("hippo backup: not configured; nothing to do");
                 }
                 run::RunReport::Skipped { reason } => println!("backup skipped: {reason}"),
+                run::RunReport::Done {
+                    id,
+                    kind,
+                    shipped: true,
+                } => println!("backup {kind:?} {id} shipped"),
                 run::RunReport::Done { id, kind, .. } => {
-                    println!("backup {kind:?} {id} shipped");
+                    println!("backup {kind:?} {id} written to the outbox; not shipped yet");
                 }
             }
         }
