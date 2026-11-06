@@ -36,7 +36,7 @@ pub fn is_uploaded(file: &Path, drive_fs: bool) -> Result<bool> {
         return Ok(true);
     }
     let path = CString::new(file.as_os_str().as_bytes()).context("path contains NUL")?;
-    let name = CString::new(DRIVE_UPLOADED_XATTR).expect("constant has no NUL");
+    let name = xattr_name();
     // SAFETY: both pointers are valid NUL-terminated strings; a null value with size 0
     // asks only for the attribute length.
     #[cfg(target_os = "macos")]
@@ -67,6 +67,16 @@ pub fn is_uploaded(file: &Path, drive_fs: bool) -> Result<bool> {
     }
 }
 
+/// Linux accepts only namespaced xattr names, so the Drive name lives under `user.` there.
+fn xattr_name() -> CString {
+    let prefix = if cfg!(target_os = "macos") {
+        ""
+    } else {
+        "user."
+    };
+    CString::new(format!("{prefix}{DRIVE_UPLOADED_XATTR}")).expect("constant has no NUL")
+}
+
 pub(crate) fn sha256_of(path: &Path) -> io::Result<[u8; 32]> {
     let mut f = File::open(path)?;
     let mut h = Sha256::new();
@@ -88,19 +98,24 @@ pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     // SAFETY: both pointers are valid NUL-terminated strings.
     #[cfg(target_os = "macos")]
     let rc = unsafe { libc::renamex_np(from_c.as_ptr(), to_c.as_ptr(), libc::RENAME_EXCL) };
-    // SAFETY: as above; link(2) fails with EEXIST instead of replacing.
+    // SAFETY: as above.
     #[cfg(not(target_os = "macos"))]
-    let rc = unsafe { libc::link(from_c.as_ptr(), to_c.as_ptr()) };
+    let rc = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from_c.as_ptr(),
+            libc::AT_FDCWD,
+            to_c.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
     if rc != 0 {
         let e = io::Error::last_os_error();
         return Err(match e.raw_os_error() {
-            Some(libc::ENOTSUP | libc::EINVAL) => io::ErrorKind::Unsupported.into(),
+            Some(libc::ENOTSUP | libc::EINVAL | libc::ENOSYS) => io::ErrorKind::Unsupported.into(),
             _ => e,
         });
     }
-    // link(2) leaves the source name behind.
-    #[cfg(not(target_os = "macos"))]
-    let _ = fs::remove_file(from);
     Ok(())
 }
 
@@ -368,8 +383,7 @@ mod tests {
         fs::write(&f, b"x").unwrap();
         assert!(!is_uploaded(&f, true).unwrap());
         let path = CString::new(f.as_os_str().as_bytes()).unwrap();
-        let name = CString::new(DRIVE_UPLOADED_XATTR).unwrap();
-        let rc = unsafe { set_xattr_for_test(&path, &name) };
+        let rc = unsafe { set_xattr_for_test(&path, &xattr_name()) };
         assert_eq!(rc, 0, "{}", io::Error::last_os_error());
         assert!(is_uploaded(&f, true).unwrap());
         assert!(is_uploaded(&f, false).unwrap());
@@ -385,6 +399,7 @@ mod tests {
     unsafe fn set_xattr_for_test(path: &CString, name: &CString) -> i32 {
         let v = b"id";
         // SAFETY: valid NUL-terminated strings and a valid buffer of the stated length.
+        #[cfg(target_os = "macos")]
         unsafe {
             libc::setxattr(
                 path.as_ptr(),
@@ -394,6 +409,11 @@ mod tests {
                 0,
                 0,
             )
+        }
+        // SAFETY: as above; Linux setxattr has no position argument.
+        #[cfg(not(target_os = "macos"))]
+        unsafe {
+            libc::setxattr(path.as_ptr(), name.as_ptr(), v.as_ptr().cast(), v.len(), 0)
         }
     }
 }

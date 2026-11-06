@@ -612,10 +612,12 @@ fn restore_refuses_while_a_connection_holds_the_live_db() {
 
 #[test]
 fn restore_refuses_while_another_process_holds_the_live_db() {
-    if std::process::Command::new("lsof")
-        .arg("-v")
-        .output()
-        .is_err()
+    // Linux scans /proc and needs no lsof.
+    if cfg!(target_os = "macos")
+        && std::process::Command::new("lsof")
+            .arg("-v")
+            .output()
+            .is_err()
     {
         eprintln!("lsof not installed; skipping");
         return;

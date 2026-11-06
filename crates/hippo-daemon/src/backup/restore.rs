@@ -649,37 +649,78 @@ fn move_sidecars_aside(live: &Path, work: &Path, ts: &str) -> Result<()> {
 
 const STILL_OPEN: &str = "close hippo-mcp clients (Claude Code sessions) and retry";
 
-/// Refuses while another process has the live database files open (`lsof`).
+/// Process ids other than ours that hold any of `present` open: `lsof` on macOS, a scan of
+/// `/proc/*/fd` on Linux (which may not ship `lsof`). `None` means the check cannot run.
+#[cfg(target_os = "macos")]
+fn other_openers(present: &[&Path]) -> Result<Option<Vec<String>>> {
+    match std::process::Command::new("lsof")
+        .arg("-t")
+        .arg("--")
+        .args(present)
+        .output()
+    {
+        Ok(out) => {
+            let me = std::process::id();
+            Ok(Some(
+                std::str::from_utf8(&out.stdout)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| l.parse::<u32>().is_ok_and(|p| p != me))
+                    .map(str::to_owned)
+                    .collect(),
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).context("run lsof"),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn other_openers(present: &[&Path]) -> Result<Option<Vec<String>>> {
+    let targets: Vec<PathBuf> = present
+        .iter()
+        .filter_map(|p| p.canonicalize().ok())
+        .collect();
+    let me = std::process::id();
+    let mut pids = Vec::new();
+    for entry in fs::read_dir("/proc").context("read /proc")?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(pid) = name.parse::<u32>().ok().filter(|p| *p != me) else {
+            continue;
+        };
+        // Unreadable fd directories (other users' processes) cannot hold our files open.
+        let Ok(fds) = fs::read_dir(entry.path().join("fd")) else {
+            continue;
+        };
+        if fds
+            .flatten()
+            .filter_map(|fd| fs::read_link(fd.path()).ok())
+            .any(|t| targets.contains(&t))
+        {
+            pids.push(pid.to_string());
+        }
+    }
+    pids.sort();
+    Ok(Some(pids))
+}
+
+/// Refuses while another process has the live database files open.
 fn refuse_if_open(live: &Path) -> Result<()> {
     let (wal, shm) = (sidecar(live, "-wal"), sidecar(live, "-shm"));
     let present: Vec<&Path> = [live, wal.as_path(), shm.as_path()]
         .into_iter()
         .filter(|p| p.exists())
         .collect();
-    match std::process::Command::new("lsof")
-        .arg("-t")
-        .arg("--")
-        .args(&present)
-        .output()
-    {
-        Ok(out) => {
-            let me = std::process::id();
-            let pids: Vec<&str> = std::str::from_utf8(&out.stdout)
-                .unwrap_or_default()
-                .lines()
-                .map(str::trim)
-                .filter(|l| l.parse::<u32>().is_ok_and(|p| p != me))
-                .collect();
-            ensure!(
-                pids.is_empty(),
-                "the live database is still open by process {}; {STILL_OPEN}",
-                pids.join(", ")
-            );
+    match other_openers(&present)? {
+        Some(pids) => ensure!(
+            pids.is_empty(),
+            "the live database is still open by process {}; {STILL_OPEN}",
+            pids.join(", ")
+        ),
+        None => {
+            eprintln!("warning: lsof not found; relying on SQLite locking to detect other openers")
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("warning: lsof not found; relying on SQLite locking to detect other openers");
-        }
-        Err(e) => return Err(e).context("run lsof"),
     }
     Ok(())
 }
