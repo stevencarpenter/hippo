@@ -336,6 +336,12 @@ fn init_with(
         .to_str()
         .context("destination is not valid UTF-8")?;
 
+    // Before the key store: a failure here must not leave an orphaned 1Password item.
+    if let Some(dir) = config_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        hippo_core::storage::ensure_private_dir(dir)
+            .with_context(|| format!("failed to create config directory {}", dir.display()))?;
+    }
+
     let identity = age::x25519::Identity::generate();
     let recipient = identity.to_public();
     let key = identity.to_string();
@@ -574,6 +580,22 @@ mod tests {
             dest.canonicalize().unwrap().to_str().unwrap()
         );
         assert!(b["recipient"].as_str().unwrap().starts_with("age1"));
+    }
+
+    #[test]
+    fn init_creates_missing_config_dir_before_storing_the_key() {
+        let (d, _cfg, dest) = setup("");
+        let cfg = d.path().join("xdg/hippo/config.toml");
+        let store = FakeStore::new("ok");
+        let (r, _) = run(&store, &cfg, &dest, "");
+        r.unwrap();
+        assert!(std::fs::read_to_string(&cfg).unwrap().contains("[backup]"));
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(cfg.parent().unwrap())
+                .unwrap()
+                .permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     #[test]
