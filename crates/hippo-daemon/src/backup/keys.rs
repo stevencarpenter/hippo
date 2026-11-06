@@ -338,7 +338,10 @@ fn init_with(
 
     // Before the key store: a failure here must not leave an orphaned 1Password item.
     if let Some(dir) = config_path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        hippo_core::storage::ensure_private_dir(dir)
+        // Not `ensure_private_dir`: the config directory may be a symlink into a dotfiles
+        // repo, and an existing directory keeps its mode. A missing one is created 0700.
+        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+            .create(dir)
             .with_context(|| format!("failed to create config directory {}", dir.display()))?;
     }
 
@@ -596,6 +599,23 @@ mod tests {
                 .permissions(),
         );
         assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn init_accepts_a_symlinked_config_dir() {
+        let (d, _cfg, dest) = setup("");
+        let real = d.path().join("dotfiles/hippo");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("config.toml"), "[a]\nx = 1\n").unwrap();
+        let link = d.path().join("xdg-hippo");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let (r, _) = run(&FakeStore::new("ok"), &link.join("config.toml"), &dest, "");
+        r.unwrap();
+        let text = std::fs::read_to_string(real.join("config.toml")).unwrap();
+        assert!(
+            text.contains("x = 1") && text.contains("[backup]"),
+            "{text}"
+        );
     }
 
     #[test]
