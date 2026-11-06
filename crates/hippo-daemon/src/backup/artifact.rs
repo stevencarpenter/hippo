@@ -190,17 +190,10 @@ fn build<W: Write>(
     if state.is_file() {
         append_file(tar, "enrichment-state.json", &state)?;
     }
-    if let Ok(rd) = fs::read_dir(inputs.data_dir.join("fallback")) {
-        let mut files: Vec<_> = rd
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path().extension().is_some_and(|x| x == "jsonl")
-                    && e.file_type().is_ok_and(|t| t.is_file())
-            })
-            .map(|e| e.path())
-            .collect();
-        files.sort();
-        for p in files {
+    // The selector recovery uses: `.recovering` files hold events not yet in the DB.
+    let files = hippo_core::storage::list_fallback_files(&inputs.data_dir.join("fallback"))?;
+    for p in files {
+        if fs::symlink_metadata(&p).is_ok_and(|m| m.is_file()) {
             let name = format!("fallback/{}", p.file_name().unwrap().to_string_lossy());
             append_file(tar, &name, &p)?;
         }
@@ -336,6 +329,7 @@ mod tests {
         fs::write(data.join("fallback/a.jsonl"), "{\"a\":1}\n").unwrap();
         fs::write(data.join("fallback/a.jsonl.done"), "x").unwrap();
         fs::write(data.join("fallback/b.jsonl.partial"), "x").unwrap();
+        fs::write(data.join("fallback/c.jsonl.recovering"), "{\"c\":1}\n").unwrap();
         let db = root.join("snap.db");
         fs::write(&db, b"SQLite format 3\0SECRET_MARKER_DB").unwrap();
         Fx {
@@ -395,6 +389,10 @@ mod tests {
         );
         assert!(!dest.join("fallback/a.jsonl.done").exists());
         assert!(!dest.join("fallback/b.jsonl.partial").exists());
+        assert_eq!(
+            fs::read(dest.join("fallback/c.jsonl.recovering")).unwrap(),
+            b"{\"c\":1}\n"
+        );
     }
 
     #[test]
