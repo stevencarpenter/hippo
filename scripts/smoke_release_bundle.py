@@ -1,6 +1,6 @@
 """Install and exercise local macOS release artifacts in a private fixture.
 
-Requires uv, Python 3.14, and zsh. Dependency installation uses the packaged
+Requires uv, Python 3.15, and zsh. Dependency installation uses the packaged
 lockfile and may download wheels. Runtime checks use no model service and never
 register LaunchAgents. Evidence is retained after both success and failure.
 """
@@ -153,13 +153,13 @@ def environment(output: Path) -> dict[str, str]:
     require(uv is not None, "uv is required")
     interpreter = Path(
         run(
-            [str(uv), "python", "find", "--no-python-downloads", "3.14"],
+            [str(uv), "python", "find", "--no-python-downloads", "3.15"],
             env,
             output / "python-find.log",
         ).strip()
     ).resolve()
     require(
-        interpreter.is_file(), "uv did not locate an existing Python 3.14 interpreter"
+        interpreter.is_file(), "uv did not locate an existing Python 3.15 interpreter"
     )
     env["PATH"] = os.pathsep.join(
         (

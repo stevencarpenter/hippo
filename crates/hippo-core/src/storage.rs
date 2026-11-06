@@ -468,6 +468,16 @@ pub fn check_private_dir(path: &Path) -> Result<std::fs::File> {
     Ok(dir)
 }
 
+/// Hook run once by `open_db` before the first migration statement.
+pub type PreMigrationHook = fn(db: &Path, from: i64, to: i64) -> Result<()>;
+
+static PRE_MIGRATION_HOOK: std::sync::OnceLock<PreMigrationHook> = std::sync::OnceLock::new();
+
+/// Registers the pre-migration hook. The first registration wins; later ones are ignored.
+pub fn set_pre_migration_hook(hook: PreMigrationHook) {
+    let _ = PRE_MIGRATION_HOOK.set(hook);
+}
+
 pub fn open_db(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         // Existing parents can be shared directories for explicit snapshots.
@@ -517,7 +527,17 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     // `busy_timeout` at the read-to-write upgrade and fails at once with
     // SQLITE_BUSY (or SQLITE_BUSY_SNAPSHOT) under any concurrent writer.
     conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
-    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let mut version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+    if (1..EXPECTED_VERSION).contains(&version)
+        && let Some(hook) = PRE_MIGRATION_HOOK.get()
+    {
+        hook(path, version, EXPECTED_VERSION)
+            .context("pre-migration checkpoint failed; migration not run")?;
+        // The hook can wait minutes for the backup lock. Another process may have
+        // migrated the database meanwhile, so migrate from the current version.
+        version = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    }
 
     // Migrate from v1 → v2: add envelope_id column for dedup
     if version == 1 {

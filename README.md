@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![macOS](https://img.shields.io/badge/platform-macOS_arm64-lightgrey.svg)
 [![Rust](https://img.shields.io/badge/rust-edition_2024-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/)
-[![Python](https://img.shields.io/badge/python-3.14%2B-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.15%2B-blue.svg)](https://www.python.org/)
 
 Local-first knowledge capture daemon for macOS. Hippo watches your shell activity, Claude Code sessions, and Firefox browsing, redacts known secret formats, enriches events with a local LLM, and builds a searchable second brain with local inference by default. LLM inference runs against any OpenAI-compatible local server on your machine — defaults target [oMLX](https://omlx.ai) (continuous batching + tiered KV cache for Apple Silicon), and [LM Studio](https://lmstudio.ai/) works as a drop-in alternative. Telemetry is off by default and points at localhost when on. See [Privacy and Security](#privacy-and-security) for the full data-flow story.
 
@@ -95,9 +95,9 @@ repo; `omlx:stop` also unloads the keeper so the server stays stopped.
 | Dependency | Required | Notes |
 |------------|----------|-------|
 | macOS Apple Silicon (arm64) | Yes for binaries | Intel needs to build from source. Uses launchd for service management. |
-| [Rust](https://rustup.rs/) | Yes | Edition 2024 via the shipped `rust-toolchain.toml` (`1.98`). `mise.toml` enables Rust idiomatic version-file management. |
-| [Python](https://www.python.org/) | Yes | 3.14+ |
-| [uv](https://docs.astral.sh/uv/) | Yes | 0.12.17+; verifies the pinned Python build dependencies during source installation. |
+| [Rust](https://rustup.rs/) | Yes | Edition 2024 via the shipped `rust-toolchain.toml` (`1.99`). `mise.toml` enables Rust idiomatic version-file management. |
+| [Python](https://www.python.org/) | Yes | 3.15+ |
+| [uv](https://docs.astral.sh/uv/) | Yes | 0.13.7+; verifies the pinned Python build dependencies during source installation. |
 | [oMLX](https://omlx.ai) or [LM Studio](https://lmstudio.ai/) | Yes | Local OpenAI-compatible LLM server. Default config targets oMLX on `:8000` and the `Qwen3.6-35B-A3B-UD-MLX-4bit` chat model + `nomicai-modernbert-embed-base-8bit` embeddings (768d MLX). Plan on 32 GB+ unified memory for the default chat model; smaller models work with smaller machines — adjust the `[models]` section. LM Studio users: change `[inference].base_url` to `http://localhost:1234/v1` and use LM Studio's model IDs (e.g. `qwen3.6-35b-a3b-ud-mlx`, `text-embedding-nomic-embed-text-v2-moe`). |
 | [mise](https://mise.jdx.dev/) | Recommended | Task runner; all workflows are defined in `mise.toml` |
 | [glow](https://github.com/charmbracelet/glow) | Recommended | Renders `hippo ask` markdown output in the terminal |

@@ -260,6 +260,11 @@ def main() -> None:
         log.error("Database not found: %s", db_path)
         sys.exit(1)
 
+    if not args.dry_run:
+        from hippo_brain.backup_checkpoint import checkpoint_before_mutation
+
+        checkpoint_before_mutation("dedup-entities", db_path)
+
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute("PRAGMA secure_delete=ON")

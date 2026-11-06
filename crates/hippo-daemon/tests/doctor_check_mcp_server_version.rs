@@ -13,7 +13,7 @@ mod doctor {
         };
         use tempfile::tempdir;
 
-        const SP: &str = ".venv/lib/python3.14/site-packages";
+        const SP: &str = ".venv/lib/python3.15/site-packages";
 
         /// Fake installed brain with an executable `hippo-mcp` entry point.
         fn fake_brain(dir: &Path) {

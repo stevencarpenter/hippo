@@ -64,11 +64,11 @@ tests, including both Rust feature configurations. Each called workflow has
 a distinct concurrency group.
 
 External workflow actions are pinned to verified commits. Python build and
-test jobs use uv 0.12.17. The brain build pins Hatchling and its transitive
+test jobs use uv 0.13.7. The brain build pins Hatchling and its transitive
 build dependencies by version and hash in `brain/build-constraints.txt` and
 `brain/pyproject.toml`. Release builds require hashes, and source installation
 with `uv sync --locked --no-editable` enforces the same build constraints.
-The package requires uv 0.12.17 or newer and rejects older versions before
+The package requires uv 0.13.7 or newer and rejects older versions before
 installation. Keep both build-constraint declarations aligned when updating
 the build environment.
 
@@ -155,7 +155,7 @@ by version validation and is not a dry-run mechanism.
    npx -y gh-axi run download RUN_ID --name release-bundle-vX.Y.Z --dir candidate-release
    ```
 
-3. Exercise the downloaded bundle on macOS with Python 3.14, uv 0.12.17+, and zsh:
+3. Exercise the downloaded bundle on macOS with Python 3.15, uv 0.13.7+, and zsh:
 
    ```bash
    mise run release:smoke candidate-release/release-bundle.tar.gz

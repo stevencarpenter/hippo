@@ -466,6 +466,82 @@ pub fn service_bootstrap(domain: &str, plist: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Stops every loaded `com.hippo.*` LaunchAgent around `hippo backup restore`, then
+/// restarts exactly the ones it stopped.
+pub struct LaunchdServices {
+    domain: String,
+    stopped: Vec<PathBuf>,
+}
+
+/// Sorted `com.hippo.*.plist` files in `dir`. A missing `dir` (fresh machine) holds no
+/// services; any other read error fails.
+fn hippo_plists(dir: &Path) -> Result<Vec<PathBuf>> {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("read {}", dir.display())),
+    };
+    let mut plists: Vec<PathBuf> = rd
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "plist")
+                && p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("com.hippo."))
+        })
+        .collect();
+    plists.sort();
+    Ok(plists)
+}
+
+impl LaunchdServices {
+    pub fn new() -> Self {
+        // SAFETY: getuid takes no arguments and has no preconditions.
+        let uid = unsafe { libc::getuid() };
+        Self {
+            domain: format!("gui/{uid}"),
+            stopped: Vec::new(),
+        }
+    }
+}
+
+impl hippo_daemon::backup::restore::ServiceControl for LaunchdServices {
+    fn stop(&mut self) -> Result<()> {
+        let dir = dirs::home_dir()
+            .context("cannot determine home directory")?
+            .join("Library/LaunchAgents");
+        let plists = hippo_plists(&dir)?;
+        for plist in plists {
+            let label = plist
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            if !service_is_loaded(&label) {
+                continue;
+            }
+            service_bootout(&self.domain, &plist);
+            self.stopped.push(plist);
+            anyhow::ensure!(
+                !service_is_loaded(&label),
+                "{label} is still loaded after launchctl bootout"
+            );
+            println!("Stopped {label}.");
+        }
+        Ok(())
+    }
+
+    fn start(&mut self) -> Result<()> {
+        let errors: Vec<String> = self
+            .stopped
+            .drain(..)
+            .filter_map(|p| service_bootstrap(&self.domain, &p).err())
+            .map(|e| format!("{e:#}"))
+            .collect();
+        anyhow::ensure!(errors.is_empty(), "{}", errors.join("; "));
+        Ok(())
+    }
+}
+
 /// Sends SIGTERM to the brain process and waits up to `timeout` for graceful exit.
 ///
 /// Lets uvicorn finish in-flight HTTP requests before the process stops. Prints progress
@@ -737,6 +813,39 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+
+    #[test]
+    fn hippo_plists_missing_dir_is_empty() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(hippo_plists(&t.path().join("absent")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn hippo_plists_filters_and_sorts() {
+        let t = tempfile::tempdir().unwrap();
+        for n in [
+            "com.hippo.b.plist",
+            "com.hippo.a.plist",
+            "other.plist",
+            "com.hippo.c.txt",
+        ] {
+            std::fs::write(t.path().join(n), "").unwrap();
+        }
+        let got: Vec<_> = hippo_plists(t.path())
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(got, ["com.hippo.a.plist", "com.hippo.b.plist"]);
+    }
+
+    #[test]
+    fn hippo_plists_other_read_error_fails() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("file");
+        std::fs::write(&f, "").unwrap();
+        assert!(hippo_plists(&f).is_err());
+    }
 
     #[test]
     fn drain_poll_returns_true_immediately_when_already_done() {

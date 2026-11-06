@@ -407,6 +407,11 @@ async def main_async(args: argparse.Namespace) -> int:
         )
         return 1
 
+    if not args.dry_run:
+        from hippo_brain.backup_checkpoint import checkpoint_before_mutation
+
+        checkpoint_before_mutation("re-enrich-knowledge-nodes", db_path)
+
     base_url = settings.get("inference_base_url", "http://127.0.0.1:42069/v1")
     timeout = float(settings.get("inference_timeout_secs", 300.0))
 

@@ -10,8 +10,8 @@ use hippo_daemon::{
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
-    AgentsAction, AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, EvalAction,
-    IngestSource, RedactAction, SendEventSource, WatchdogAction,
+    AgentsAction, AlarmsAction, BackupAction, BrainAction, Cli, Commands, ConfigAction,
+    DaemonAction, EvalAction, IngestSource, RedactAction, SendEventSource, WatchdogAction,
 };
 use hippo_core::config::HippoConfig;
 use hippo_daemon::probe;
@@ -94,7 +94,37 @@ fn run_with_runtime(work: impl std::future::Future<Output = Result<()>>) -> Resu
     result
 }
 
+/// Checkpoints the configured database before `open_db` migrates it. One label per
+/// version step, so processes that start together after an upgrade write one artifact.
+fn pre_migration_checkpoint(db: &std::path::Path, from: i64, to: i64) -> Result<()> {
+    let config = HippoConfig::load_default()?;
+    if !config.backup.is_configured() {
+        tracing::warn!(
+            "[backup] is not configured; migrating v{from} to v{to} without a checkpoint"
+        );
+        return Ok(());
+    }
+    // A snapshot of the configured DB says nothing about some other database file.
+    // A configured path that does not exist cannot be the file being migrated. Any other
+    // canonicalize failure propagates, so the migration stops rather than going unprotected.
+    let configured = match config.db_path().canonicalize() {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    if db.canonicalize()? != configured {
+        return Ok(());
+    }
+    let report = hippo_daemon::backup::run::checkpoint_once(
+        &config,
+        &format!("pre-migration-v{from}-v{to}"),
+    )?;
+    tracing::info!("pre-migration checkpoint: {report:?}");
+    Ok(())
+}
+
 async fn run() -> Result<()> {
+    hippo_core::storage::set_pre_migration_hook(pre_migration_checkpoint);
     // Load config early — needed for telemetry init before CLI parsing
     // Missing configuration already uses defaults in load_default. Invalid or
     // unreadable configuration must not silently re-enable disabled capture.
@@ -314,6 +344,7 @@ async fn run() -> Result<()> {
                 let brain_was_loaded = install::service_is_loaded("com.hippo.brain");
                 let watchdog_was_loaded = install::service_is_loaded("com.hippo.watchdog");
                 let probe_was_loaded = install::service_is_loaded("com.hippo.probe");
+                let backup_was_loaded = install::service_is_loaded("com.hippo.backup");
                 let metrics_exporter_was_loaded =
                     install::service_is_loaded("com.hippo.metrics-exporter");
                 let watcher_was_loaded =
@@ -333,6 +364,7 @@ async fn run() -> Result<()> {
                     || brain_was_loaded
                     || watchdog_was_loaded
                     || probe_was_loaded
+                    || backup_was_loaded
                     || metrics_exporter_was_loaded
                     || watcher_was_loaded
                     || gh_poll_was_loaded
@@ -375,6 +407,13 @@ async fn run() -> Result<()> {
                 if probe_was_loaded {
                     install::service_bootout(&domain, &launch_agents.join("com.hippo.probe.plist"));
                     println!("  Stopped probe");
+                }
+                if backup_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.backup.plist"),
+                    );
+                    println!("  Stopped backup");
                 }
                 if metrics_exporter_was_loaded {
                     install::service_bootout(
@@ -458,6 +497,7 @@ async fn run() -> Result<()> {
                 let watchdog_template = include_str!("../../../launchd/com.hippo.watchdog.plist");
                 let gh_poll_template = include_str!("../../../launchd/com.hippo.gh-poll.plist");
                 let probe_template = include_str!("../../../launchd/com.hippo.probe.plist");
+                let backup_template = include_str!("../../../launchd/com.hippo.backup.plist");
                 let metrics_exporter_template =
                     include_str!("../../../launchd/com.hippo.metrics-exporter.plist");
                 let watcher_template =
@@ -484,6 +524,7 @@ async fn run() -> Result<()> {
                 install::install_brain_wrapper(&vars.data_dir, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
                 install::install_plist("com.hippo.probe", probe_template, &vars, force)?;
+                install::install_plist("com.hippo.backup", backup_template, &vars, force)?;
                 install::install_plist("com.hippo.watchdog", watchdog_template, &vars, force)?;
                 // Knowledge-health exporter plist — only written when telemetry
                 // is enabled (mirrors the codex/cursor gates). The exporter is
@@ -745,6 +786,7 @@ async fn run() -> Result<()> {
                     let support_agents = [
                         ("watchdog", "com.hippo.watchdog.plist", true),
                         ("probe", "com.hippo.probe.plist", true),
+                        ("backup", "com.hippo.backup.plist", true),
                         (
                             "metrics-exporter",
                             "com.hippo.metrics-exporter.plist",
@@ -829,6 +871,9 @@ async fn run() -> Result<()> {
                         );
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.probe.plist"
+                        );
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.backup.plist"
                         );
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.claude-session-watcher.plist"
@@ -961,6 +1006,15 @@ async fn run() -> Result<()> {
             commands::handle_events(&config, session, since, project).await?;
         }
         Commands::GcEventPayloads { confirm: _ } => {
+            // The sweep is destructive, so a failed checkpoint stops it.
+            if config.backup.is_configured() {
+                hippo_daemon::backup::run::checkpoint(&config, "pre-gc-event-payloads")
+                    .context("pre-gc checkpoint failed; payload GC not run")?;
+            } else {
+                tracing::warn!(
+                    "[backup] is not configured; running payload GC without a checkpoint"
+                );
+            }
             let conn = hippo_core::storage::open_db(&config.db_path())?;
             let report = hippo_core::storage::gc_event_payloads(
                 &conn,
@@ -1532,6 +1586,86 @@ async fn run() -> Result<()> {
         Commands::Enrichment { action } => {
             let now_ms = chrono::Utc::now().timestamp_millis();
             println!("{}", commands::handle_enrichment(&config, &action, now_ms)?);
+        }
+        Commands::Backup { action } => {
+            use hippo_daemon::backup::{keys, restore, run, status};
+            let report = match action {
+                BackupAction::Verify { id } => {
+                    restore::verify(&config, id.as_deref())?;
+                    return Ok(());
+                }
+                BackupAction::Restore {
+                    id,
+                    before,
+                    yes,
+                    extract,
+                    identity,
+                    destination,
+                } => {
+                    let target = match (id, before) {
+                        (Some(id), _) => restore::RestoreTarget::Id(id),
+                        (None, Some(b)) => {
+                            restore::RestoreTarget::Before(restore::parse_before(&b)?)
+                        }
+                        (None, None) => restore::RestoreTarget::Latest,
+                    };
+                    let opts = restore::RestoreOpts {
+                        yes,
+                        extract,
+                        identity,
+                        destination,
+                    };
+                    restore::restore_with(
+                        &config,
+                        target,
+                        &opts,
+                        &mut install::LaunchdServices::new(),
+                        &mut std::io::stdin().lock(),
+                    )?;
+                    return Ok(());
+                }
+                BackupAction::Init {
+                    destination,
+                    op_vault,
+                } => {
+                    let config_path = config.storage.config_dir.join("config.toml");
+                    keys::init(&config_path, destination.as_deref(), op_vault.as_deref())?;
+                    return Ok(());
+                }
+                BackupAction::Status => {
+                    print!("{}", status::report(&config));
+                    return Ok(());
+                }
+                BackupAction::Run => run::run_backup(
+                    &config,
+                    run::RunMode::Scheduled,
+                    chrono::Utc::now().timestamp_millis(),
+                )?,
+                BackupAction::Now { label } => {
+                    let report = run::checkpoint(&config, label.as_deref().unwrap_or("manual"))?;
+                    if report == run::RunReport::NotConfigured {
+                        eprintln!(
+                            "hippo backup: not configured (set [backup] destination and recipient)"
+                        );
+                        std::process::exit(3);
+                    }
+                    report
+                }
+            };
+            match report {
+                run::RunReport::NotConfigured => {
+                    eprintln!("hippo backup: not configured; nothing to do");
+                }
+                run::RunReport::Skipped { reason } => println!("backup skipped: {reason}"),
+                run::RunReport::Done {
+                    id,
+                    kind,
+                    shipped: true,
+                } => println!("backup {kind:?} {id} shipped"),
+                run::RunReport::Done { id, kind, .. } => {
+                    println!("backup {kind:?} {id} written to the outbox; not shipped yet");
+                }
+            }
         }
         Commands::ClaudeSessionWatch => {
             watch_claude_sessions::run(&config).await?;

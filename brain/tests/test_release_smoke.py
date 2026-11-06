@@ -165,12 +165,12 @@ def test_isolated_installer_uses_provisioned_python(tmp_path, monkeypatch):
     if uv is None:
         pytest.skip("uv is required for the release installer")
     provisioned = subprocess.run(
-        [uv, "python", "find", "--managed-python", "--no-python-downloads", "3.14"],
+        [uv, "python", "find", "--managed-python", "--no-python-downloads", "3.15"],
         capture_output=True,
         text=True,
     )
     if provisioned.returncode:
-        pytest.skip("requires a provisioned uv Python 3.14, as in release CI")
+        pytest.skip("requires a provisioned uv Python 3.15, as in release CI")
     install_dir = subprocess.check_output([uv, "python", "dir"], text=True).strip()
     monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", install_dir)
     tools = tmp_path / "tools"
@@ -180,7 +180,7 @@ def test_isolated_installer_uses_provisioned_python(tmp_path, monkeypatch):
     env = smoke.environment(tmp_path)
     venv = tmp_path / "installed-venv"
     subprocess.run(
-        [uv, "venv", "--relocatable", "--python", "3.14", str(venv)],
+        [uv, "venv", "--relocatable", "--python", "3.15", str(venv)],
         env=env,
         check=True,
     )

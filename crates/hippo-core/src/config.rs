@@ -36,6 +36,28 @@ pub struct HippoConfig {
     pub reaper: ReaperConfig,
     #[serde(default)]
     pub projects: ProjectsConfig,
+    #[serde(default)]
+    pub backup: BackupConfig,
+}
+
+/// `[backup]` section. Backups are off until `destination` and `recipient` are set.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BackupConfig {
+    /// Directory that receives encrypted artifacts. Only `hippo backup init` creates it, for an auto-detected Drive destination.
+    #[serde(default)]
+    pub destination: String,
+    /// Public `age` X25519 recipient. Encryption needs only this, never the private key.
+    #[serde(default)]
+    pub recipient: String,
+    /// Reference to the private identity (for example a 1Password item) used by restore.
+    #[serde(default)]
+    pub identity_ref: String,
+}
+
+impl BackupConfig {
+    pub fn is_configured(&self) -> bool {
+        !self.destination.is_empty() && !self.recipient.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -924,6 +946,11 @@ impl HippoConfig {
     pub fn fallback_dir(&self) -> PathBuf {
         self.storage.data_dir.join("fallback")
     }
+
+    /// Local backup working directory. Distinct from the legacy manual `backups/` copy.
+    pub fn backup_work_dir(&self) -> PathBuf {
+        self.storage.data_dir.join("backup")
+    }
 }
 
 pub fn socket_path(data_dir: &Path) -> PathBuf {
@@ -1060,6 +1087,12 @@ pub const ENV_ALLOWLIST: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_backup_defaults_unconfigured() {
+        let config: HippoConfig = toml::from_str("").unwrap();
+        assert!(!config.backup.is_configured());
+    }
 
     #[test]
     fn default_brain_dir_is_canonical_install_location() {

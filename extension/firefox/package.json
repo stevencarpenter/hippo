@@ -10,7 +10,7 @@
     "package": "node build.mjs && mkdir -p web-ext-artifacts && python3 -m zipfile -c web-ext-artifacts/hippo-browser-capture.zip manifest.json popup.html dist icons lib"
   },
   "devDependencies": {
-    "esbuild": "^0.28",
+    "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
   }
 }
