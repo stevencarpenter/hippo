@@ -26,7 +26,8 @@ use std::time::Duration;
 /// The artifact `restore` uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RestoreTarget {
-    /// The newest verified artifact.
+    /// The newest verified artifact, except `pre-restore` checkpoints: a second restore
+    /// must not pick the state the first one replaced.
     Latest,
     Id(String),
     /// The newest verified artifact created before this time (epoch ms).
@@ -217,10 +218,17 @@ fn select<'a>(manifest: &'a Manifest, target: &RestoreTarget) -> Result<&'a Mani
         RestoreTarget::Latest => i64::MAX,
         RestoreTarget::Before(t) => *t,
     };
+    let pre_restore = |e: &ManifestEntry| {
+        *target == RestoreTarget::Latest
+            && e.meta
+                .label
+                .as_deref()
+                .is_some_and(|l| l.starts_with("pre-restore"))
+    };
     manifest
         .entries
         .iter()
-        .filter(|e| e.verified && valid_entry(e) && e.meta.created_ms < before)
+        .filter(|e| e.verified && valid_entry(e) && e.meta.created_ms < before && !pre_restore(e))
         .max_by_key(|e| e.meta.created_ms)
         .context("no verified backup matches")
 }
@@ -799,6 +807,11 @@ mod tests {
         bad.meta.created_ms = 40;
         bad.file = "../escape.tar.zst.age".into();
         m.entries.push(bad);
+        let mut pre = crate::backup::manifest::tests::entry("hippo-checkpoint-p-pre-restore");
+        pre.meta.created_ms = 50;
+        pre.meta.kind = ArtifactKind::Checkpoint;
+        pre.meta.label = Some("pre-restore".into());
+        m.entries.push(pre);
 
         let id = |t| select(&m, &t).unwrap().meta.id.clone();
         assert_eq!(id(RestoreTarget::Latest), "hippo-delta-b");
@@ -809,6 +822,11 @@ mod tests {
         );
         assert!(select(&m, &RestoreTarget::Before(10)).is_err());
         assert!(select(&m, &RestoreTarget::Id("hippo-full-z".into())).is_err());
+        // Latest skips the state a restore replaced; --id still selects it.
+        assert_eq!(
+            id(RestoreTarget::Id("hippo-checkpoint-p-pre-restore".into())),
+            "hippo-checkpoint-p-pre-restore"
+        );
     }
 
     #[test]
