@@ -30,7 +30,7 @@ local LLMs.
     hippo enrichment pause|resume|status   # Operator pause of LLM enrichment (state in <data_dir>/enrichment-state.json)
     hippo eval export-bench-cases --out DIR   # Private blind-review bench cases from accepted findings and escapes (DIR outside any git checkout)
     hippo agents report [--agent A] [--since 30d] [--project P] [--model M]   # Per-agent scorecards via brain GET /agents/scorecard
-    hippo backup init --destination DIR [--op-vault V]   # Generate age key, store it in 1Password, write [backup]
+    hippo backup init [--destination DIR] [--op-vault V] # Generate age key, store it in 1Password, write [backup] (default destination: Google Drive for desktop)
     hippo backup run                                      # Scheduled run (launchd, hourly); skips if a backup succeeded within 20 h
     hippo backup now [--label TEXT]                       # Checkpoint now; exits 3 when [backup] is not configured
     hippo backup status                                   # Last run, pending uploads, newest artifact per kind
