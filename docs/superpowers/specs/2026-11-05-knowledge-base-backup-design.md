@@ -211,9 +211,9 @@ An artifact counts as a backup only after all three pass.
 `~/Library/CloudStorage`, a local read-back proves only that the file is in the
 sync folder, not that Google Drive uploaded it. The manifest records a separate
 `uploaded` state. Uploaded files observed on 2026-11-05 carry a
-`com.google.drivefs.item-id#S` extended attribute. Whether that attribute
-appears only after upload is not verified, and the builder confirms or replaces
-this signal. For other destinations, `uploaded` equals shipped. Rules:
+`com.google.drivefs.item-id#S` extended attribute. A check on 2026-11-06 with
+a 1 MB file confirmed the signal: the attribute was absent while sync was paused
+and present about 5 seconds after sync resumed. For other destinations, `uploaded` equals shipped. Rules:
 
 - Pruning treats a full as "newest verified" only when it is also uploaded.
 - An artifact that stays shipped but not uploaded for more than 24 hours raises

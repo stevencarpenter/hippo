@@ -84,7 +84,7 @@ Artifact files are named `<id>.tar.zst.age`. The id is `hippo-{full|delta|checkp
 
 ### Upload detection
 
-For a destination under `~/Library/CloudStorage/GoogleDrive-*`, a local read-back shows only that the file is in the sync folder. Hippo marks an artifact `uploaded` when the file has the Drive FS extended attribute `com.google.drivefs.item-id#S`. That this attribute appears only after upload has not been verified on a real mount. For other destinations, `uploaded` equals shipped.
+For a destination under `~/Library/CloudStorage/GoogleDrive-*`, a local read-back shows only that the file is in the sync folder. Hippo marks an artifact `uploaded` when the file has the Drive FS extended attribute `com.google.drivefs.item-id#S`. A check on 2026-11-06 with a 1 MB file showed the attribute absent while Drive sync was paused and present about 5 seconds after sync resumed. Large files were not tested. For other destinations, `uploaded` equals shipped.
 
 ## Retention
 

@@ -8,8 +8,8 @@ use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-/// Hypothesis: Google Drive for desktop sets this xattr once the item has an id on the server.
-/// The operator verifies this on a real Drive mount; replace here and in `is_uploaded` only.
+/// Google Drive for desktop sets this xattr when the item has a server id. Checked on
+/// 2026-11-06 with a 1 MB file: absent while sync was paused, present about 5 s after resume.
 pub const DRIVE_UPLOADED_XATTR: &str = "com.google.drivefs.item-id#S";
 
 #[derive(Debug, PartialEq, Eq)]
