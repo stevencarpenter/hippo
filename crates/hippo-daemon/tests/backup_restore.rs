@@ -12,6 +12,7 @@ use hippo_daemon::backup::run::{RunMode, RunReport, run_backup};
 use hippo_daemon::backup::status;
 use rusqlite::Connection;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 const H: i64 = 3_600_000;
@@ -114,17 +115,41 @@ fn opts(fx: &Fx) -> RestoreOpts {
 #[derive(Default)]
 struct StubServices {
     log: Vec<&'static str>,
+    /// Runs inside `stop`, to inject a fault that only the swap sees.
+    on_stop: Option<Box<dyn FnMut()>>,
 }
 
 impl ServiceControl for StubServices {
     fn stop(&mut self) -> anyhow::Result<()> {
         self.log.push("stop");
+        if let Some(f) = self.on_stop.as_mut() {
+            f();
+        }
         Ok(())
     }
     fn start(&mut self) -> anyhow::Result<()> {
         self.log.push("start");
         Ok(())
     }
+}
+
+/// Names in `dir` that start with `prefix`.
+fn entries_with(dir: &Path, prefix: &str) -> Vec<String> {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(prefix))
+        .collect()
+}
+
+fn mode(p: &Path) -> u32 {
+    fs::metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+fn wal(live: &Path) -> PathBuf {
+    let mut p = live.as_os_str().to_owned();
+    p.push("-wal");
+    PathBuf::from(p)
 }
 
 fn file_sha(p: &Path) -> Vec<u8> {
@@ -149,7 +174,7 @@ fn verify_full_and_delta() {
     verify(&fx.config, Some(&delta)).unwrap();
     verify(&fx.config, None).unwrap();
     assert!(status::load(&fx.work).last_verify_ms.is_some());
-    assert!(!fx.work.join("verify-tmp").exists());
+    assert!(entries_with(&fx.work, "verify-tmp").is_empty());
 
     // A corrupt delta fails and does not record a verify.
     status::save(&fx.work, &status::BackupStatus::default()).unwrap();
@@ -158,9 +183,13 @@ fn verify_full_and_delta() {
     let mid = bytes.len() / 2;
     bytes[mid] ^= 0xff;
     fs::write(&file, bytes).unwrap();
-    assert!(verify(&fx.config, Some(&delta)).is_err());
+    let err = verify(&fx.config, Some(&delta)).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("ciphertext SHA-256 does not match the manifest"),
+        "{err:#}"
+    );
     assert_eq!(status::load(&fx.work).last_verify_ms, None);
-    assert!(!fx.work.join("verify-tmp").exists());
+    assert!(entries_with(&fx.work, "verify-tmp").is_empty());
 
     assert!(verify(&fx.config, Some("hippo-full-nope")).is_err());
 }
@@ -189,7 +218,7 @@ fn restore_replaces_db_and_checkpoints_previous() {
     for gone in ["hippo.db-wal", "hippo.db-shm", "hippo.db.restoring"] {
         assert!(!data.join(gone).exists(), "{gone} left behind");
     }
-    assert!(!fx.work.join("restore-tmp").exists());
+    assert!(entries_with(&fx.work, "restore-tmp").is_empty());
 
     // The pre-restore checkpoint holds the replaced database and can itself be restored.
     let m = Manifest::load(&fx.dest).unwrap();
@@ -346,6 +375,8 @@ fn loss_report_counts_rows_after_cutoff() {
     c.execute_batch(
         "CREATE TABLE events(id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL, probe_tag TEXT);
          CREATE TABLE browser_events(id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL, probe_tag TEXT);
+         CREATE TABLE knowledge_nodes(id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL);
+         INSERT INTO knowledge_nodes(created_at) VALUES (5), (100), (101);
          CREATE TABLE agentic_sessions(id INTEGER PRIMARY KEY, harness TEXT NOT NULL,
              created_at INTEGER NOT NULL, end_time INTEGER NOT NULL, probe_tag TEXT);
          INSERT INTO events(created_at, probe_tag) VALUES (99, NULL), (100, NULL), (150, NULL), (200, 'probe');
@@ -360,20 +391,25 @@ fn loss_report_counts_rows_after_cutoff() {
     assert_eq!(
         loss_report(&c, 100).unwrap(),
         [
-            ("shell".to_owned(), 2),
-            ("browser".to_owned(), 1),
-            ("agentic:claude-code".to_owned(), 1),
-            ("agentic:codex".to_owned(), 2),
+            ("shell".to_owned(), Some(2)),
+            ("browser".to_owned(), Some(1)),
+            ("knowledge".to_owned(), Some(2)),
+            ("agentic:claude-code".to_owned(), Some(1)),
+            ("agentic:codex".to_owned(), Some(2)),
         ]
     );
 
     let only_events = Connection::open_in_memory().unwrap();
     only_events
-        .execute_batch("CREATE TABLE events(id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL);")
+        .execute_batch(
+            "CREATE TABLE events(id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL);
+             CREATE TABLE browser_events(id INTEGER PRIMARY KEY);",
+        )
         .unwrap();
+    // A missing table is left out; a table without created_at is reported as skipped.
     assert_eq!(
         loss_report(&only_events, 0).unwrap(),
-        [("shell".to_owned(), 0)]
+        [("shell".to_owned(), Some(0)), ("browser".to_owned(), None)]
     );
 }
 
@@ -408,6 +444,8 @@ fn extract_does_not_touch_live_db() {
     assert_eq!(count(&out.join("hippo.db")), 500);
     assert!(out.join("config/config.toml").is_file());
     assert!(out.join("meta.json").is_file());
+    assert_eq!(mode(&out), 0o700, "--extract creates DIR 0700");
+    assert_eq!(mode(&out.join("hippo.db")), 0o600, "delta output is 0600");
     let mut names: Vec<String> = fs::read_dir(&out)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -425,4 +463,161 @@ fn extract_does_not_touch_live_db() {
     )
     .unwrap_err();
     assert!(format!("{err:#}").contains("not empty"), "{err:#}");
+}
+
+/// Makes the live database carry a non-empty WAL holding `n` rows that the main file
+/// lacks: the files are copied while a connection with autocheckpoint off is open.
+fn leave_stale_wal(fx: &Fx, n: usize) {
+    let live = fx.config.db_path();
+    let side = fx.t.path().join("side");
+    fs::create_dir_all(&side).unwrap();
+    let names = ["hippo.db", "hippo.db-wal", "hippo.db-shm"];
+    {
+        let c = Connection::open(&live).unwrap();
+        c.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        let tx = c.unchecked_transaction().unwrap();
+        for _ in 0..n {
+            tx.execute("INSERT INTO events(body) VALUES ('wal-only')", [])
+                .unwrap();
+        }
+        tx.commit().unwrap();
+        for name in names {
+            fs::copy(fx.config.storage.data_dir.join(name), side.join(name)).unwrap();
+        }
+    }
+    for name in names {
+        fs::copy(side.join(name), fx.config.storage.data_dir.join(name)).unwrap();
+    }
+    assert!(fs::metadata(wal(&live)).unwrap().len() > 0);
+}
+
+#[test]
+fn restore_folds_a_stale_live_wal_before_the_swap() {
+    let fx = fixture();
+    let (full, _) = backup(&fx, T0);
+    leave_stale_wal(&fx, 300);
+    let live = fx.config.db_path();
+
+    let mut svc = StubServices::default();
+    restore_with(
+        &fx.config,
+        RestoreTarget::Id(full),
+        &opts(&fx),
+        &mut svc,
+        &mut &b""[..],
+    )
+    .unwrap();
+    assert_eq!(svc.log, ["stop", "start"]);
+    assert!(!wal(&live).exists());
+    assert_eq!(
+        count(&live),
+        200,
+        "restored rows plus none from the old WAL"
+    );
+    let m = Manifest::load(&fx.dest).unwrap();
+    let cp = m
+        .entries
+        .iter()
+        .find(|e| e.meta.kind == ArtifactKind::Checkpoint)
+        .unwrap();
+    assert_eq!(
+        cp.meta.row_counts["events"], 500,
+        "checkpoint saw the WAL rows"
+    );
+}
+
+#[test]
+fn restore_refuses_while_a_connection_holds_the_live_db() {
+    let fx = fixture();
+    let (full, _) = backup(&fx, T0);
+    add_rows(&fx, 300);
+    let live = fx.config.db_path();
+    let holder = Connection::open(&live).unwrap();
+    let _: i64 = holder
+        .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+        .unwrap();
+    let before = file_sha(&live);
+
+    let mut svc = StubServices::default();
+    let err = restore_with(
+        &fx.config,
+        RestoreTarget::Id(full),
+        &opts(&fx),
+        &mut svc,
+        &mut &b""[..],
+    )
+    .unwrap_err();
+    assert!(format!("{err:#}").contains("still open"), "{err:#}");
+    assert_eq!(svc.log, ["stop", "start"]);
+    assert_eq!(file_sha(&live), before);
+    drop(holder);
+    assert_eq!(count(&live), 500);
+}
+
+#[test]
+fn restore_refuses_while_another_process_holds_the_live_db() {
+    if std::process::Command::new("lsof")
+        .arg("-v")
+        .output()
+        .is_err()
+    {
+        eprintln!("lsof not installed; skipping");
+        return;
+    }
+    let fx = fixture();
+    let (full, _) = backup(&fx, T0);
+    let live = fx.config.db_path();
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .stdin(fs::File::open(&live).unwrap())
+        .spawn()
+        .unwrap();
+    let before = file_sha(&live);
+
+    let mut svc = StubServices::default();
+    let err = restore_with(
+        &fx.config,
+        RestoreTarget::Id(full),
+        &opts(&fx),
+        &mut svc,
+        &mut &b""[..],
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+    let msg = format!("{:#}", err.unwrap_err());
+    assert!(msg.contains(&child.id().to_string()), "{msg}");
+    assert!(msg.contains("hippo-mcp"), "{msg}");
+    assert_eq!(svc.log, ["stop", "start"]);
+    assert_eq!(file_sha(&live), before);
+}
+
+#[test]
+fn restore_restarts_services_when_the_swap_fails() {
+    let fx = fixture();
+    let (full, _) = backup(&fx, T0);
+    add_rows(&fx, 300);
+    let data = fx.config.storage.data_dir.clone();
+    let live = fx.config.db_path();
+    let before = file_sha(&live);
+    // After stop, the data directory turns read-only: SQLite cannot create the -shm
+    // file, so the pre-restore snapshot and the swap cannot proceed.
+    let locked = data.clone();
+    let mut svc = StubServices {
+        on_stop: Some(Box::new(move || {
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+        })),
+        ..StubServices::default()
+    };
+    let res = restore_with(
+        &fx.config,
+        RestoreTarget::Id(full),
+        &opts(&fx),
+        &mut svc,
+        &mut &b""[..],
+    );
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(res.is_err());
+    assert_eq!(svc.log, ["stop", "start"]);
+    assert_eq!(file_sha(&live), before);
+    assert_eq!(count(&live), 500);
 }

@@ -19,7 +19,7 @@ use hippo_core::storage::EXPECTED_VERSION;
 use rusqlite::{Connection, OpenFlags};
 use std::fs::{self, DirBuilder, File};
 use std::io::{BufRead, Write};
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -77,7 +77,11 @@ pub fn materialize(
     out_dir: &Path,
 ) -> Result<PathBuf> {
     let entry = find(manifest, id)?;
-    fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(out_dir)
+        .with_context(|| format!("create {}", out_dir.display()))?;
     // Inside out_dir so the final moves are renames; removed on every exit path.
     let scratch = RunTmp::create(out_dir.join(".materialize.tmp"))?;
     let unpacked = scratch.0.join("artifact");
@@ -92,6 +96,13 @@ pub fn materialize(
             "delta base {base_id} is not a full backup"
         );
         let diff = unpacked.join("hippo.db.pagediff");
+        // apply_diff truncates an existing file and keeps its mode.
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&db)
+            .with_context(|| format!("create {}", db.display()))?;
         apply_diff(&base_dir.join("hippo.db"), &diff, &db)
             .with_context(|| format!("apply {id} over {base_id}"))?;
         fs::remove_file(&diff)?;
@@ -120,7 +131,14 @@ fn unpack(
     dir: &Path,
 ) -> Result<ArtifactMeta> {
     // `valid_entry` guarantees `file` is a plain `<id>.tar.zst.age` name.
-    let meta = extract_artifact(&dest.join(&entry.file), identity, dir)
+    let path = dest.join(&entry.file);
+    let sum = sha256_of(&path).with_context(|| format!("read {}", path.display()))?;
+    ensure!(
+        run::hex(&sum) == entry.ciphertext_sha256,
+        "{}: ciphertext SHA-256 does not match the manifest",
+        path.display()
+    );
+    let meta = extract_artifact(&path, identity, dir)
         .with_context(|| format!("decrypt and unpack {}", entry.file))?;
     ensure!(
         meta.id == entry.meta.id,
@@ -170,6 +188,12 @@ fn check_db(db: &Path, meta: &ArtifactMeta) -> Result<()> {
 
 /// Plain read-only open (never `open_db`, which would migrate).
 fn open_read_only(path: &Path) -> Result<Connection> {
+    let c = open_plain(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    c.busy_timeout(Duration::from_millis(5000))?;
+    Ok(c)
+}
+
+fn open_plain(path: &Path, flags: OpenFlags) -> Result<Connection> {
     // NOFOLLOW rejects a symlinked ancestor such as macOS /var, so resolve the parent.
     let name = path.file_name().context("database path has no file name")?;
     let path = path
@@ -177,13 +201,14 @@ fn open_read_only(path: &Path) -> Result<Connection> {
         .unwrap_or(Path::new("."))
         .canonicalize()?
         .join(name);
-    let c = Connection::open_with_flags(
-        &path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .with_context(|| format!("open {}", path.display()))?;
-    c.busy_timeout(Duration::from_millis(5000))?;
-    Ok(c)
+    Connection::open_with_flags(&path, flags | OpenFlags::SQLITE_OPEN_NOFOLLOW)
+        .with_context(|| format!("open {}", path.display()))
+}
+
+/// A scratch directory in `work` whose name no concurrent verify or restore shares.
+fn unique_tmp(work: &Path, prefix: &str) -> Result<RunTmp> {
+    let ms = chrono::Utc::now().timestamp_millis();
+    RunTmp::create(work.join(format!("{prefix}-{}-{ms}", std::process::id())))
 }
 
 fn select<'a>(manifest: &'a Manifest, target: &RestoreTarget) -> Result<&'a ManifestEntry> {
@@ -237,7 +262,7 @@ pub fn verify(config: &HippoConfig, id: Option<&str>) -> Result<()> {
     let target = id.map_or(RestoreTarget::Latest, |i| RestoreTarget::Id(i.to_owned()));
     let entry = select(&manifest, &target)?;
     let work = work_dir(config)?;
-    let tmp = RunTmp::create(work.join("verify-tmp"))?;
+    let tmp = unique_tmp(&work, "verify-tmp")?;
     materialize(dest, &manifest, &entry.meta.id, &identity, &tmp.0)?;
     drop(tmp);
 
@@ -252,10 +277,11 @@ pub fn verify(config: &HippoConfig, id: Option<&str>) -> Result<()> {
 }
 
 /// Rows in the live database captured at or after `since_ms`, per source: `shell`
-/// (`events`), `browser` (`browser_events`), and `agentic:<harness>` (`agentic_sessions`,
-/// counting a session that was created or grew after the cutoff). Probe rows are
-/// excluded. A table or column that does not exist is skipped.
-pub fn loss_report(live_db: &Connection, since_ms: i64) -> Result<Vec<(String, i64)>> {
+/// (`events`), `browser` (`browser_events`), `knowledge` (`knowledge_nodes`), and
+/// `agentic:<harness>` (`agentic_sessions`, counting a session that was created or grew
+/// after the cutoff). Probe rows are excluded. A missing table is left out; a table
+/// without the columns needed to count it is listed with `None` (skipped).
+pub fn loss_report(live_db: &Connection, since_ms: i64) -> Result<Vec<(String, Option<i64>)>> {
     let columns = |table: &str| -> Result<Vec<String>> {
         let mut st = live_db.prepare("SELECT name FROM pragma_table_info(?1)")?;
         let cols = st
@@ -272,24 +298,36 @@ pub fn loss_report(live_db: &Connection, since_ms: i64) -> Result<Vec<(String, i
         }
     };
     let mut out = Vec::new();
-    for (source, table) in [("shell", "events"), ("browser", "browser_events")] {
+    for (source, table) in [
+        ("shell", "events"),
+        ("browser", "browser_events"),
+        ("knowledge", "knowledge_nodes"),
+    ] {
         let cols = columns(table)?;
-        if has(&cols, "created_at") {
+        if cols.is_empty() {
+            continue;
+        }
+        let n = if has(&cols, "created_at") {
             let sql = format!(
                 "SELECT COUNT(*) FROM {table} WHERE created_at >= ?1{}",
                 no_probes(&cols)
             );
-            out.push((
-                source.to_owned(),
-                live_db.query_row(&sql, [since_ms], |r| r.get(0))?,
-            ));
-        }
+            Some(live_db.query_row(&sql, [since_ms], |r| r.get(0))?)
+        } else {
+            None
+        };
+        out.push((source.to_owned(), n));
     }
     let cols = columns("agentic_sessions")?;
-    if ["harness", "created_at", "end_time"]
+    if cols.is_empty() {
+        return Ok(out);
+    }
+    if !["harness", "created_at", "end_time"]
         .iter()
         .all(|c| has(&cols, c))
     {
+        out.push(("agentic".to_owned(), None));
+    } else {
         let sql = format!(
             "SELECT harness, COUNT(*) FROM agentic_sessions
              WHERE MAX(created_at, end_time) >= ?1{} GROUP BY harness ORDER BY harness",
@@ -297,7 +335,10 @@ pub fn loss_report(live_db: &Connection, since_ms: i64) -> Result<Vec<(String, i
         );
         let mut st = live_db.prepare(&sql)?;
         for row in st.query_map([since_ms], |r| {
-            Ok((format!("agentic:{}", r.get::<_, String>(0)?), r.get(1)?))
+            Ok((
+                format!("agentic:{}", r.get::<_, String>(0)?),
+                Some(r.get(1)?),
+            ))
         })? {
             out.push(row?);
         }
@@ -371,12 +412,15 @@ pub fn restore_with(
     if live.exists() {
         println!("Rows captured since that backup:");
         for (source, n) in loss_report(&open_read_only(&live)?, entry.meta.created_ms)? {
-            let fate = if source.starts_with("agentic:") {
+            let fate = if source.starts_with("agentic") {
                 "re-ingested from source files if still present"
             } else {
                 "lost"
             };
-            println!("  {source}: {n} ({fate})");
+            match n {
+                Some(n) => println!("  {source}: {n} ({fate})"),
+                None => println!("  {source}: skipped (its table has no capture-time column)"),
+            }
         }
     }
     if !opts.yes {
@@ -388,16 +432,19 @@ pub fn restore_with(
     }
 
     let work = work_dir(config)?;
-    let tmp = RunTmp::create(work.join("restore-tmp"))?;
+    let tmp = unique_tmp(&work, "restore-tmp")?;
     let db = materialize(&dest, &manifest, id, &identity, &tmp.0)?;
     // The artifact's own meta is authoritative; `check_db` matched it to the file.
     let version: i64 =
         open_read_only(&db)?.pragma_query_value(None, "user_version", |r| r.get(0))?;
     ensure!(version <= EXPECTED_VERSION, "{}", newer(version));
 
-    let swapped = services
-        .stop()
-        .and_then(|()| replace_live(config, &work, &db));
+    let swapped = services.stop().and_then(|()| {
+        println!(
+            "hippo services are stopped. If this restore is interrupted, restart them with `mise run start`."
+        );
+        replace_live(config, &work, &db)
+    });
     let started = services.start();
     drop(tmp);
     match (swapped, started) {
@@ -418,39 +465,125 @@ pub fn restore_with(
     Ok(())
 }
 
-/// Checkpoints the live database, then renames `db` over it. Services must be stopped.
+/// Checkpoints the live database, folds its WAL into it, then renames `db` over it.
+/// Services must be stopped. Every refusal happens before the rename.
 fn replace_live(config: &HippoConfig, work: &Path, db: &Path) -> Result<()> {
     let live = config.db_path();
-    if live.exists() {
-        if config.backup.is_configured() {
-            match run::checkpoint(config, "pre-restore").context("pre-restore checkpoint")? {
-                RunReport::Done { id, shipped, .. } => {
-                    let place = if shipped { "shipped" } else { "in the outbox" };
-                    println!("Checkpointed the current database as {id} ({place}).");
-                }
-                other => bail!("pre-restore checkpoint did not run: {other:?}"),
-            }
-        } else {
-            let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-            let saved = work.join(format!("pre-restore-{ts}.db"));
-            take_snapshot(&live, &saved).context("pre-restore snapshot")?;
-            println!("Saved the current database to {}.", saved.display());
-        }
-    }
+    let previous = if live.exists() {
+        let saved = save_current(config, work, &live)?;
+        fold_live_wal(&live)?;
+        saved
+    } else {
+        "none (there was no live database)".to_owned()
+    };
+    File::open(db)
+        .and_then(|f| f.sync_all())
+        .with_context(|| format!("sync {}", db.display()))?;
     let data_dir = &config.storage.data_dir;
     let staged = data_dir.join("hippo.db.restoring");
     remove_if_present(&staged)?;
     fs::rename(db, &staged).with_context(|| format!("move to {}", staged.display()))?;
     fs::rename(&staged, &live).with_context(|| format!("rename over {}", live.display()))?;
-    // Only after the rename: until then they belong to the database that is still live.
-    for suffix in ["-wal", "-shm"] {
-        let mut p = live.clone().into_os_string();
-        p.push(suffix);
-        remove_if_present(Path::new(&p))?;
+    File::open(data_dir)
+        .and_then(|d| d.sync_all())
+        .with_context(|| {
+            format!(
+                "sync {}: hippo.db was already replaced by the restored backup; \
+                 the previous database is {previous}",
+                data_dir.display()
+            )
+        })
+}
+
+/// Saves the live database before it is replaced and describes where it went.
+fn save_current(config: &HippoConfig, work: &Path, live: &Path) -> Result<String> {
+    if !config.backup.is_configured() {
+        let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+        let saved = work.join(format!("pre-restore-{ts}.db"));
+        take_snapshot(live, &saved).context("pre-restore snapshot")?;
+        println!("Saved the current database to {}.", saved.display());
+        return Ok(saved.display().to_string());
     }
-    File::open(data_dir)?
-        .sync_all()
-        .with_context(|| format!("sync {}", data_dir.display()))
+    match run::checkpoint(config, "pre-restore").context("pre-restore checkpoint")? {
+        RunReport::Done { id, shipped, .. } => {
+            let place = if shipped { "shipped" } else { "in the outbox" };
+            println!("Checkpointed the current database as {id} ({place}).");
+            Ok(format!("checkpoint {id}"))
+        }
+        other => bail!("pre-restore checkpoint did not run: {other:?}"),
+    }
+}
+
+fn sidecar(live: &Path, suffix: &str) -> PathBuf {
+    let mut p = live.as_os_str().to_owned();
+    p.push(suffix);
+    PathBuf::from(p)
+}
+
+const STILL_OPEN: &str = "close hippo-mcp clients (Claude Code sessions) and retry";
+
+/// Refuses while another process or connection has the live database open, then
+/// checkpoints its WAL into the main file and deletes it, so no old WAL frame can be
+/// applied to the restored file.
+fn fold_live_wal(live: &Path) -> Result<()> {
+    let (wal, shm) = (sidecar(live, "-wal"), sidecar(live, "-shm"));
+    let present: Vec<&Path> = [live, wal.as_path(), shm.as_path()]
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect();
+    match std::process::Command::new("lsof")
+        .arg("-t")
+        .arg("--")
+        .args(&present)
+        .output()
+    {
+        Ok(out) => {
+            let me = std::process::id();
+            let pids: Vec<&str> = std::str::from_utf8(&out.stdout)
+                .unwrap_or_default()
+                .lines()
+                .map(str::trim)
+                .filter(|l| l.parse::<u32>().is_ok_and(|p| p != me))
+                .collect();
+            ensure!(
+                pids.is_empty(),
+                "the live database is still open by process {}; {STILL_OPEN}",
+                pids.join(", ")
+            );
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("warning: lsof not found; relying on SQLite locking to detect other openers");
+        }
+        Err(e) => return Err(e).context("run lsof"),
+    }
+
+    let c = open_plain(live, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    c.busy_timeout(Duration::from_millis(200))?;
+    let mode: String = match c.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0)) {
+        Ok(m) => m,
+        Err(rusqlite::Error::SqliteFailure(f, _))
+            if matches!(
+                f.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            ) =>
+        {
+            bail!("the live database is still open by another connection; {STILL_OPEN}")
+        }
+        Err(e) => return Err(e).context("fold the live WAL (PRAGMA journal_mode=DELETE)"),
+    };
+    ensure!(
+        mode.eq_ignore_ascii_case("delete"),
+        "the live database is still open (journal_mode stayed {mode}); {STILL_OPEN}"
+    );
+    c.close()
+        .map_err(|(_, e)| e)
+        .context("close the live database")?;
+    ensure!(
+        !wal.exists(),
+        "{} still exists after folding it; refusing to swap",
+        wal.display()
+    );
+    remove_if_present(&shm)
 }
 
 fn remove_if_present(path: &Path) -> Result<()> {
