@@ -43,14 +43,14 @@ If `op` fails and stdout is a terminal, `init` prints the private key once and a
 [backup]
 destination = "/path/to/existing/dir"
 recipient = "age1..."
-identity_ref = "op://Vault/hippo backup key (host)/..."
+identity_ref = "op://<vault_id>/<item_id>/private_key"
 ```
 
 `identity_ref` is `op://...` or `file:<path>`. Encryption uses only `recipient`. Only `restore` and `verify` read the private key.
 
 ## Schedule and tiers
 
-launchd job `com.hippo.backup` runs `hippo backup run` every hour. The run skips when a backup succeeded in the last 20 hours, so about one backup is taken per day.
+launchd job `com.hippo.backup` runs `hippo backup run` every hour. The run skips when a backup succeeded in the last 20 hours, so about one backup is taken per day. A shipped checkpoint also counts as a recent success and delays the next scheduled run.
 
 | Tier | When | Contents |
 |---|---|---|
@@ -97,7 +97,7 @@ Hippo takes a checkpoint before each of these. If the checkpoint fails or times 
 
 - A schema migration, label `pre-migration-v{from}-v{to}`, once per label.
 - `hippo gc-event-payloads`.
-- `brain/scripts/dedup-knowledge-nodes.py`, `brain/scripts/dedup-entities.py`, and `brain/scripts/re-enrich-knowledge-nodes.py`.
+- `brain/scripts/dedup-knowledge-nodes.py` (with `--apply`), `brain/scripts/dedup-entities.py`, and `brain/scripts/re-enrich-knowledge-nodes.py` (both unless `--dry-run` is given). The scripts take a checkpoint only when they mutate.
 - The mise tasks `re-enrich`, `re-enrich:failed`, `re-enrich:claude`, and `re-embed`.
 
 A checkpoint succeeds when the destination is unavailable. It stays verified in the outbox and ships later.
@@ -115,11 +115,11 @@ When `[backup]` is not configured, these operations skip the checkpoint and log 
 | `hippo backup verify [--id ID]` | Decrypt, rebuild, and check an artifact (default: newest verified) |
 | `hippo backup restore [options]` | Replace the live database |
 
-`hippo backup now` exits 3 when `[backup]` is not configured.
+`hippo backup now` exits 3 when `[backup]` is not configured. It waits up to 600 s for the backup lock. If the wait times out, it exits 1.
 
 ### verify
 
-`verify` decrypts the artifact, rebuilds the database in a temporary location, and checks it, including a vector KNN spot check. It reads the private key through `identity_ref`. `hippo doctor` warns when no verify has passed in 35 days.
+`verify` decrypts the artifact, rebuilds the database in a temporary location, and checks it: the SHA-256 against the manifest, `quick_check`, `user_version`, and per-table row counts. It reads the private key through `identity_ref`. `hippo doctor` warns when no verify has passed in 35 days.
 
 ### restore
 
@@ -148,7 +148,7 @@ Restore does this:
 6. Folds the live WAL into `hippo.db`. If another process holds `hippo.db` open, restore refuses and lists the PIDs.
 7. Renames the restored file over `hippo.db` and starts the services.
 
-A small race remains if a process opens the database in the last milliseconds before the swap. The pre-restore checkpoint covers that case.
+A process that opens `hippo.db` between the WAL fold and the swap can leave the restored database damaged. Close Claude Code sessions (hippo-mcp clients) before you restore to prevent this. After a restore, run `hippo doctor`. If it reports damage, run the restore again from the same backup.
 
 If restore is interrupted, run `mise run start`. After a restore, restart MCP clients so they open the restored database.
 
