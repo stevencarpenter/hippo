@@ -55,6 +55,8 @@ pub struct ArtifactInputs<'a> {
     pub db_entry: DbEntry<'a>,
     pub config_dir: &'a Path,
     pub data_dir: &'a Path,
+    /// Holds the fallback files copied while recovery was locked out.
+    pub fallback_dir: &'a Path,
 }
 
 /// `hippo-{kind}-{YYYYMMDDTHHMMSSZ}` plus `-{slug}` when labeled.
@@ -191,7 +193,7 @@ fn build<W: Write>(
         append_file(tar, "enrichment-state.json", &state)?;
     }
     // The selector recovery uses: `.recovering` files hold events not yet in the DB.
-    let files = hippo_core::storage::list_fallback_files(&inputs.data_dir.join("fallback"))?;
+    let files = hippo_core::storage::list_fallback_files(inputs.fallback_dir)?;
     for p in files {
         if fs::symlink_metadata(&p).is_ok_and(|m| m.is_file()) {
             let name = format!("fallback/{}", p.file_name().unwrap().to_string_lossy());
@@ -352,6 +354,7 @@ mod tests {
             db_entry: DbEntry::Full(&fx.db),
             config_dir: &fx.cfg_link,
             data_dir: &fx.data,
+            fallback_dir: &fx.data.join("fallback"),
         };
         write_artifact(&meta(), &inputs, r, out)
     }

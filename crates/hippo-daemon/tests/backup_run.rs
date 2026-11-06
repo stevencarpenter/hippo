@@ -766,3 +766,58 @@ fn same_label_same_second_checkpoints_both_reach_manifest() {
     }
     assert_eq!(m.entries.len(), 2);
 }
+
+fn fallback_with(fx: &Fx, name: &str, body: &str) -> PathBuf {
+    let dir = fx.config.storage.data_dir.join("fallback");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(name), body).unwrap();
+    dir
+}
+
+#[test]
+fn fallback_file_present_at_snapshot_is_in_the_artifact() {
+    let fx = fixture();
+    fallback_with(&fx, "2026-11-02.jsonl", "{\"a\":1}\n");
+    let (id, _) = done(checkpoint(&fx.config, "pre-gc").unwrap());
+    let out = fx.t.path().join("x");
+    let e = &Manifest::load(&fx.dest).unwrap().entries[0];
+    assert_eq!(e.meta.id, id);
+    extract_artifact(&fx.dest.join(&e.file), &fx.identity, &out).unwrap();
+    assert_eq!(
+        fs::read(out.join("fallback/2026-11-02.jsonl")).unwrap(),
+        b"{\"a\":1}\n"
+    );
+}
+
+#[test]
+fn backup_waits_for_fallback_recovery_lock() {
+    let fx = fixture();
+    let dir = fallback_with(&fx, "2026-11-02.jsonl", "{}\n");
+    let lock = fs::File::create(dir.join(".recovery.lock")).unwrap();
+    lock.lock().unwrap();
+    let hold = Duration::from_millis(1500);
+    let holder = std::thread::spawn(move || {
+        std::thread::sleep(hold);
+        drop(lock);
+    });
+    let start = Instant::now();
+    done(checkpoint(&fx.config, "pre-gc").unwrap());
+    assert!(start.elapsed() >= hold);
+    holder.join().unwrap();
+}
+
+#[test]
+fn stuck_recovery_lock_times_out_checkpoint_and_skips_scheduled() {
+    let fx = fixture();
+    let dir = fallback_with(&fx, "2026-11-02.jsonl", "{}\n");
+    let lock = fs::File::create(dir.join(".recovery.lock")).unwrap();
+    lock.lock().unwrap();
+    let err = checkpoint_waiting(&fx.config, "pre-gc", Duration::from_millis(200))
+        .expect_err("a recovery lock timeout must not count as success");
+    assert!(format!("{err:#}").contains("timed out"), "{err:#}");
+    let r = run_backup(&fx.config, RunMode::Scheduled, T0).unwrap();
+    assert!(matches!(r, RunReport::Skipped { .. }), "{r:?}");
+    assert!(Manifest::load(&fx.dest).unwrap().entries.is_empty());
+    assert_eq!(outbox_artifacts(&fx), 0);
+    drop(lock);
+}

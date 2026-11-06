@@ -120,7 +120,7 @@ fn run_backup_impl(
             reason: "another backup run holds the lock".into(),
         });
     }
-    run_holding_lock(config, &mode, now_ms, once, &work)
+    run_holding_lock(config, &mode, now_ms, once, &work, lock_wait)
 }
 
 /// `checkpoint` for a caller that already holds the run lock (`_lock`, from
@@ -143,6 +143,7 @@ pub(crate) fn checkpoint_holding_lock(
         chrono::Utc::now().timestamp_millis(),
         false,
         &work,
+        CHECKPOINT_LOCK_WAIT,
     )
 }
 
@@ -164,12 +165,15 @@ fn run_holding_lock(
     now_ms: i64,
     once: bool,
     work: &Path,
+    lock_wait: Duration,
 ) -> Result<RunReport> {
     let outbox = work.join("outbox");
     sweep_stale_tmp(work);
     let mut st = status::load(work);
     let mut notes = Vec::new();
-    let result = run_locked(config, mode, now_ms, once, work, &mut st, &mut notes);
+    let result = run_locked(
+        config, mode, now_ms, once, work, lock_wait, &mut st, &mut notes,
+    );
     st.outbox_count = pending_entries(&outbox).map_or(st.outbox_count, |v| {
         u32::try_from(v.len()).unwrap_or(u32::MAX)
     });
@@ -258,6 +262,38 @@ pub(crate) fn sweep_stale_tmp(work: &Path) {
     }
 }
 
+/// Takes `<fallback>/.recovery.lock`, the flock `recover_fallback_files` blocks on.
+/// `None` means a scheduled run found it held. `wait` is as for [`acquire`].
+fn hold_recovery_lock(fallback: &Path, wait: Option<Duration>) -> Result<Option<File>> {
+    hippo_core::storage::ensure_private_dir(fallback)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(fallback.join(".recovery.lock"))
+        .context("open fallback recovery lock")?;
+    Ok(acquire(&lock, wait)
+        .context("fallback recovery lock")?
+        .then_some(lock))
+}
+
+/// Copies the fallback files recovery would pick up into `staged`.
+fn stage_fallback(fallback: &Path, staged: &Path) -> Result<()> {
+    DirBuilder::new()
+        .mode(0o700)
+        .create(staged)
+        .with_context(|| format!("create {}", staged.display()))?;
+    for p in hippo_core::storage::list_fallback_files(fallback)? {
+        if fs::symlink_metadata(&p).is_ok_and(|m| m.is_file()) {
+            fs::copy(&p, staged.join(p.file_name().unwrap()))
+                .with_context(|| format!("stage {}", p.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Removed on drop, so every exit path cleans up partial snapshot and diff files.
 pub(crate) struct RunTmp(pub(crate) PathBuf);
 
@@ -279,12 +315,14 @@ impl Drop for RunTmp {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_locked(
     config: &HippoConfig,
     mode: &RunMode,
     now_ms: i64,
     once: bool,
     work: &Path,
+    lock_wait: Duration,
     st: &mut BackupStatus,
     notes: &mut Vec<String>,
 ) -> Result<RunReport> {
@@ -352,7 +390,20 @@ fn run_locked(
 
     let tmp = RunTmp::create(work.join(RUN_TMP_DIR))?;
     let snap = tmp.0.join("hippo.db");
+    let fallback = config.storage.data_dir.join("fallback");
+    let staged = tmp.0.join("fallback");
+    // Held from before the snapshot until the fallback files are copied, so recovery
+    // cannot insert events and rename their files between the two. Recovery blocks on
+    // the same lock meanwhile; capture does not use it.
+    let wait = matches!(mode, RunMode::Checkpoint { .. }).then_some(lock_wait);
+    let Some(recovery_lock) = hold_recovery_lock(&fallback, wait)? else {
+        return Ok(RunReport::Skipped {
+            reason: "fallback recovery holds the lock".into(),
+        });
+    };
     let info = take_snapshot(&config.db_path(), &snap)?;
+    stage_fallback(&fallback, &staged)?;
+    drop(recovery_lock);
     let hashes_path = work.join(PAGEHASHES_FILE);
     let base = match (mode, &manifest) {
         (RunMode::Scheduled, Some(m)) => delta_base(&hashes_path, m, info.page_size, now_ms),
@@ -410,6 +461,7 @@ fn run_locked(
         db_entry,
         config_dir: &config.storage.config_dir,
         data_dir: &config.storage.data_dir,
+        fallback_dir: &staged,
     };
     let file = format!("{id}{ARTIFACT_EXT}");
     let out = outbox.join(&file);
