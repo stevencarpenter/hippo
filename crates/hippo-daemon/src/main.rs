@@ -344,6 +344,7 @@ async fn run() -> Result<()> {
                 let brain_was_loaded = install::service_is_loaded("com.hippo.brain");
                 let watchdog_was_loaded = install::service_is_loaded("com.hippo.watchdog");
                 let probe_was_loaded = install::service_is_loaded("com.hippo.probe");
+                let backup_was_loaded = install::service_is_loaded("com.hippo.backup");
                 let metrics_exporter_was_loaded =
                     install::service_is_loaded("com.hippo.metrics-exporter");
                 let watcher_was_loaded =
@@ -363,6 +364,7 @@ async fn run() -> Result<()> {
                     || brain_was_loaded
                     || watchdog_was_loaded
                     || probe_was_loaded
+                    || backup_was_loaded
                     || metrics_exporter_was_loaded
                     || watcher_was_loaded
                     || gh_poll_was_loaded
@@ -405,6 +407,13 @@ async fn run() -> Result<()> {
                 if probe_was_loaded {
                     install::service_bootout(&domain, &launch_agents.join("com.hippo.probe.plist"));
                     println!("  Stopped probe");
+                }
+                if backup_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.backup.plist"),
+                    );
+                    println!("  Stopped backup");
                 }
                 if metrics_exporter_was_loaded {
                     install::service_bootout(
@@ -488,6 +497,7 @@ async fn run() -> Result<()> {
                 let watchdog_template = include_str!("../../../launchd/com.hippo.watchdog.plist");
                 let gh_poll_template = include_str!("../../../launchd/com.hippo.gh-poll.plist");
                 let probe_template = include_str!("../../../launchd/com.hippo.probe.plist");
+                let backup_template = include_str!("../../../launchd/com.hippo.backup.plist");
                 let metrics_exporter_template =
                     include_str!("../../../launchd/com.hippo.metrics-exporter.plist");
                 let watcher_template =
@@ -514,6 +524,7 @@ async fn run() -> Result<()> {
                 install::install_brain_wrapper(&vars.data_dir, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
                 install::install_plist("com.hippo.probe", probe_template, &vars, force)?;
+                install::install_plist("com.hippo.backup", backup_template, &vars, force)?;
                 install::install_plist("com.hippo.watchdog", watchdog_template, &vars, force)?;
                 // Knowledge-health exporter plist — only written when telemetry
                 // is enabled (mirrors the codex/cursor gates). The exporter is
@@ -775,6 +786,7 @@ async fn run() -> Result<()> {
                     let support_agents = [
                         ("watchdog", "com.hippo.watchdog.plist", true),
                         ("probe", "com.hippo.probe.plist", true),
+                        ("backup", "com.hippo.backup.plist", true),
                         (
                             "metrics-exporter",
                             "com.hippo.metrics-exporter.plist",
@@ -859,6 +871,9 @@ async fn run() -> Result<()> {
                         );
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.probe.plist"
+                        );
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.backup.plist"
                         );
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.claude-session-watcher.plist"

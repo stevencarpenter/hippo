@@ -221,6 +221,14 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         }
     }
 
+    if let Some(v) = check_i21_backup_freshness(
+        &crate::backup::status::load(&config.backup_work_dir()),
+        config.backup.is_configured(),
+        now_ms,
+    ) {
+        violations.push(v);
+    }
+
     // ── Step 4: Insert capture_alarms rows for violations ─────────────────
     let log_path = resolve_log_path(config);
     let rate_limit_ms = config.watchdog.alarm_rate_limit_minutes as i64 * 60 * 1_000;
@@ -907,6 +915,45 @@ pub fn check_i20_orphaned_memory_chunk_links(
     }))
 }
 
+/// I-21: Backup freshness. Silent when `[backup]` is not configured.
+///
+/// Violates when the last successful backup is missing or older than 36 h, or when
+/// an artifact has been shipped but not uploaded for more than 24 h.
+pub fn check_i21_backup_freshness(
+    status: &crate::backup::status::BackupStatus,
+    configured: bool,
+    now_ms: i64,
+) -> Option<InvariantViolation> {
+    const HOUR_MS: i64 = 3_600_000;
+    if !configured {
+        return None;
+    }
+    let stale_success = status
+        .last_success_ms
+        .is_none_or(|t| now_ms - t > 36 * HOUR_MS);
+    let stale_pending: Vec<&str> = status
+        .pending_upload
+        .iter()
+        .filter(|p| now_ms - p.shipped_ms > 24 * HOUR_MS)
+        .map(|p| p.id.as_str())
+        .collect();
+    if !stale_success && stale_pending.is_empty() {
+        return None;
+    }
+    Some(InvariantViolation {
+        invariant_id: "I-21".to_string(),
+        source: "backup".to_string(),
+        since_ms: status.last_success_ms.map_or(0, |t| now_ms - t),
+        details: json!({
+            "last_success_older_than_36h": stale_success,
+            "last_success_ms": status.last_success_ms,
+            "pending_upload_older_than_24h": stale_pending,
+            "last_error": status.last_error,
+            "checked_at_ms": now_ms,
+        }),
+    })
+}
+
 /// I-11: Opencode-session coverage proxy.
 ///
 /// Mirrors I-2's shape for the new `agentic-session-opencode` source: alarm
@@ -1389,7 +1436,54 @@ fn fire_macos_notification(message: &str, title: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backup::status::{BackupStatus, PendingUpload};
     use tempfile::TempDir;
+
+    const H: i64 = 3_600_000;
+
+    fn bstatus(age_h: i64, now: i64, pending_h: Option<i64>) -> BackupStatus {
+        BackupStatus {
+            last_success_ms: Some(now - age_h * H),
+            pending_upload: pending_h
+                .map(|h| {
+                    vec![PendingUpload {
+                        id: "a".into(),
+                        shipped_ms: now - h * H,
+                    }]
+                })
+                .unwrap_or_default(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn i21_unconfigured_is_silent() {
+        assert!(check_i21_backup_freshness(&BackupStatus::default(), false, 1_000 * H).is_none());
+    }
+
+    #[test]
+    fn i21_fresh_is_silent() {
+        let now = 1_000 * H;
+        assert!(check_i21_backup_freshness(&bstatus(35, now, Some(23)), true, now).is_none());
+    }
+
+    #[test]
+    fn i21_old_success_or_never_violates() {
+        let now = 1_000 * H;
+        let v = check_i21_backup_freshness(&bstatus(37, now, None), true, now).unwrap();
+        assert_eq!(
+            (v.invariant_id.as_str(), v.source.as_str()),
+            ("I-21", "backup")
+        );
+        assert!(check_i21_backup_freshness(&BackupStatus::default(), true, now).is_some());
+    }
+
+    #[test]
+    fn i21_stale_pending_upload_violates() {
+        let now = 1_000 * H;
+        let v = check_i21_backup_freshness(&bstatus(1, now, Some(25)), true, now).unwrap();
+        assert_eq!(v.details["pending_upload_older_than_24h"][0], "a");
+    }
 
     // ── Operator enrichment pause ──────────────────────────────────────────
 

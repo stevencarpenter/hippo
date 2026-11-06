@@ -982,6 +982,7 @@ for label in \
   com.hippo.brain \
   com.hippo.watchdog \
   com.hippo.probe \
+  com.hippo.backup \
   com.hippo.metrics-exporter \
   com.hippo.claude-session-watcher \
   com.hippo.gh-poll \
@@ -1015,6 +1016,7 @@ for label in \
   com.hippo.brain \
   com.hippo.watchdog \
   com.hippo.probe \
+  com.hippo.backup \
   com.hippo.metrics-exporter \
   com.hippo.claude-session-watcher \
   com.hippo.gh-poll \

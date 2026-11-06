@@ -1603,6 +1603,8 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
         println!("[--] {:<29}  no home dir", "native-msg manifest");
     }
 
+    fail_count += check_backup(config, explain);
+
     // Metrics exporter liveness (optional service — only installed with OTel).
     if let Some(home) = dirs::home_dir() {
         let exporter_plist = home.join("Library/LaunchAgents/com.hippo.metrics-exporter.plist");
@@ -3676,6 +3678,153 @@ fn check_data_dir_private(data_dir: &std::path::Path, explain: bool) -> u32 {
     }
 }
 
+/// Backup health from `<data_dir>/backup/status.json`. Never calls `op`: the last
+/// successful verify stands in for "the key resolves". Returns 1 on `[!!]`.
+fn check_backup(config: &HippoConfig, explain: bool) -> u32 {
+    check_backup_at(
+        &crate::backup::status::load(&config.backup_work_dir()),
+        config.backup.is_configured(),
+        std::path::Path::new(&config.backup.destination),
+        &config.storage.data_dir,
+        Utc::now().timestamp_millis(),
+        explain,
+    )
+}
+
+fn backup_age(then_ms: i64, now_ms: i64) -> String {
+    let mins = (now_ms - then_ms).max(0) / 60_000;
+    match mins {
+        0..=59 => format!("{mins} min"),
+        60..=2879 => format!("{} h", mins / 60),
+        _ => format!("{} d", mins / 1440),
+    }
+}
+
+/// True when the manifest holds an uploaded full. One file read; a missing destination
+/// or an unreadable manifest counts as false.
+fn has_uploaded_full(dest: &std::path::Path) -> bool {
+    use crate::backup::{artifact::ArtifactKind, manifest::Manifest};
+    dest.is_dir()
+        && Manifest::load(dest).is_ok_and(|m| {
+            m.entries
+                .iter()
+                .any(|e| e.meta.kind == ArtifactKind::Full && e.uploaded)
+        })
+}
+
+/// Count and total bytes of legacy `hippo.db.*` copies (and their `-shm`/`-wal` files).
+fn legacy_db_copies(data_dir: &std::path::Path) -> (usize, u64) {
+    let Ok(rd) = std::fs::read_dir(data_dir) else {
+        return (0, 0);
+    };
+    rd.flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let rest = name.strip_prefix("hippo.db.")?;
+            let rest = rest
+                .strip_suffix("-shm")
+                .or_else(|| rest.strip_suffix("-wal"))
+                .unwrap_or(rest);
+            let legacy = rest.ends_with(".bak")
+                || rest.starts_with("pre-")
+                || rest.starts_with("bak")
+                || rest.starts_with("v5-backup");
+            let md = e.metadata().ok().filter(|m| m.is_file())?;
+            legacy.then_some(md.len())
+        })
+        .fold((0, 0), |(n, b), len| (n + 1, b + len))
+}
+
+fn check_backup_at(
+    s: &crate::backup::status::BackupStatus,
+    configured: bool,
+    dest: &std::path::Path,
+    data_dir: &std::path::Path,
+    now_ms: i64,
+    explain: bool,
+) -> u32 {
+    const HOUR_MS: i64 = 3_600_000;
+    if !configured {
+        println!("[--] backup: not configured");
+        return 0;
+    }
+    let mut failed = 0;
+    match (s.last_success_ms, s.last_kind) {
+        (Some(t), kind) if now_ms - t <= 36 * HOUR_MS => {
+            let kind =
+                kind.map_or_else(|| "backup".to_owned(), |k| format!("{k:?}").to_lowercase());
+            println!("[OK] backup: last {kind} {} ago", backup_age(t, now_ms));
+        }
+        last => {
+            let age = last.0.map_or_else(
+                || "no successful backup".to_owned(),
+                |t| format!("last success {} ago", backup_age(t, now_ms)),
+            );
+            println!("[!!] backup: {age}");
+            if explain {
+                println!(
+                    "     CAUSE:  the scheduled backup is failing or not running (last error: {}).",
+                    s.last_error.as_deref().unwrap_or("none")
+                );
+                println!(
+                    "     FIX:    hippo backup now; check ~/.local/share/hippo/backup.stderr.log."
+                );
+                println!("     DOC:    docs/backup.md");
+            }
+            failed = 1;
+        }
+    }
+    let warn = |msg: String, cause: &str| {
+        println!("[WW] backup: {msg}");
+        if explain {
+            println!("     CAUSE:  {cause}");
+            println!("     FIX:    hippo backup status; hippo backup verify.");
+            println!("     DOC:    docs/backup.md");
+        }
+    };
+    if s.outbox_count > 0 {
+        warn(
+            format!("{} artifact(s) waiting in the outbox", s.outbox_count),
+            "the destination was unreachable when the artifact was written.",
+        );
+    }
+    if let Some(p) = s.pending_upload.iter().map(|p| p.shipped_ms).min()
+        && now_ms - p > 24 * HOUR_MS
+    {
+        warn(
+            format!("upload pending for {}", backup_age(p, now_ms)),
+            "Google Drive has not uploaded a shipped artifact.",
+        );
+    }
+    match s.last_verify_ms {
+        Some(t) if now_ms - t <= 35 * 24 * HOUR_MS => {}
+        v => warn(
+            v.map_or_else(
+                || "no verify has passed".to_owned(),
+                |t| format!("last verify {} ago", backup_age(t, now_ms)),
+            ),
+            "no full verify has passed in 35 days.",
+        ),
+    }
+    if has_uploaded_full(dest) {
+        let (n, bytes) = legacy_db_copies(data_dir);
+        if n > 0 {
+            println!(
+                "[WW] legacy DB copies: {n} files, {:.1} MB",
+                bytes as f64 / 1e6
+            );
+            if explain {
+                println!("     CAUSE:  manual database copies remain in the data dir.");
+                println!(
+                    "     FIX:    delete the hippo.db.*.bak, hippo.db.pre-*, hippo.db.bak* and hippo.db.v5-backup* files by hand."
+                );
+                println!("     DOC:    docs/backup.md");
+            }
+        }
+    }
+    failed
+}
+
 /// Check 7: Warn/fail on large log files in the hippo data directory.
 ///
 /// Returns 1 if any file exceeds 200 MB, 0 otherwise.
@@ -5142,6 +5291,121 @@ pub fn parse_duration_to_since_ms(s: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    // ── check_backup ───────────────────────────────────────────────────────
+
+    mod backup_doctor {
+        use super::super::*;
+        use crate::backup::artifact::ArtifactKind;
+        use crate::backup::status::{BackupStatus, PendingUpload};
+
+        const H: i64 = 3_600_000;
+        const NOW: i64 = 1_000 * 24 * H;
+
+        fn st(age_h: i64) -> BackupStatus {
+            BackupStatus {
+                last_success_ms: Some(NOW - age_h * H),
+                last_kind: Some(ArtifactKind::Delta),
+                last_verify_ms: Some(NOW - H),
+                ..Default::default()
+            }
+        }
+
+        fn run(s: &BackupStatus, configured: bool) -> u32 {
+            let d = tempfile::tempdir().unwrap();
+            check_backup_at(s, configured, d.path(), d.path(), NOW, false)
+        }
+
+        #[test]
+        fn unconfigured_is_not_a_failure() {
+            assert_eq!(run(&BackupStatus::default(), false), 0);
+        }
+
+        #[test]
+        fn fresh_is_ok_and_old_success_fails() {
+            assert_eq!(run(&st(2), true), 0);
+            assert_eq!(run(&st(37), true), 1);
+            assert_eq!(run(&BackupStatus::default(), true), 1);
+        }
+
+        #[test]
+        fn warnings_do_not_count_as_failures() {
+            let mut s = st(2);
+            s.outbox_count = 2;
+            s.pending_upload = vec![PendingUpload {
+                id: "a".into(),
+                shipped_ms: NOW - 25 * H,
+            }];
+            s.last_verify_ms = Some(NOW - 36 * 24 * H);
+            assert_eq!(run(&s, true), 0);
+        }
+
+        #[test]
+        fn age_text() {
+            assert_eq!(backup_age(NOW - 30 * 60_000, NOW), "30 min");
+            assert_eq!(backup_age(NOW - 5 * H, NOW), "5 h");
+            assert_eq!(backup_age(NOW - 50 * H, NOW), "2 d");
+        }
+
+        #[test]
+        fn legacy_listing_matches_only_legacy_names() {
+            let d = tempfile::tempdir().unwrap();
+            for (n, len) in [
+                ("hippo.db.20260101.bak", 10),
+                ("hippo.db.pre-v5", 20),
+                ("hippo.db.bak2", 30),
+                ("hippo.db.v5-backup", 40),
+                ("hippo.db.v5-backup-wal", 50),
+                ("hippo.db.pre-v5-shm", 60),
+                ("hippo.db", 1000),
+                ("hippo.db-wal", 1000),
+                ("hippo.db.other", 1000),
+            ] {
+                std::fs::write(d.path().join(n), vec![0u8; len]).unwrap();
+            }
+            assert_eq!(legacy_db_copies(d.path()), (6, 210));
+        }
+
+        #[test]
+        fn legacy_line_needs_an_uploaded_full() {
+            use crate::backup::artifact::ArtifactMeta;
+            use crate::backup::manifest::{Manifest, ManifestEntry};
+            let dest = tempfile::tempdir().unwrap();
+            assert!(!has_uploaded_full(dest.path()));
+            std::fs::write(dest.path().join("manifest.json"), b"{broken").unwrap();
+            assert!(!has_uploaded_full(dest.path()));
+            let entry = |kind, uploaded| ManifestEntry {
+                meta: ArtifactMeta {
+                    id: "x".into(),
+                    kind,
+                    label: None,
+                    created_ms: 0,
+                    base_id: None,
+                    hippo_version: String::new(),
+                    schema_version: 29,
+                    db_sha256: String::new(),
+                    row_counts: Default::default(),
+                },
+                file: "x".into(),
+                ciphertext_sha256: String::new(),
+                verified: true,
+                shipped_ms: Some(0),
+                uploaded,
+            };
+            let mut m = Manifest {
+                entries: vec![
+                    entry(ArtifactKind::Full, false),
+                    entry(ArtifactKind::Delta, true),
+                ],
+                ..Default::default()
+            };
+            m.save(dest.path()).unwrap();
+            assert!(!has_uploaded_full(dest.path()));
+            m.entries.push(entry(ArtifactKind::Full, true));
+            m.save(dest.path()).unwrap();
+            assert!(has_uploaded_full(dest.path()));
+        }
+    }
+
     use super::*;
     use hippo_core::events::EventPayload;
     use tempfile::tempdir;
