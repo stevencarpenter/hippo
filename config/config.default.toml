@@ -376,8 +376,8 @@ alarm_threshold = 25      # orphan count above which I-14 alarms
 gh_pr_lookup = false
 
 # [backup]
-# Encrypted knowledge-base backups (docs: hippo backup). Off until both
-# destination and recipient are set.
+# Encrypted knowledge-base backups (docs/backup.md). Off until both destination
+# and recipient are set. `hippo backup init --destination DIR` writes this section.
 # destination = ""   # existing directory that receives artifacts; hippo never creates it
-# recipient = ""     # public age X25519 recipient (age1...); the private key stays in 1Password
-# identity_ref = ""  # reference to the private identity used by restore, for example an op:// URI
+# recipient = ""     # public age X25519 recipient (age1...); encryption needs only this
+# identity_ref = ""  # private key reference for restore and verify: op://... or file:<path>

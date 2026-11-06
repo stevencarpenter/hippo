@@ -30,6 +30,12 @@ local LLMs.
     hippo enrichment pause|resume|status   # Operator pause of LLM enrichment (state in <data_dir>/enrichment-state.json)
     hippo eval export-bench-cases --out DIR   # Private blind-review bench cases from accepted findings and escapes (DIR outside any git checkout)
     hippo agents report [--agent A] [--since 30d] [--project P] [--model M]   # Per-agent scorecards via brain GET /agents/scorecard
+    hippo backup init --destination DIR [--op-vault V]   # Generate age key, store it in 1Password, write [backup]
+    hippo backup run                                      # Scheduled run (launchd, hourly); skips if a backup succeeded within 20 h
+    hippo backup now [--label TEXT]                       # Checkpoint now; exits 3 when [backup] is not configured
+    hippo backup status                                   # Last run, pending uploads, newest artifact per kind
+    hippo backup verify [--id ID]                         # Decrypt, rebuild, and check an artifact
+    hippo backup restore [--id ID | --before TIME] [--yes] [--extract DIR] [--identity REF] [--destination DIR]
 
 ### Rust (daemon + CLI)
 
@@ -103,6 +109,10 @@ Communication:
 - CLI to daemon: request/response via same Unix socket
 - hippo query (non-raw) to brain: HTTP request to brain local server
 - Brain to SQLite: direct read/write (WAL mode, busy_timeout=5000)
+
+### Knowledge-Base Backup
+
+`hippo backup` writes age-encrypted, verified artifacts of `hippo.db` (plus config, `enrichment-state.json`, and fallback files) to the `[backup] destination` directory. launchd `com.hippo.backup` runs `hippo backup run` hourly; weekly fulls and page-level deltas; checkpoints run before schema migrations, `gc-event-payloads`, and the known re-enrich, re-embed, and dedup operations. The private key lives only in 1Password. Watchdog I-21 and `hippo doctor` report backup health. See [`docs/backup.md`](docs/backup.md).
 
 ### Browser Source (Firefox)
 
@@ -181,7 +191,7 @@ Ingestion is handled by `pi_session::poll_tick` in `crates/hippo-daemon/src/pi_s
 Capture-reliability stack (the result of the P0–P3 overhaul shipped through v0.16). Reference docs live in [`docs/capture/`](docs/capture/architecture.md); historical design records are in [`docs/archive/capture-reliability-overhaul/`](docs/archive/capture-reliability-overhaul/). Key pieces:
 
 - **`source_health` table**: single SQL ground truth of "did the event land?" per source (non-exhaustive: `shell`, `claude-tool`, `agentic-session-claude`, `agentic-session-opencode`, `agentic-session-codex`, `agentic-session-cursor`, `browser`, `claude-session-watcher`, `watchdog`, `brain-preflight`). Every capture path writes its row in the same transaction as the event insert. (There is no `probe` row — the probe job writes `probe_*` columns onto each real source's row.) See [`docs/capture/architecture.md`](docs/capture/architecture.md).
-- **`hippo watchdog run`** (launchd `com.hippo.watchdog`, every 60 s): asserts the I-1..I-15 invariants against `source_health`, writes `capture_alarms` rows on violations, rate-limited per invariant. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
+- **`hippo watchdog run`** (launchd `com.hippo.watchdog`, every 60 s): asserts the I-1..I-21 invariants against `source_health`, writes `capture_alarms` rows on violations, rate-limited per invariant. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
 - **`hippo alarms list / ack`**: CLI for unacknowledged alarms (exit 1 if any).
 - **`hippo doctor`**: isolated checks with `[OK]`/`[WW]`/`[!!]`/`[--]` severity, exit code = fail count, total wall-clock < 2 s. `--explain` prints CAUSE/FIX/DOC per failure. See [`docs/capture/operator-runbook.md`](docs/capture/operator-runbook.md).
 - **`hippo probe`** (launchd `com.hippo.probe`, every 5 min): synthetic canary events round-trip through each capture path; latency recorded in `source_health.probe_lag_ms`. All probe rows carry a `probe_tag` and are filtered out of every user-facing query (RAG, MCP tools, `hippo ask`, etc.) by upstream daemon filtering and a Semgrep rule. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
