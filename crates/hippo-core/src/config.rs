@@ -43,7 +43,7 @@ pub struct HippoConfig {
 /// `[backup]` section. Backups are off until `destination` and `recipient` are set.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BackupConfig {
-    /// Existing directory that receives encrypted artifacts. Hippo never creates it.
+    /// Directory that receives encrypted artifacts. Only `hippo backup init` creates it, for an auto-detected Drive destination.
     #[serde(default)]
     pub destination: String,
     /// Public `age` X25519 recipient. Encryption needs only this, never the private key.

@@ -20,7 +20,7 @@
 - Excluded: OTel data, logs, `vault/`, `metrics/`, `bench/`, legacy `hippo.db.*` copies.
 - Compression: zstd level 9 with long-distance matching.
 - Encryption: `age` X25519. Private key lives in 1Password; never written to disk by hippo. Encryption needs only the public recipient.
-- Hippo never creates the destination directory.
+- Scheduled runs never create the destination directory. `hippo backup init` creates only an auto-detected Drive destination (operator change during execution).
 - Every file written to the destination uses a temporary name, then rename.
 - Retention: deltas 90 days; weekly fulls 365 days; first full of each UTC calendar month forever; checkpoints 365 days; never delete a full a retained delta uses; never delete the newest verified-and-uploaded full; prune only after the current run verifies.
 - Scheduled run skips if a successful backup happened within the last 20 hours.

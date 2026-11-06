@@ -173,9 +173,11 @@ delta treatment.
 
 - One configured destination directory (`[backup] destination` in
   `config.toml`). The operator sets it to
-  `~/Library/CloudStorage/GoogleDrive-<account>/My Drive/Backups/hippo`. Hippo
-  never creates the destination: a missing directory means the sync client is
-  not mounted, and a local look-alike would never sync.
+  `~/Library/CloudStorage/GoogleDrive-<account>/My Drive/Backups/hippo`.
+  Scheduled runs never create the destination: a missing directory means the
+  sync client is not mounted, and a local look-alike would never sync.
+  `hippo backup init` without `--destination` detects the Drive mounts and
+  creates `My Drive/Backups/hippo` inside the one the operator chooses.
 - Every artifact is written under a temporary name and renamed when complete,
   so the sync client never uploads a partial file.
 - A manifest in the destination lists each artifact: kind (full, delta,
