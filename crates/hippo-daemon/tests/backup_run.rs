@@ -687,3 +687,38 @@ fn checkpoint_at(fx: &Fx, now_ms: i64) -> RunReport {
     )
     .unwrap()
 }
+
+/// A pid that belonged to a process that has exited.
+fn dead_pid() -> u32 {
+    let mut c = std::process::Command::new("true").spawn().unwrap();
+    let pid = c.id();
+    c.wait().unwrap();
+    pid
+}
+
+#[test]
+fn run_removes_scratch_dirs_of_dead_processes() {
+    let fx = fixture();
+    let dead = dead_pid();
+    let me = std::process::id();
+    for n in [
+        format!("verify-tmp-{dead}-1"),
+        format!("restore-tmp-{dead}-2"),
+        format!("restore-tmp-{me}-3"),
+        "verify-tmp-notapid".to_owned(),
+    ] {
+        fs::create_dir_all(fx.work.join(n).join("x")).unwrap();
+    }
+    done(run_backup(&fx.config, RunMode::Scheduled, T0).unwrap());
+    let left: Vec<String> = names(&fx.work)
+        .into_iter()
+        .filter(|n| n.contains("-tmp-"))
+        .collect();
+    assert_eq!(
+        left,
+        [
+            format!("restore-tmp-{me}-3"),
+            "verify-tmp-notapid".to_owned()
+        ]
+    );
+}

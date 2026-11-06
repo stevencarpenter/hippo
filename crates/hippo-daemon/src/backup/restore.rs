@@ -270,6 +270,12 @@ pub fn verify(config: &HippoConfig, id: Option<&str>) -> Result<()> {
     let target = id.map_or(RestoreTarget::Latest, |i| RestoreTarget::Id(i.to_owned()));
     let entry = select(&manifest, &target)?;
     let work = work_dir(config)?;
+    {
+        // Not held during the decrypt, which would hold back scheduled runs and checkpoints.
+        let lock = run::open_lock(&work)?;
+        run::acquire(&lock, Some(run::CHECKPOINT_LOCK_WAIT))?;
+        run::sweep_stale_tmp(&work);
+    }
     let tmp = unique_tmp(&work, "verify-tmp")?;
     materialize(dest, &manifest, &entry.meta.id, &identity, &tmp.0)?;
     drop(tmp);
@@ -460,6 +466,7 @@ pub fn restore_with(
     let lock = run::open_lock(&work)?;
     run::acquire(&lock, Some(run::CHECKPOINT_LOCK_WAIT))
         .context("wait for the running backup to finish; nothing was changed")?;
+    run::sweep_stale_tmp(&work);
     let tmp = unique_tmp(&work, "restore-tmp")?;
     let db = materialize(&dest, &manifest, id, &identity, &tmp.0)?;
     // The artifact's own meta is authoritative; `check_db` matched it to the file.

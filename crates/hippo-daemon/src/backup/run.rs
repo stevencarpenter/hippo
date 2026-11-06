@@ -166,6 +166,7 @@ fn run_holding_lock(
     work: &Path,
 ) -> Result<RunReport> {
     let outbox = work.join("outbox");
+    sweep_stale_tmp(work);
     let mut st = status::load(work);
     let mut notes = Vec::new();
     let result = run_locked(config, mode, now_ms, once, work, &mut st, &mut notes);
@@ -226,6 +227,34 @@ pub(crate) fn acquire(lock: &File, wait: Option<Duration>) -> Result<bool> {
         }
         std::thread::sleep(delay.min(left));
         delay = (delay * 2).min(Duration::from_secs(5));
+    }
+}
+
+/// Removes `verify-tmp-<pid>-<ms>` and `restore-tmp-<pid>-<ms>` directories (plaintext
+/// database copies) whose process is gone. Call it under the run lock. Best effort.
+pub(crate) fn sweep_stale_tmp(work: &Path) {
+    let Ok(rd) = fs::read_dir(work) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let pid = ["verify-tmp-", "restore-tmp-"]
+            .iter()
+            .find_map(|p| name.strip_prefix(p))
+            .and_then(|rest| rest.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<libc::pid_t>().ok())
+            .filter(|&pid| pid > 0);
+        let dead = pid.is_some_and(|pid| {
+            // SAFETY: signal 0 only checks that the process exists.
+            let rc = unsafe { libc::kill(pid, 0) };
+            rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        });
+        if dead {
+            match fs::remove_dir_all(e.path()) {
+                Ok(()) => tracing::info!("backup: removed stale {name}"),
+                Err(err) => tracing::warn!("backup: remove stale {name}: {err}"),
+            }
+        }
     }
 }
 

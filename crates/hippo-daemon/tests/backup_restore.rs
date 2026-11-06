@@ -772,3 +772,33 @@ fn restore_restarts_services_when_the_swap_fails() {
     assert_eq!(file_sha(&live), before);
     assert_eq!(count(&live), 500);
 }
+
+#[test]
+fn verify_and_restore_remove_scratch_dirs_of_dead_processes() {
+    let mut fx = fixture();
+    let (full, _) = backup(&fx, T0);
+    fx.config.backup.identity_ref = fx.key_ref.clone();
+    let mut c = std::process::Command::new("true").spawn().unwrap();
+    let dead = c.id();
+    c.wait().unwrap();
+    let plant = |fx: &Fx| {
+        for p in ["verify-tmp", "restore-tmp"] {
+            fs::create_dir_all(fx.work.join(format!("{p}-{dead}-1/x"))).unwrap();
+        }
+    };
+    plant(&fx);
+    verify(&fx.config, None).unwrap();
+    assert!(entries_with(&fx.work, "verify-tmp").is_empty());
+    assert!(entries_with(&fx.work, "restore-tmp").is_empty());
+    plant(&fx);
+    restore_with(
+        &fx.config,
+        RestoreTarget::Id(full),
+        &opts(&fx),
+        &mut StubServices::default(),
+        &mut &b""[..],
+    )
+    .unwrap();
+    assert!(entries_with(&fx.work, "verify-tmp").is_empty());
+    assert!(entries_with(&fx.work, "restore-tmp").is_empty());
+}
