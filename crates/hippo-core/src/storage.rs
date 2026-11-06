@@ -527,13 +527,16 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     // `busy_timeout` at the read-to-write upgrade and fails at once with
     // SQLITE_BUSY (or SQLITE_BUSY_SNAPSHOT) under any concurrent writer.
     conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
-    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let mut version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
     if (1..EXPECTED_VERSION).contains(&version)
         && let Some(hook) = PRE_MIGRATION_HOOK.get()
     {
         hook(path, version, EXPECTED_VERSION)
             .context("pre-migration checkpoint failed; migration not run")?;
+        // The hook can wait minutes for the backup lock. Another process may have
+        // migrated the database meanwhile, so migrate from the current version.
+        version = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     }
 
     // Migrate from v1 → v2: add envelope_id column for dedup

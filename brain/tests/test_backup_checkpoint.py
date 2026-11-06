@@ -51,3 +51,19 @@ def test_failure_raises(configured_db, monkeypatch):
     with pytest.raises(SystemExit) as e:
         backup_checkpoint.checkpoint_before_mutation("re-enrich", configured_db)
     assert "disk full" in str(e.value)
+
+
+def test_announces_on_stderr(configured_db, monkeypatch, capsys):
+    _fake_run(monkeypatch, 0)
+    backup_checkpoint.checkpoint_before_mutation("re-enrich", configured_db)
+    assert "taking backup checkpoint re-enrich" in capsys.readouterr().err
+
+
+def test_missing_hippo_binary_exits_cleanly(configured_db, monkeypatch):
+    def run(cmd, **kwargs):
+        raise FileNotFoundError("hippo")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(SystemExit) as e:
+        backup_checkpoint.checkpoint_before_mutation("re-enrich", configured_db)
+    assert "not on PATH" in str(e.value)

@@ -4,7 +4,9 @@ use hippo_core::config::HippoConfig;
 use hippo_daemon::backup::artifact::{ArtifactKind, ArtifactMeta, extract_artifact};
 use hippo_daemon::backup::manifest::{Manifest, ManifestEntry};
 use hippo_daemon::backup::pagediff::apply_diff;
-use hippo_daemon::backup::run::{RunMode, RunReport, checkpoint, checkpoint_once, run_backup};
+use hippo_daemon::backup::run::{
+    RunMode, RunReport, checkpoint, checkpoint_once, checkpoint_waiting, run_backup,
+};
 use hippo_daemon::backup::status;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -341,6 +343,18 @@ fn checkpoint_waits_for_lock() {
     assert!(id.ends_with("-pre-migration-v30"), "{id}");
     // A checkpoint never becomes a delta base.
     assert!(!fx.work.join("pagehashes.bin").exists());
+}
+
+#[test]
+fn checkpoint_lock_timeout_is_an_error() {
+    let fx = fixture();
+    fs::create_dir_all(&fx.work).unwrap();
+    let lock = fs::File::create(fx.work.join("lock")).unwrap();
+    lock.lock().unwrap();
+    let r = checkpoint_waiting(&fx.config, "pre-gc", Duration::from_millis(200));
+    let err = r.expect_err("a lock timeout must not count as success");
+    assert!(format!("{err:#}").contains("timed out"), "{err:#}");
+    drop(lock);
 }
 
 #[test]

@@ -399,11 +399,6 @@ async def main_async(args: argparse.Namespace) -> int:
         log.error("Database not found: %s", db_path)
         return 1
 
-    if not args.dry_run:
-        from hippo_brain.backup_checkpoint import checkpoint_before_mutation
-
-        checkpoint_before_mutation("re-enrich-knowledge-nodes", db_path)
-
     enrichment_model = args.model or settings.get("enrichment_model") or ""
     embed_model = settings.get("embedding_model") or ""
     if not enrichment_model and not args.dry_run:
@@ -411,6 +406,11 @@ async def main_async(args: argparse.Namespace) -> int:
             "No enrichment model configured (config.toml [models].enrichment) and no --model flag"
         )
         return 1
+
+    if not args.dry_run:
+        from hippo_brain.backup_checkpoint import checkpoint_before_mutation
+
+        checkpoint_before_mutation("re-enrich-knowledge-nodes", db_path)
 
     base_url = settings.get("inference_base_url", "http://127.0.0.1:42069/v1")
     timeout = float(settings.get("inference_timeout_secs", 300.0))

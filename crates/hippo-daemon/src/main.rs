@@ -105,7 +105,14 @@ fn pre_migration_checkpoint(db: &std::path::Path, from: i64, to: i64) -> Result<
         return Ok(());
     }
     // A snapshot of the configured DB says nothing about some other database file.
-    if db.canonicalize()? != config.db_path().canonicalize()? {
+    // A configured path that does not exist cannot be the file being migrated. Any other
+    // canonicalize failure propagates, so the migration stops rather than going unprotected.
+    let configured = match config.db_path().canonicalize() {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    if db.canonicalize()? != configured {
         return Ok(());
     }
     let report = hippo_daemon::backup::run::checkpoint_once(

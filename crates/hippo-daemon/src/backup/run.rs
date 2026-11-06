@@ -76,13 +76,27 @@ pub fn checkpoint_once(config: &HippoConfig, label: &str) -> Result<RunReport> {
         },
         chrono::Utc::now().timestamp_millis(),
         true,
+        CHECKPOINT_LOCK_WAIT,
+    )
+}
+
+/// `checkpoint` with an explicit lock wait. A timeout is an error, never a skip.
+pub fn checkpoint_waiting(config: &HippoConfig, label: &str, wait: Duration) -> Result<RunReport> {
+    run_backup_impl(
+        config,
+        RunMode::Checkpoint {
+            label: label.to_owned(),
+        },
+        chrono::Utc::now().timestamp_millis(),
+        false,
+        wait,
     )
 }
 
 /// On error the temp directory is removed, `pagehashes.bin` and the manifest keep their
 /// last good contents, and `status.json` records `last_error`.
 pub fn run_backup(config: &HippoConfig, mode: RunMode, now_ms: i64) -> Result<RunReport> {
-    run_backup_impl(config, mode, now_ms, false)
+    run_backup_impl(config, mode, now_ms, false, CHECKPOINT_LOCK_WAIT)
 }
 
 fn run_backup_impl(
@@ -90,6 +104,7 @@ fn run_backup_impl(
     mode: RunMode,
     now_ms: i64,
     once: bool,
+    lock_wait: Duration,
 ) -> Result<RunReport> {
     if !config.backup.is_configured() {
         return Ok(RunReport::NotConfigured);
@@ -104,7 +119,7 @@ fn run_backup_impl(
     let lock = open_lock(&work)?;
     let wait = match mode {
         RunMode::Scheduled => None,
-        RunMode::Checkpoint { .. } => Some(CHECKPOINT_LOCK_WAIT),
+        RunMode::Checkpoint { .. } => Some(lock_wait),
     };
     if !acquire(&lock, wait)? {
         return Ok(RunReport::Skipped {
