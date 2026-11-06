@@ -1,0 +1,6 @@
+[advisories]
+# RUSTSEC-2026-0387: timing variability in crypto-bigint 0.5.5, which age 0.12.1
+# pulls in through p256 0.13 for P-256 recipients. Hippo backups use X25519
+# recipients and identities only, so the P-256 code never runs on hippo keys.
+# age 0.12.1 is the newest release. Remove this entry when age moves to p256 0.14.
+ignore = ["RUSTSEC-2026-0387"]
