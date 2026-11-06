@@ -3,14 +3,11 @@
 
 use std::ffi::OsString;
 use std::io::{BufRead, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use age::secrecy::{ExposeSecret, SecretString};
 use anyhow::{Context, Result, bail};
-
-#[cfg(test)]
-use std::path::PathBuf;
 
 const FIELD: &str = "private_key";
 
@@ -178,20 +175,115 @@ pub fn resolve_identity(identity_ref: &str) -> Result<age::x25519::Identity> {
 }
 
 /// Generates the key pair, stores the private key, and appends `[backup]` to `config_path`.
-pub fn init(config_path: &Path, destination: &Path, op_vault: Option<&str>) -> Result<()> {
+/// Without `destination`, uses (and creates) `Backups/hippo` in the Google Drive for
+/// desktop folder, asking which account when there are several.
+pub fn init(config_path: &Path, destination: Option<&Path>, op_vault: Option<&str>) -> Result<()> {
     let host = hostname::get()
         .map(|h| h.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "unknown-host".to_string());
+    let mut stdin = std::io::stdin().lock();
+    let stdout_is_terminal = std::io::stdout().is_terminal();
+    let detected = match destination {
+        Some(_) => None,
+        None => {
+            let root = dirs::home_dir()
+                .context("cannot determine home directory")?
+                .join("Library/CloudStorage");
+            let interactive = stdout_is_terminal && std::io::stdin().is_terminal();
+            Some(default_destination(
+                &root,
+                interactive,
+                &mut stdin,
+                &mut std::io::stdout(),
+            )?)
+        }
+    };
     init_with(
         &OnePassword::default(),
-        &mut std::io::stdin().lock(),
+        &mut stdin,
         &mut std::io::stdout(),
-        std::io::stdout().is_terminal(),
+        stdout_is_terminal,
         config_path,
-        destination,
+        detected
+            .as_deref()
+            .or(destination)
+            .context("no destination")?,
+        detected.is_some(),
         op_vault,
         &host,
     )
+}
+
+/// `<mount>/My Drive/Backups/hippo` for each Google Drive for desktop mount in
+/// `cloud_storage` (a `GoogleDrive-*` directory that holds `My Drive`), sorted.
+fn drive_candidates(cloud_storage: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(cloud_storage) else {
+        return Vec::new();
+    };
+    let mut v: Vec<PathBuf> = rd
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("GoogleDrive-"))
+        .map(|e| e.path().join("My Drive"))
+        .filter(|p| p.is_dir())
+        .map(|p| p.join("Backups/hippo"))
+        .collect();
+    v.sort();
+    v
+}
+
+/// The destination `init` uses when `--destination` is omitted. Creates nothing.
+fn default_destination(
+    cloud_storage: &Path,
+    interactive: bool,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+) -> Result<PathBuf> {
+    let candidates = drive_candidates(cloud_storage);
+    // `<mount>/My Drive/Backups/hippo`: the mount name holds the account.
+    let account = |p: &Path| {
+        p.ancestors()
+            .nth(3)
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let chosen = match candidates.as_slice() {
+        [] => bail!(
+            "Google Drive for desktop was not found (no GoogleDrive-*/My Drive in {}); \
+             pass --destination",
+            cloud_storage.display()
+        ),
+        [one] => one.clone(),
+        several if !interactive => {
+            let list: Vec<String> = several
+                .iter()
+                .map(|p| format!("  {}", p.display()))
+                .collect();
+            bail!(
+                "several Google Drive accounts found; pass --destination with one of:\n{}",
+                list.join("\n")
+            )
+        }
+        several => {
+            writeln!(out, "Google Drive accounts:")?;
+            for (i, p) in several.iter().enumerate() {
+                writeln!(out, "  {}. {}: {}", i + 1, account(p), p.display())?;
+            }
+            write!(out, "Back up to which one (number): ")?;
+            out.flush()?;
+            let mut line = String::new();
+            input.read_line(&mut line)?;
+            let n: usize = line.trim().parse().unwrap_or(0);
+            several.get(n.wrapping_sub(1)).cloned().with_context(|| {
+                format!(
+                    "aborted: {:?} is not a listed number; nothing was changed",
+                    line.trim()
+                )
+            })?
+        }
+    };
+    writeln!(out, "destination: {}", chosen.display())?;
+    Ok(chosen)
 }
 
 #[expect(
@@ -205,6 +297,7 @@ fn init_with(
     stdout_is_terminal: bool,
     config_path: &Path,
     destination: &Path,
+    create_destination: bool,
     op_vault: Option<&str>,
     host: &str,
 ) -> Result<()> {
@@ -224,14 +317,20 @@ fn init_with(
             config_path.display()
         );
     }
+    if create_destination {
+        std::fs::create_dir_all(destination)
+            .with_context(|| format!("create {}", destination.display()))?;
+    }
     if !destination.is_dir() {
         bail!(
             "destination {} is not an existing directory",
             destination.display()
         );
     }
-    // Relative paths would resolve against launchd's working directory, not this one.
-    let destination = std::path::absolute(destination)
+    // Absolute, because a relative path would resolve against launchd's working directory.
+    // Canonical, so a symlink cannot hide a Google Drive path from `is_drive_fs`.
+    let destination = destination
+        .canonicalize()
         .with_context(|| format!("cannot resolve {}", destination.display()))?;
     let dest_str = destination
         .to_str()
@@ -386,6 +485,7 @@ mod tests {
             tty,
             cfg,
             dest,
+            false,
             None,
             "testhost",
         );
@@ -469,7 +569,10 @@ mod tests {
             b["identity_ref"].as_str().unwrap(),
             "op://V1/I1/private_key"
         );
-        assert_eq!(b["destination"].as_str().unwrap(), dest.to_str().unwrap());
+        assert_eq!(
+            b["destination"].as_str().unwrap(),
+            dest.canonicalize().unwrap().to_str().unwrap()
+        );
         assert!(b["recipient"].as_str().unwrap().starts_with("age1"));
     }
 
@@ -616,6 +719,119 @@ mod tests {
         assert_eq!(
             parsed["backup"]["destination"].as_str().unwrap(),
             want.to_str().unwrap()
+        );
+    }
+
+    /// A CloudStorage root with one `GoogleDrive-<account>/My Drive` per account.
+    fn cloud(accounts: &[&str]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        for a in accounts {
+            std::fs::create_dir_all(root.path().join(format!("GoogleDrive-{a}/My Drive"))).unwrap();
+        }
+        root
+    }
+
+    fn pick(root: &Path, interactive: bool, input: &str) -> (Result<PathBuf>, String) {
+        let mut out = Vec::new();
+        let r = default_destination(
+            root,
+            interactive,
+            &mut Cursor::new(input.to_string()),
+            &mut out,
+        );
+        (r, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn default_destination_without_drive_says_to_pass_destination() {
+        let root = cloud(&[]);
+        // Not a mount: no My Drive folder.
+        std::fs::create_dir_all(root.path().join("GoogleDrive-x@y.z")).unwrap();
+        std::fs::create_dir_all(root.path().join("Dropbox/My Drive")).unwrap();
+        for r in [root.path().to_path_buf(), root.path().join("absent")] {
+            let e = format!("{:#}", pick(&r, true, "1\n").0.unwrap_err());
+            assert!(e.contains("Google Drive for desktop was not found"), "{e}");
+            assert!(e.contains("--destination"), "{e}");
+        }
+    }
+
+    #[test]
+    fn default_destination_with_one_mount_uses_it() {
+        let root = cloud(&["a@b.c"]);
+        let (r, out) = pick(root.path(), false, "");
+        let want = root.path().join("GoogleDrive-a@b.c/My Drive/Backups/hippo");
+        assert_eq!(r.unwrap(), want);
+        assert!(out.contains(want.to_str().unwrap()), "{out}");
+    }
+
+    #[test]
+    fn default_destination_with_several_mounts_needs_a_terminal() {
+        let root = cloud(&["a@b.c", "d@e.f"]);
+        let e = format!("{:#}", pick(root.path(), false, "1\n").0.unwrap_err());
+        assert!(e.contains("--destination"), "{e}");
+        assert!(
+            e.contains("GoogleDrive-a@b.c/My Drive/Backups/hippo"),
+            "{e}"
+        );
+        assert!(
+            e.contains("GoogleDrive-d@e.f/My Drive/Backups/hippo"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn default_destination_with_several_mounts_asks_for_a_number() {
+        let root = cloud(&["a@b.c", "d@e.f"]);
+        let (r, out) = pick(root.path(), true, "2\n");
+        assert_eq!(
+            r.unwrap(),
+            root.path().join("GoogleDrive-d@e.f/My Drive/Backups/hippo")
+        );
+        assert!(out.contains("1. GoogleDrive-a@b.c"), "{out}");
+        assert!(out.contains("2. GoogleDrive-d@e.f"), "{out}");
+        for bad in ["0\n", "3\n", "x\n", "\n", ""] {
+            let e = format!("{:#}", pick(root.path(), true, bad).0.unwrap_err());
+            assert!(e.contains("aborted"), "{bad:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn init_creates_a_detected_destination_only_after_its_checks() {
+        let (d, cfg, _) = setup("[backup]\n");
+        let new = d.path().join("My Drive/Backups/hippo");
+        let r = init_with(
+            &FakeStore::new("ok"),
+            &mut Cursor::new(String::new()),
+            &mut Vec::new(),
+            true,
+            &cfg,
+            &new,
+            true,
+            None,
+            "testhost",
+        );
+        assert!(r.is_err());
+        assert!(!new.exists(), "a refused init creates nothing");
+
+        let (d, cfg, _) = setup("");
+        let new = d.path().join("My Drive/Backups/hippo");
+        init_with(
+            &FakeStore::new("ok"),
+            &mut Cursor::new(String::new()),
+            &mut Vec::new(),
+            true,
+            &cfg,
+            &new,
+            true,
+            None,
+            "testhost",
+        )
+        .unwrap();
+        assert!(new.is_dir());
+        let parsed: toml::Table = toml::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(
+            parsed["backup"]["destination"].as_str().unwrap(),
+            new.canonicalize().unwrap().to_str().unwrap()
         );
     }
 }

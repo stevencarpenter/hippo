@@ -227,9 +227,11 @@ pub enum BackupAction {
     Status,
     /// Generate the age key pair, store the private key in 1Password, and write `[backup]`
     Init {
-        /// Existing directory that receives encrypted artifacts
+        /// Existing directory that receives encrypted artifacts. Default: `My Drive/Backups/hippo`
+        /// in the Google Drive for desktop folder (created; asks which account when there are
+        /// several)
         #[arg(long)]
-        destination: std::path::PathBuf,
+        destination: Option<std::path::PathBuf>,
         /// 1Password vault for the key item (default: the account's default vault)
         #[arg(long)]
         op_vault: Option<String>,

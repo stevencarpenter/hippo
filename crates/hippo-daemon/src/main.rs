@@ -1629,7 +1629,7 @@ async fn run() -> Result<()> {
                     op_vault,
                 } => {
                     let config_path = config.storage.config_dir.join("config.toml");
-                    keys::init(&config_path, &destination, op_vault.as_deref())?;
+                    keys::init(&config_path, destination.as_deref(), op_vault.as_deref())?;
                     return Ok(());
                 }
                 BackupAction::Status => {
