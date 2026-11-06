@@ -469,11 +469,14 @@ pub fn restore_with(
 /// Services must be stopped. Every refusal happens before the rename.
 fn replace_live(config: &HippoConfig, work: &Path, db: &Path) -> Result<()> {
     let live = config.db_path();
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let previous = if live.exists() {
-        let saved = save_current(config, work, &live)?;
+        let saved = save_current(config, work, &live, &ts)?;
         fold_live_wal(&live)?;
         saved
     } else {
+        // SQLite applies a -wal found next to a database whatever its header says.
+        move_sidecars_aside(&live, work, &ts)?;
         "none (there was no live database)".to_owned()
     };
     File::open(db)
@@ -496,9 +499,8 @@ fn replace_live(config: &HippoConfig, work: &Path, db: &Path) -> Result<()> {
 }
 
 /// Saves the live database before it is replaced and describes where it went.
-fn save_current(config: &HippoConfig, work: &Path, live: &Path) -> Result<String> {
+fn save_current(config: &HippoConfig, work: &Path, live: &Path, ts: &str) -> Result<String> {
     if !config.backup.is_configured() {
-        let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
         let saved = work.join(format!("pre-restore-{ts}.db"));
         take_snapshot(live, &saved).context("pre-restore snapshot")?;
         println!("Saved the current database to {}.", saved.display());
@@ -518,6 +520,27 @@ fn sidecar(live: &Path, suffix: &str) -> PathBuf {
     let mut p = live.as_os_str().to_owned();
     p.push(suffix);
     PathBuf::from(p)
+}
+
+/// Moves the `-wal` and `-shm` of `live` (whichever exist) into `work` as
+/// `pre-restore-<ts>.db-wal` and `.db-shm`. Never deletes or replaces a file.
+fn move_sidecars_aside(live: &Path, work: &Path, ts: &str) -> Result<()> {
+    for suffix in ["-wal", "-shm"] {
+        let from = sidecar(live, suffix);
+        if fs::symlink_metadata(&from).is_err() {
+            continue;
+        }
+        let to = work.join(format!("pre-restore-{ts}.db{suffix}"));
+        ensure!(
+            fs::symlink_metadata(&to).is_err(),
+            "{} already exists; refusing to replace it",
+            to.display()
+        );
+        fs::rename(&from, &to)
+            .with_context(|| format!("move {} to {}", from.display(), to.display()))?;
+        println!("Moved {} to {}.", from.display(), to.display());
+    }
+    Ok(())
 }
 
 const STILL_OPEN: &str = "close hippo-mcp clients (Claude Code sessions) and retry";

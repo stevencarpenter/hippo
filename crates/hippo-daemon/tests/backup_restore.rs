@@ -527,6 +527,35 @@ fn restore_folds_a_stale_live_wal_before_the_swap() {
 }
 
 #[test]
+fn restore_moves_a_stale_wal_aside_when_the_live_db_is_missing() {
+    let fx = fixture();
+    let (full, _) = backup(&fx, T0);
+    leave_stale_wal(&fx, 300);
+    // The operator moved a broken database away, leaving its -wal and -shm.
+    let live = fx.config.db_path();
+    fs::rename(&live, fx.t.path().join("hippo.db.broken")).unwrap();
+    let stale = fs::read(wal(&live)).unwrap();
+
+    restore_with(
+        &fx.config,
+        RestoreTarget::Id(full),
+        &opts(&fx),
+        &mut StubServices::default(),
+        &mut &b""[..],
+    )
+    .unwrap();
+    assert!(!wal(&live).exists());
+    assert_eq!(count(&live), 200, "no frame of the stale WAL was applied");
+    let moved = entries_with(&fx.work, "pre-restore-");
+    let wal_copy = moved
+        .iter()
+        .find(|n| n.ends_with(".db-wal"))
+        .unwrap_or_else(|| panic!("-wal not moved into the work dir: {moved:?}"));
+    assert_eq!(fs::read(fx.work.join(wal_copy)).unwrap(), stale);
+    assert!(moved.iter().any(|n| n.ends_with(".db-shm")), "{moved:?}");
+}
+
+#[test]
 fn restore_refuses_while_a_connection_holds_the_live_db() {
     let fx = fixture();
     let (full, _) = backup(&fx, T0);
