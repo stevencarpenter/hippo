@@ -148,7 +148,7 @@ Restore does this:
 6. Folds the live WAL into `hippo.db`. If another process holds `hippo.db` open, restore refuses and lists the PIDs.
 7. Renames the restored file over `hippo.db` and starts the services.
 
-A process that opens `hippo.db` between the WAL fold and the swap can leave the restored database damaged. Close Claude Code sessions (hippo-mcp clients) before you restore to prevent this. After a restore, run `hippo doctor`. If it reports damage, run the restore again from the same backup.
+A process that opens `hippo.db` between the WAL fold and the swap can leave the restored database damaged. Close Claude Code sessions (hippo-mcp clients) before you restore to prevent this. After a restore, run `sqlite3 ~/.local/share/hippo/hippo.db 'PRAGMA quick_check'`. If the output is not `ok`, run the restore again from the same backup.
 
 If restore is interrupted, run `mise run start`. After a restore, restart MCP clients so they open the restored database.
 
