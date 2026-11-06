@@ -557,6 +557,83 @@ fn checkpoint_succeeds_with_corrupt_sidecar_in_outbox() {
     );
     assert!(bad.exists());
 
-    // A scheduled run still treats it as an error.
-    assert!(run_backup(&fx.config, RunMode::Scheduled, T0 + H).is_err());
+    // A scheduled run records it and still writes its own artifact.
+    let (_, kind) = done(run_backup(&fx.config, RunMode::Scheduled, T0 + 21 * H).unwrap());
+    assert_eq!(kind, ArtifactKind::Full);
+    let s = status::load(&fx.work);
+    assert!(
+        s.last_error.as_deref().is_some_and(|e| e.contains("parse")),
+        "{s:?}"
+    );
+}
+
+/// Leaves one Full in the outbox (the destination was away during its run) and returns
+/// its artifact file name.
+fn stuck_in_outbox(fx: &Fx) -> String {
+    let away = fx.t.path().join("dest.away");
+    fs::rename(&fx.dest, &away).unwrap();
+    assert!(run_backup(&fx.config, RunMode::Scheduled, T0).is_err());
+    fs::rename(&away, &fx.dest).unwrap();
+    names(&fx.work.join("outbox"))
+        .into_iter()
+        .find(|n| n.ends_with(".tar.zst.age"))
+        .unwrap()
+}
+
+#[test]
+fn stale_partial_from_a_crashed_run_is_replaced() {
+    let fx = fixture();
+    let file = stuck_in_outbox(&fx);
+    // A run killed during the copy leaves its partial file in the destination.
+    fs::write(fx.dest.join(format!(".{file}.partial")), b"half").unwrap();
+
+    done(run_backup(&fx.config, RunMode::Scheduled, T0 + H).unwrap());
+    let m = Manifest::load(&fx.dest).unwrap();
+    assert!(
+        m.entries.iter().any(|e| e.file == file),
+        "stuck artifact shipped"
+    );
+    assert!(
+        names(&fx.dest).iter().all(|n| !n.ends_with(".partial")),
+        "{:?}",
+        names(&fx.dest)
+    );
+    assert_eq!(outbox_artifacts(&fx), 0);
+    assert_eq!(status::load(&fx.work).last_error, None);
+}
+
+#[test]
+fn permanent_outbox_error_does_not_stop_a_scheduled_run() {
+    let fx = fixture();
+    let file = stuck_in_outbox(&fx);
+    // A different file under the same name: shipping it can never succeed.
+    fs::write(fx.dest.join(&file), b"someone else's").unwrap();
+
+    let (id, kind) = done(run_backup(&fx.config, RunMode::Scheduled, T0 + H).unwrap());
+    assert_eq!(kind, ArtifactKind::Full);
+    let m = Manifest::load(&fx.dest).unwrap();
+    assert!(m.entries.iter().any(|e| e.meta.id == id));
+    assert_eq!(fs::read(fx.dest.join(&file)).unwrap(), b"someone else's");
+    assert_eq!(outbox_artifacts(&fx), 1, "the failed artifact stays");
+    let s = status::load(&fx.work);
+    assert_eq!(s.last_success_ms, Some(T0 + H));
+    assert!(
+        s.last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("different contents")),
+        "{s:?}"
+    );
+}
+
+#[test]
+fn destination_that_fails_every_copy_does_not_grow_the_outbox() {
+    let fx = fixture();
+    fs::set_permissions(&fx.dest, fs::Permissions::from_mode(0o500)).unwrap();
+    let first = run_backup(&fx.config, RunMode::Scheduled, T0);
+    let second = run_backup(&fx.config, RunMode::Scheduled, T0 + H);
+    fs::set_permissions(&fx.dest, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(first.is_err() && second.is_err());
+    assert_eq!(outbox_artifacts(&fx), 0);
+    assert!(names(&fx.work.join("outbox")).is_empty());
+    assert!(status::load(&fx.work).last_error.is_some());
 }

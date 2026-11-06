@@ -448,6 +448,10 @@ pub fn restore_with(
     }
 
     let work = work_dir(config)?;
+    // Held until the services restart: stopping them would kill a running backup.
+    let lock = run::open_lock(&work)?;
+    run::acquire(&lock, Some(run::CHECKPOINT_LOCK_WAIT))
+        .context("wait for the running backup to finish; nothing was changed")?;
     let tmp = unique_tmp(&work, "restore-tmp")?;
     let db = materialize(&dest, &manifest, id, &identity, &tmp.0)?;
     // The artifact's own meta is authoritative; `check_db` matched it to the file.
@@ -459,9 +463,10 @@ pub fn restore_with(
         println!(
             "hippo services are stopped. If this restore is interrupted, restart them with `mise run start`."
         );
-        replace_live(config, &work, &db, damaged)
+        replace_live(config, &work, &db, damaged, &lock)
     });
     let started = services.start();
+    drop(lock);
     drop(tmp);
     match (swapped, started) {
         (Ok(()), Ok(())) => {}
@@ -493,7 +498,13 @@ fn checked_loss_report(live: &Path, since_ms: i64) -> Result<Vec<(String, Option
 /// Saves the live database (a checkpoint, or a raw copy when it is `damaged`), folds its
 /// WAL into it, then renames `db` over it. Services must be stopped. Every refusal
 /// happens before the rename.
-fn replace_live(config: &HippoConfig, work: &Path, db: &Path, damaged: bool) -> Result<()> {
+fn replace_live(
+    config: &HippoConfig,
+    work: &Path,
+    db: &Path,
+    damaged: bool,
+    lock: &File,
+) -> Result<()> {
     let live = config.db_path();
     let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let previous = if live.exists() && damaged {
@@ -508,7 +519,7 @@ fn replace_live(config: &HippoConfig, work: &Path, db: &Path, damaged: bool) -> 
     } else if live.exists() {
         // Also before the checkpoint, so a refusal does not cost a full checkpoint.
         refuse_if_open(&live)?;
-        let saved = save_current(config, work, &live, &ts)?;
+        let saved = save_current(config, work, &live, &ts, lock)?;
         refuse_if_open(&live)?;
         fold_live_wal(&live)??;
         saved
@@ -537,14 +548,22 @@ fn replace_live(config: &HippoConfig, work: &Path, db: &Path, damaged: bool) -> 
 }
 
 /// Saves the live database before it is replaced and describes where it went.
-fn save_current(config: &HippoConfig, work: &Path, live: &Path, ts: &str) -> Result<String> {
+fn save_current(
+    config: &HippoConfig,
+    work: &Path,
+    live: &Path,
+    ts: &str,
+    lock: &File,
+) -> Result<String> {
     if !config.backup.is_configured() {
         let saved = work.join(format!("pre-restore-{ts}.db"));
         take_snapshot(live, &saved).context("pre-restore snapshot")?;
         println!("Saved the current database to {}.", saved.display());
         return Ok(saved.display().to_string());
     }
-    match run::checkpoint(config, "pre-restore").context("pre-restore checkpoint")? {
+    match run::checkpoint_holding_lock(config, "pre-restore", lock)
+        .context("pre-restore checkpoint")?
+    {
         RunReport::Done { id, shipped, .. } => {
             let place = if shipped { "shipped" } else { "in the outbox" };
             println!("Checkpointed the current database as {id} ({place}).");

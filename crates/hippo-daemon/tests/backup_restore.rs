@@ -274,6 +274,33 @@ fn restore_without_backup_config_snapshots_previous_db() {
 }
 
 #[test]
+fn restore_holds_the_backup_lock_while_services_are_stopped() {
+    let fx = fixture();
+    let (full, _) = backup(&fx, T0);
+    let lock_path = fx.work.join("lock");
+    let mut svc = StubServices {
+        on_stop: Some(Box::new(move || {
+            let f = fs::File::open(&lock_path).unwrap();
+            assert!(
+                matches!(f.try_lock(), Err(fs::TryLockError::WouldBlock)),
+                "services stopped without the backup lock"
+            );
+        })),
+        ..StubServices::default()
+    };
+    restore_with(
+        &fx.config,
+        RestoreTarget::Id(full),
+        &opts(&fx),
+        &mut svc,
+        &mut &b""[..],
+    )
+    .unwrap();
+    assert_eq!(svc.log, ["stop", "start"]);
+    assert_eq!(count(&fx.config.db_path()), 200);
+}
+
+#[test]
 fn restore_aborts_without_confirmation() {
     let fx = fixture();
     let (full, _) = backup(&fx, T0);

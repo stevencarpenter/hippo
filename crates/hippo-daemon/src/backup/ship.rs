@@ -125,6 +125,9 @@ fn settle_existing(
 /// reads back, then deletes the outbox file. `dest` is never created. If `dest/{name}`
 /// already holds identical bytes the call finishes the outbox delete (retry after a crash);
 /// different bytes are an error and nothing is touched.
+///
+/// The caller must hold the backup run lock. An existing `.{name}.partial` is then left
+/// from a run that was killed during the copy, so it is replaced.
 pub fn ship(outbox_file: &Path, dest: &Path, expected_sha256: &[u8; 32]) -> Result<ShipOutcome> {
     let name = outbox_file.file_name().context("outbox file has no name")?;
     match fs::metadata(dest) {
@@ -144,16 +147,23 @@ pub fn ship(outbox_file: &Path, dest: &Path, expected_sha256: &[u8; 32]) -> Resu
     partial_name.push(".partial");
     let partial = dest.join(partial_name);
 
-    let mut out = match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&partial)
-    {
+    let open = || {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)
+    };
+    let opened = match open() {
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            fs::remove_file(&partial).and_then(|()| open())
+        }
+        r => r,
+    };
+    let mut out = match opened {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound && !dest.exists() => {
             return Ok(ShipOutcome::DestinationUnavailable);
         }
-        // Not ours: never delete it.
         Err(e) => return Err(e).with_context(|| format!("create {}", partial.display())),
     };
     // From here on this call owns `partial` and removes it on every failure.
@@ -301,17 +311,17 @@ mod tests {
     }
 
     #[test]
-    fn ship_leaves_foreign_partial_alone() {
+    fn ship_replaces_a_partial_left_by_a_crashed_run() {
         let t = tempfile::tempdir().unwrap();
         let dest = t.path().join("dest");
         fs::create_dir(&dest).unwrap();
         let partial = dest.join(".a.tar.zst.age.partial");
-        fs::write(&partial, b"theirs").unwrap();
+        fs::write(&partial, b"half").unwrap();
         let (src, hash) = outbox_file(t.path(), b"payload");
-        assert!(ship(&src, &dest, &hash).is_err());
-        assert_eq!(fs::read(&partial).unwrap(), b"theirs");
-        assert!(src.exists());
-        assert!(!dest.join("a.tar.zst.age").exists());
+        ship(&src, &dest, &hash).unwrap();
+        assert_eq!(fs::read(dest.join("a.tar.zst.age")).unwrap(), b"payload");
+        assert!(!partial.exists());
+        assert!(!src.exists());
     }
 
     #[test]

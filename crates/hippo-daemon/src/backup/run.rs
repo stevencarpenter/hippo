@@ -109,13 +109,7 @@ fn run_backup_impl(
     if !config.backup.is_configured() {
         return Ok(RunReport::NotConfigured);
     }
-    let work = config.backup_work_dir();
-    let outbox = work.join("outbox");
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&outbox)
-        .with_context(|| format!("create {}", outbox.display()))?;
+    let work = create_work_dir(config)?;
     let lock = open_lock(&work)?;
     let wait = match mode {
         RunMode::Scheduled => None,
@@ -126,10 +120,55 @@ fn run_backup_impl(
             reason: "another backup run holds the lock".into(),
         });
     }
+    run_holding_lock(config, &mode, now_ms, once, &work)
+}
 
-    let mut st = status::load(&work);
+/// `checkpoint` for a caller that already holds the run lock (`_lock`, from
+/// `open_lock` and `acquire`). Taking the lock again would wait on itself.
+pub(crate) fn checkpoint_holding_lock(
+    config: &HippoConfig,
+    label: &str,
+    _lock: &File,
+) -> Result<RunReport> {
+    if !config.backup.is_configured() {
+        return Ok(RunReport::NotConfigured);
+    }
+    let work = create_work_dir(config)?;
+    let mode = RunMode::Checkpoint {
+        label: label.to_owned(),
+    };
+    run_holding_lock(
+        config,
+        &mode,
+        chrono::Utc::now().timestamp_millis(),
+        false,
+        &work,
+    )
+}
+
+/// `<work_dir>` and its `outbox/`, mode 0700.
+fn create_work_dir(config: &HippoConfig) -> Result<PathBuf> {
+    let work = config.backup_work_dir();
+    let outbox = work.join("outbox");
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&outbox)
+        .with_context(|| format!("create {}", outbox.display()))?;
+    Ok(work)
+}
+
+fn run_holding_lock(
+    config: &HippoConfig,
+    mode: &RunMode,
+    now_ms: i64,
+    once: bool,
+    work: &Path,
+) -> Result<RunReport> {
+    let outbox = work.join("outbox");
+    let mut st = status::load(work);
     let mut notes = Vec::new();
-    let result = run_locked(config, &mode, now_ms, once, &work, &mut st, &mut notes);
+    let result = run_locked(config, mode, now_ms, once, work, &mut st, &mut notes);
     st.outbox_count = pending_entries(&outbox).map_or(st.outbox_count, |v| {
         u32::try_from(v.len()).unwrap_or(u32::MAX)
     });
@@ -144,7 +183,7 @@ fn run_backup_impl(
         Ok(_) => {}
         Err(e) => st.last_error = Some(format!("{e:#}")),
     }
-    let saved = status::save(&work, &st);
+    let saved = status::save(work, &st);
     let report = result?;
     saved?;
     Ok(report)
@@ -225,9 +264,12 @@ fn run_locked(
 
     let waiting = match manifest.as_mut() {
         Some(m) => {
+            // Only an unavailable destination holds back a new artifact: an item that
+            // fails for another reason stays in the outbox and is reported.
             let (waiting, errors) = ship_outbox(&outbox, dest, m, now_ms)?;
             for e in errors {
-                tolerate::<()>(cp, notes, Err(e))?;
+                tracing::warn!("backup outbox: {e:#}");
+                notes.push(format!("{e:#}"));
             }
             tolerate(cp, notes, refresh_uploaded(dest, m))?;
             st.pending_upload = pending_upload(m);
@@ -341,12 +383,21 @@ fn run_locked(
     }
     drop(tmp);
 
-    let shipped_into = match manifest.as_mut() {
-        Some(m) => tolerate(cp, notes, ship_pending(&sidecar, &outbox, dest, m, now_ms))?
-            .unwrap_or(false)
-            .then_some(m),
-        None => None,
+    let shipped = match manifest
+        .as_mut()
+        .map(|m| ship_pending(&sidecar, &outbox, dest, m, now_ms))
+    {
+        // Outbox errors no longer hold back a scheduled run, so a destination that fails
+        // every copy would otherwise gain one artifact per hourly run.
+        Some(Err(e)) if !cp && out.exists() => {
+            let _ = fs::remove_file(&sidecar);
+            let _ = fs::remove_file(&out);
+            return Err(e);
+        }
+        Some(r) => tolerate(cp, notes, r)?.unwrap_or(false),
+        None => false,
     };
+    let shipped_into = manifest.as_mut().filter(|_| shipped);
     let Some(manifest) = shipped_into else {
         let msg = format!(
             "{id} was not shipped to {} and waits in the outbox",
@@ -485,8 +536,9 @@ fn pending_entries(outbox: &Path) -> Result<Vec<PathBuf>> {
     Ok(v)
 }
 
-/// Ships every pending outbox artifact. Returns how many still wait for the destination
-/// and the per-file errors; a failed file stays in the outbox. Files with no sidecar
+/// Ships every pending outbox artifact. Returns how many wait for an unavailable
+/// destination and the per-file errors; a failed file stays in the outbox but is not
+/// counted as waiting. Files with no sidecar
 /// (temp files and artifacts from a crashed run) are removed.
 fn ship_outbox(
     outbox: &Path,
@@ -512,10 +564,7 @@ fn ship_outbox(
         match ship_pending(&sidecar, outbox, dest, manifest, now_ms) {
             Ok(true) => {}
             Ok(false) => waiting += 1,
-            Err(e) => {
-                waiting += 1;
-                errors.push(e);
-            }
+            Err(e) => errors.push(e),
         }
     }
     Ok((waiting, errors))
