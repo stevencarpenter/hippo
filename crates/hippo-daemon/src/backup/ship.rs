@@ -18,8 +18,13 @@ pub enum ShipOutcome {
     DestinationUnavailable,
 }
 
+/// Google Drive for desktop serves `~/Library/CloudStorage/GoogleDrive-*` through File
+/// Provider on the APFS data volume, so `statfs` reports `apfs` and cannot identify it.
+/// The canonical path can, also when `dest` is a symlink.
 pub fn is_drive_fs(dest: &Path) -> bool {
-    dest.to_string_lossy()
+    dest.canonicalize()
+        .unwrap_or_else(|_| dest.to_path_buf())
+        .to_string_lossy()
         .contains("/Library/CloudStorage/GoogleDrive-")
 }
 
@@ -342,6 +347,18 @@ mod tests {
             "/Users/x/Library/CloudStorage/GoogleDrive-a@b.c/My Drive/hippo"
         )));
         assert!(!is_drive_fs(Path::new("/Users/x/backups")));
+    }
+
+    #[test]
+    fn drive_fs_detected_through_a_symlink() {
+        let t = tempfile::tempdir().unwrap();
+        let real = t
+            .path()
+            .join("Library/CloudStorage/GoogleDrive-a@b.c/My Drive/hippo");
+        fs::create_dir_all(&real).unwrap();
+        let link = t.path().join("backups");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(is_drive_fs(&link));
     }
 
     #[test]
