@@ -29,11 +29,11 @@ depends = ["build", "build:brain"]
 
 [tasks."release:check-version"]
 description = "Validate a release tag against package manifests and lockfiles"
-run = 'uv run --no-project --python 3.14 python scripts/check_release_version.py "$@"'
+run = 'uv run --no-project --python 3.15 python scripts/check_release_version.py "$@"'
 
 [tasks."release:smoke"]
 description = "Install and exercise a supplied macOS release bundle in an isolated fixture"
-run = 'uv run --no-project --python 3.14 python scripts/smoke_release_bundle.py "$@"'
+run = 'uv run --no-project --python 3.15 python scripts/smoke_release_bundle.py "$@"'
 
 [tasks."build:ext:dist"]
 description = "Build the Firefox extension dist/ bundle (TypeScript -> dist/*.js)"

@@ -64,7 +64,7 @@ on **your** hardware and **your** workload — not someone else's leaderboard.
 
 ## Hard requirements
 
-- Python 3.14, `uv` (project tooling)
+- Python 3.15, `uv` (project tooling)
 - LM Studio running locally with at least one model loaded
 - The `lms` CLI on PATH (LM Studio CLI) — bench will refuse to run without it
 - A live hippo DB at `~/.local/share/hippo/hippo.db` to seed the corpus from

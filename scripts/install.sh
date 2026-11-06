@@ -50,7 +50,7 @@ INSTALL LOCATIONS:
     ~/.local/share/hippo/                       runtime data (SQLite, logs)
 
 REQUIREMENTS:
-    macOS only. bash, curl, uv 0.12.17+ (Python package manager), python3.
+    macOS only. bash, curl, uv 0.13.7+ (Python package manager), python3.
 EOF
 }
 
@@ -378,7 +378,7 @@ install_brain() {
     # after its directory is renamed. Preserve the import-repair retry for
     # cached wheels whose metadata exists but package contents are incomplete.
     log_info "Syncing staged brain Python dependencies..."
-    if ! (cd "${brain_staging}" && uv venv --relocatable --python 3.14 .venv \
+    if ! (cd "${brain_staging}" && uv venv --relocatable --python 3.15 .venv \
             && uv sync --locked --no-editable 2>&1); then
         rm -rf "${brain_staging}"
         log_error "Staged brain dependency installation failed; existing brain preserved"

@@ -87,7 +87,7 @@ When codegraph MCP tools are available (`mcp__codegraph__*`), use `codegraph_exp
 ## Style
 
 - Rust: edition 2024, clippy clean, anyhow for errors
-- Python: 3.14+ required, ruff for lint+format, uv for package management
+- Python: 3.15+ required, ruff for lint+format, uv for package management
 - All timestamps: Unix epoch milliseconds (i64/INTEGER)
 - SQLite: WAL mode, PRAGMA foreign_keys=ON, PRAGMA busy_timeout=5000 on every connection
 - Vectors: 768d embeddings in `knowledge_vectors` vec0 virtual table (sqlite-vec); see brain/src/hippo_brain/vector_store.py

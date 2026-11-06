@@ -201,7 +201,7 @@ Capture-reliability stack (the result of the P0–P3 overhaul shipped through v0
 ## Style
 
 - Rust: edition 2024, clippy clean, anyhow for errors, favor immutability and functional combinators
-- Python: 3.14+, ruff for lint+format, uv for package management
+- Python: 3.15+, ruff for lint+format, uv for package management
 - All timestamps: Unix epoch milliseconds (i64/INTEGER)
 - SQLite: WAL mode, PRAGMA foreign_keys=ON, PRAGMA busy_timeout=5000 on every connection
 
