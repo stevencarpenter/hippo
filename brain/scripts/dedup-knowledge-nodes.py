@@ -303,6 +303,11 @@ def main() -> None:
         log.error("database not found: %s", db_path)
         sys.exit(1)
 
+    if args.apply:
+        from hippo_brain.backup_checkpoint import checkpoint_before_mutation
+
+        checkpoint_before_mutation("dedup-knowledge-nodes", db_path)
+
     # Use the brain's vec0-aware connection so vector deletes work in production.
     from hippo_brain.vector_store import open_conn
 

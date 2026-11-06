@@ -94,7 +94,30 @@ fn run_with_runtime(work: impl std::future::Future<Output = Result<()>>) -> Resu
     result
 }
 
+/// Checkpoints the configured database before `open_db` migrates it. One label per
+/// version step, so processes that start together after an upgrade write one artifact.
+fn pre_migration_checkpoint(db: &std::path::Path, from: i64, to: i64) -> Result<()> {
+    let config = HippoConfig::load_default()?;
+    if !config.backup.is_configured() {
+        tracing::warn!(
+            "[backup] is not configured; migrating v{from} to v{to} without a checkpoint"
+        );
+        return Ok(());
+    }
+    // A snapshot of the configured DB says nothing about some other database file.
+    if db.canonicalize()? != config.db_path().canonicalize()? {
+        return Ok(());
+    }
+    let report = hippo_daemon::backup::run::checkpoint_once(
+        &config,
+        &format!("pre-migration-v{from}-v{to}"),
+    )?;
+    tracing::info!("pre-migration checkpoint: {report:?}");
+    Ok(())
+}
+
 async fn run() -> Result<()> {
+    hippo_core::storage::set_pre_migration_hook(pre_migration_checkpoint);
     // Load config early — needed for telemetry init before CLI parsing
     // Missing configuration already uses defaults in load_default. Invalid or
     // unreadable configuration must not silently re-enable disabled capture.
@@ -961,6 +984,15 @@ async fn run() -> Result<()> {
             commands::handle_events(&config, session, since, project).await?;
         }
         Commands::GcEventPayloads { confirm: _ } => {
+            // The sweep is destructive, so a failed checkpoint stops it.
+            if config.backup.is_configured() {
+                hippo_daemon::backup::run::checkpoint(&config, "pre-gc-event-payloads")
+                    .context("pre-gc checkpoint failed; payload GC not run")?;
+            } else {
+                tracing::warn!(
+                    "[backup] is not configured; running payload GC without a checkpoint"
+                );
+            }
             let conn = hippo_core::storage::open_db(&config.db_path())?;
             let report = hippo_core::storage::gc_event_payloads(
                 &conn,

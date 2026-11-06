@@ -4,7 +4,7 @@ use hippo_core::config::HippoConfig;
 use hippo_daemon::backup::artifact::{ArtifactKind, ArtifactMeta, extract_artifact};
 use hippo_daemon::backup::manifest::{Manifest, ManifestEntry};
 use hippo_daemon::backup::pagediff::apply_diff;
-use hippo_daemon::backup::run::{RunMode, RunReport, checkpoint, run_backup};
+use hippo_daemon::backup::run::{RunMode, RunReport, checkpoint, checkpoint_once, run_backup};
 use hippo_daemon::backup::status;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -341,6 +341,25 @@ fn checkpoint_waits_for_lock() {
     assert!(id.ends_with("-pre-migration-v30"), "{id}");
     // A checkpoint never becomes a delta base.
     assert!(!fx.work.join("pagehashes.bin").exists());
+}
+
+#[test]
+fn checkpoint_once_skips_a_label_that_already_exists() {
+    let fx = fixture();
+    let label = "pre-migration-v28-v29";
+    let first = checkpoint_once(&fx.config, label).unwrap();
+    assert!(matches!(first, RunReport::Done { .. }), "{first:?}");
+    let artifacts = outbox_artifacts(&fx);
+    let manifest_len = Manifest::load(&fx.dest).unwrap().entries.len();
+    let second = checkpoint_once(&fx.config, label).unwrap();
+    assert!(matches!(second, RunReport::Skipped { .. }), "{second:?}");
+    assert_eq!(outbox_artifacts(&fx), artifacts);
+    assert_eq!(
+        Manifest::load(&fx.dest).unwrap().entries.len(),
+        manifest_len
+    );
+    let other = checkpoint_once(&fx.config, "pre-migration-v29-v30").unwrap();
+    assert!(matches!(other, RunReport::Done { .. }), "{other:?}");
 }
 
 #[test]

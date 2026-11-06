@@ -1128,6 +1128,7 @@ description = "Nuke and re-enrich all events using the bulk model"
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
+hippo backup now --label re-enrich || { rc=$?; [ "$rc" -eq 3 ] && echo "warning: backup not configured" >&2 || exit "$rc"; }
 
 DATA_DIR=~/.local/share/hippo
 DB="$DATA_DIR/hippo.db"
@@ -1162,6 +1163,7 @@ description = "Redrive failed enrichment queue items (shell, browser, workflow, 
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
+hippo backup now --label re-enrich-failed || { rc=$?; [ "$rc" -eq 3 ] && echo "warning: backup not configured" >&2 || exit "$rc"; }
 
 DB="${HIPPO_DB:-$HOME/.local/share/hippo/hippo.db}"
 
@@ -1187,13 +1189,19 @@ run = "uv run --project brain python scripts/hippo-ingest-claude.py --enrich ${@
 
 [tasks."re-enrich:claude"]
 description = "Re-enrich existing Claude knowledge nodes in place"
-run = "uv run --project brain python brain/scripts/re-enrich-knowledge-nodes.py --source claude --force ${@}"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+hippo backup now --label re-enrich-claude || { rc=$?; [ "$rc" -eq 3 ] && echo "warning: backup not configured" >&2 || exit "$rc"; }
+uv run --project brain python brain/scripts/re-enrich-knowledge-nodes.py --source claude --force ${@}
+"""
 
 [tasks.re-embed]
 description = "Re-embed all knowledge nodes without re-enriching (use after changing embedding model)"
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
+hippo backup now --label re-embed || { rc=$?; [ "$rc" -eq 3 ] && echo "warning: backup not configured" >&2 || exit "$rc"; }
 echo "==> Stopping brain..."
 pkill -f 'hippo-brain' 2>/dev/null && sleep 1 || true
 echo "==> Re-embedding..."

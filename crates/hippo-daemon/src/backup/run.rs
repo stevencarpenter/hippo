@@ -65,9 +65,32 @@ pub fn checkpoint(config: &HippoConfig, label: &str) -> Result<RunReport> {
     )
 }
 
+/// Like `checkpoint`, but skips when a verified artifact with `label` already exists.
+/// The check runs under the run lock: several processes that start together after an
+/// upgrade all request the same label, and only the first should write one.
+pub fn checkpoint_once(config: &HippoConfig, label: &str) -> Result<RunReport> {
+    run_backup_impl(
+        config,
+        RunMode::Checkpoint {
+            label: label.to_owned(),
+        },
+        chrono::Utc::now().timestamp_millis(),
+        true,
+    )
+}
+
 /// On error the temp directory is removed, `pagehashes.bin` and the manifest keep their
 /// last good contents, and `status.json` records `last_error`.
 pub fn run_backup(config: &HippoConfig, mode: RunMode, now_ms: i64) -> Result<RunReport> {
+    run_backup_impl(config, mode, now_ms, false)
+}
+
+fn run_backup_impl(
+    config: &HippoConfig,
+    mode: RunMode,
+    now_ms: i64,
+    once: bool,
+) -> Result<RunReport> {
     if !config.backup.is_configured() {
         return Ok(RunReport::NotConfigured);
     }
@@ -91,7 +114,7 @@ pub fn run_backup(config: &HippoConfig, mode: RunMode, now_ms: i64) -> Result<Ru
 
     let mut st = status::load(&work);
     let mut notes = Vec::new();
-    let result = run_locked(config, &mode, now_ms, &work, &mut st, &mut notes);
+    let result = run_locked(config, &mode, now_ms, once, &work, &mut st, &mut notes);
     st.outbox_count = pending_entries(&outbox).map_or(st.outbox_count, |v| {
         u32::try_from(v.len()).unwrap_or(u32::MAX)
     });
@@ -174,6 +197,7 @@ fn run_locked(
     config: &HippoConfig,
     mode: &RunMode,
     now_ms: i64,
+    once: bool,
     work: &Path,
     st: &mut BackupStatus,
     notes: &mut Vec<String>,
@@ -196,6 +220,23 @@ fn run_locked(
         }
         None => pending_entries(&outbox)?.len(),
     };
+
+    if let (true, RunMode::Checkpoint { label }) = (once, mode) {
+        let has = |e: &ManifestEntry| e.verified && e.meta.label.as_deref() == Some(label);
+        let in_manifest = manifest.as_ref().is_some_and(|m| m.entries.iter().any(has));
+        // A sidecar that cannot be read counts as absent: a duplicate is cheaper than none.
+        let in_outbox = pending_entries(&outbox)?.iter().any(|p| {
+            fs::read(p)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<ManifestEntry>(&b).ok())
+                .is_some_and(|e| has(&e))
+        });
+        if in_manifest || in_outbox {
+            return Ok(RunReport::Skipped {
+                reason: format!("a verified checkpoint labeled {label} already exists"),
+            });
+        }
+    }
 
     let label = match mode {
         RunMode::Scheduled => {
