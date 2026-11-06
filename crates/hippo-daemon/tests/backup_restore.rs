@@ -618,6 +618,101 @@ fn restore_refuses_while_another_process_holds_the_live_db() {
     assert!(msg.contains("hippo-mcp"), "{msg}");
     assert_eq!(svc.log, ["stop", "start"]);
     assert_eq!(file_sha(&live), before);
+    // The refusal comes before the pre-restore checkpoint, so it costs no artifact.
+    let m = Manifest::load(&fx.dest).unwrap();
+    assert!(
+        m.entries
+            .iter()
+            .all(|e| e.meta.kind != ArtifactKind::Checkpoint),
+        "a refused restore wrote a checkpoint"
+    );
+    assert!(entries_with(&fx.work.join("outbox"), "hippo-").is_empty());
+}
+
+/// Folds the live WAL, then overwrites `len` bytes at `offset` of the main file.
+fn corrupt_live(fx: &Fx, offset: u64, len: usize) {
+    use std::io::{Seek, SeekFrom, Write};
+    let live = fx.config.db_path();
+    Connection::open(&live)
+        .unwrap()
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
+    let mut f = fs::OpenOptions::new().write(true).open(&live).unwrap();
+    f.seek(SeekFrom::Start(offset)).unwrap();
+    f.write_all(&vec![0xa5; len]).unwrap();
+}
+
+/// The single `pre-restore-<ts>` directory in the work dir.
+fn raw_copy_dir(fx: &Fx) -> PathBuf {
+    let dirs: Vec<PathBuf> = entries_with(&fx.work, "pre-restore-")
+        .into_iter()
+        .map(|n| fx.work.join(n))
+        .filter(|p| p.is_dir())
+        .collect();
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    dirs[0].clone()
+}
+
+#[test]
+fn restore_replaces_a_live_db_with_corrupt_pages() {
+    let fx = fixture();
+    let (full, _) = backup(&fx, T0);
+    add_rows(&fx, 300);
+    corrupt_live(&fx, 3 * 4096, 4 * 4096);
+    let live = fx.config.db_path();
+    let damaged = file_sha(&live);
+
+    let o = RestoreOpts {
+        yes: false,
+        ..opts(&fx)
+    };
+    restore_with(
+        &fx.config,
+        RestoreTarget::Id(full),
+        &o,
+        &mut StubServices::default(),
+        &mut &b"yes\n"[..],
+    )
+    .unwrap();
+    assert_eq!(count(&live), 200);
+    let dir = raw_copy_dir(&fx);
+    assert_eq!(mode(&dir), 0o700);
+    assert_eq!(file_sha(&dir.join("hippo.db")), damaged, "raw byte copy");
+    assert_eq!(mode(&dir.join("hippo.db")), 0o600);
+    let m = Manifest::load(&fx.dest).unwrap();
+    assert!(
+        m.entries
+            .iter()
+            .all(|e| e.meta.kind != ArtifactKind::Checkpoint),
+        "a damaged database gets a raw copy, not a checkpoint"
+    );
+}
+
+#[test]
+fn restore_replaces_an_unreadable_live_db_after_a_raw_copy() {
+    let fx = fixture();
+    let (full, _) = backup(&fx, T0);
+    corrupt_live(&fx, 0, 100); // the header: SQLite no longer opens it
+    let live = fx.config.db_path();
+    fs::write(wal(&live), vec![0x5a; 8192]).unwrap();
+
+    restore_with(
+        &fx.config,
+        RestoreTarget::Id(full),
+        &opts(&fx),
+        &mut StubServices::default(),
+        &mut &b""[..],
+    )
+    .unwrap();
+    assert_eq!(count(&live), 200);
+    let dir = raw_copy_dir(&fx);
+    assert_eq!(
+        fs::read(dir.join("hippo.db-wal")).unwrap(),
+        vec![0x5a; 8192]
+    );
+    // The fold fails ("file is not a database"). SQLite itself drops a WAL whose
+    // header is invalid, so the raw copy above is the only place it survives.
+    assert!(!wal(&live).exists());
 }
 
 #[test]

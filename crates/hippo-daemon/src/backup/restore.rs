@@ -409,22 +409,38 @@ pub fn restore_with(
         when(entry.meta.created_ms),
         live.display()
     );
-    if live.exists() {
-        println!("Rows captured since that backup:");
-        for (source, n) in loss_report(&open_read_only(&live)?, entry.meta.created_ms)? {
-            let fate = if source.starts_with("agentic") {
-                "re-ingested from source files if still present"
-            } else {
-                "lost"
-            };
-            match n {
-                Some(n) => println!("  {source}: {n} ({fate})"),
-                None => println!("  {source}: skipped (its table has no capture-time column)"),
+    // A live database that cannot be read or fails quick_check is damaged: restore
+    // replaces it anyway, after a raw byte copy instead of a checkpoint.
+    let damaged = live.exists()
+        && match checked_loss_report(&live, entry.meta.created_ms) {
+            Ok(rows) => {
+                println!("Rows captured since that backup:");
+                for (source, n) in rows {
+                    let fate = if source.starts_with("agentic") {
+                        "re-ingested from source files if still present"
+                    } else {
+                        "lost"
+                    };
+                    match n {
+                        Some(n) => println!("  {source}: {n} ({fate})"),
+                        None => {
+                            println!("  {source}: skipped (its table has no capture-time column)")
+                        }
+                    }
+                }
+                false
             }
-        }
-    }
+            Err(e) => {
+                println!("The live database is damaged ({e:#}); skipping the loss report.");
+                true
+            }
+        };
     if !opts.yes {
-        print!("Type yes to replace the live database: ");
+        if damaged {
+            print!("Type yes to replace the damaged live database: ");
+        } else {
+            print!("Type yes to replace the live database: ");
+        }
         std::io::stdout().flush()?;
         let mut line = String::new();
         input.read_line(&mut line)?;
@@ -443,7 +459,7 @@ pub fn restore_with(
         println!(
             "hippo services are stopped. If this restore is interrupted, restart them with `mise run start`."
         );
-        replace_live(config, &work, &db)
+        replace_live(config, &work, &db, damaged)
     });
     let started = services.start();
     drop(tmp);
@@ -465,14 +481,36 @@ pub fn restore_with(
     Ok(())
 }
 
-/// Checkpoints the live database, folds its WAL into it, then renames `db` over it.
-/// Services must be stopped. Every refusal happens before the rename.
-fn replace_live(config: &HippoConfig, work: &Path, db: &Path) -> Result<()> {
+/// Opens the live database, runs `quick_check`, then the loss report. Any error means
+/// the database is damaged.
+fn checked_loss_report(live: &Path, since_ms: i64) -> Result<Vec<(String, Option<i64>)>> {
+    let c = open_read_only(live)?;
+    let check: String = c.pragma_query_value(None, "quick_check", |r| r.get(0))?;
+    ensure!(check == "ok", "quick_check: {check}");
+    loss_report(&c, since_ms)
+}
+
+/// Saves the live database (a checkpoint, or a raw copy when it is `damaged`), folds its
+/// WAL into it, then renames `db` over it. Services must be stopped. Every refusal
+/// happens before the rename.
+fn replace_live(config: &HippoConfig, work: &Path, db: &Path, damaged: bool) -> Result<()> {
     let live = config.db_path();
     let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let previous = if live.exists() {
+    let previous = if live.exists() && damaged {
+        refuse_if_open(&live)?;
+        let dir = raw_copy(&live, work, &ts)?;
+        println!("Copied the damaged database files to {}.", dir.display());
+        if let Err(e) = fold_live_wal(&live)? {
+            println!("Could not fold the WAL of the damaged database ({e:#}).");
+            move_sidecars_aside(&live, work, &ts)?;
+        }
+        format!("the raw copy in {}", dir.display())
+    } else if live.exists() {
+        // Also before the checkpoint, so a refusal does not cost a full checkpoint.
+        refuse_if_open(&live)?;
         let saved = save_current(config, work, &live, &ts)?;
-        fold_live_wal(&live)?;
+        refuse_if_open(&live)?;
+        fold_live_wal(&live)??;
         saved
     } else {
         // SQLite applies a -wal found next to a database whatever its header says.
@@ -522,6 +560,38 @@ fn sidecar(live: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
+/// Copies `live` and its `-wal` and `-shm` (whichever exist) byte for byte into a new
+/// 0700 directory `<work>/pre-restore-<ts>/`, with mode 0600 and fsync. The online
+/// backup API cannot read a damaged database; this copy needs only the bytes.
+fn raw_copy(live: &Path, work: &Path, ts: &str) -> Result<PathBuf> {
+    let dir = work.join(format!("pre-restore-{ts}"));
+    DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .with_context(|| format!("create {}", dir.display()))?;
+    for suffix in ["", "-wal", "-shm"] {
+        let from = sidecar(live, suffix);
+        if !from.exists() {
+            continue;
+        }
+        let to = dir.join(from.file_name().context("database path has no file name")?);
+        (|| -> std::io::Result<()> {
+            let mut out = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&to)?;
+            std::io::copy(&mut File::open(&from)?, &mut out)?;
+            out.sync_all()
+        })()
+        .with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
+    }
+    File::open(&dir)
+        .and_then(|d| d.sync_all())
+        .with_context(|| format!("sync {}", dir.display()))?;
+    Ok(dir)
+}
+
 /// Moves the `-wal` and `-shm` of `live` (whichever exist) into `work` as
 /// `pre-restore-<ts>.db-wal` and `.db-shm`. Never deletes or replaces a file.
 fn move_sidecars_aside(live: &Path, work: &Path, ts: &str) -> Result<()> {
@@ -545,10 +615,8 @@ fn move_sidecars_aside(live: &Path, work: &Path, ts: &str) -> Result<()> {
 
 const STILL_OPEN: &str = "close hippo-mcp clients (Claude Code sessions) and retry";
 
-/// Refuses while another process or connection has the live database open, then
-/// checkpoints its WAL into the main file and deletes it, so no old WAL frame can be
-/// applied to the restored file.
-fn fold_live_wal(live: &Path) -> Result<()> {
+/// Refuses while another process has the live database files open (`lsof`).
+fn refuse_if_open(live: &Path) -> Result<()> {
     let (wal, shm) = (sidecar(live, "-wal"), sidecar(live, "-shm"));
     let present: Vec<&Path> = [live, wal.as_path(), shm.as_path()]
         .into_iter()
@@ -579,9 +647,22 @@ fn fold_live_wal(live: &Path) -> Result<()> {
         }
         Err(e) => return Err(e).context("run lsof"),
     }
+    Ok(())
+}
 
-    let c = open_plain(live, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    c.busy_timeout(Duration::from_millis(200))?;
+/// Checkpoints the live WAL into the main file and deletes it, so no old WAL frame can
+/// be applied to the restored file. `Err` means another connection still has the
+/// database open; `Ok(Err)` means the fold itself failed (for example, on a damaged file).
+fn fold_live_wal(live: &Path) -> Result<Result<()>> {
+    let (wal, shm) = (sidecar(live, "-wal"), sidecar(live, "-shm"));
+    let opened = open_plain(live, OpenFlags::SQLITE_OPEN_READ_WRITE).and_then(|c| {
+        c.busy_timeout(Duration::from_millis(200))?;
+        Ok(c)
+    });
+    let c = match opened {
+        Ok(c) => c,
+        Err(e) => return Ok(Err(e)),
+    };
     let mode: String = match c.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0)) {
         Ok(m) => m,
         Err(rusqlite::Error::SqliteFailure(f, _))
@@ -592,21 +673,27 @@ fn fold_live_wal(live: &Path) -> Result<()> {
         {
             bail!("the live database is still open by another connection; {STILL_OPEN}")
         }
-        Err(e) => return Err(e).context("fold the live WAL (PRAGMA journal_mode=DELETE)"),
+        Err(e) => {
+            return Ok(Err(
+                anyhow::Error::new(e).context("fold the live WAL (PRAGMA journal_mode=DELETE)")
+            ));
+        }
     };
     ensure!(
         mode.eq_ignore_ascii_case("delete"),
         "the live database is still open (journal_mode stayed {mode}); {STILL_OPEN}"
     );
-    c.close()
-        .map_err(|(_, e)| e)
-        .context("close the live database")?;
-    ensure!(
-        !wal.exists(),
-        "{} still exists after folding it; refusing to swap",
-        wal.display()
-    );
-    remove_if_present(&shm)
+    Ok((|| {
+        c.close()
+            .map_err(|(_, e)| e)
+            .context("close the live database")?;
+        ensure!(
+            !wal.exists(),
+            "{} still exists after folding it; refusing to swap",
+            wal.display()
+        );
+        remove_if_present(&shm)
+    })())
 }
 
 fn remove_if_present(path: &Path) -> Result<()> {
