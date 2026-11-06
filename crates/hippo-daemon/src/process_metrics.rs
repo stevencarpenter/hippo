@@ -100,7 +100,13 @@ pub fn register() {
 fn spawn_refresh_task(samples: Arc<Samples>) {
     tokio::spawn(async move {
         let self_pid = Pid::from_u32(process::id());
-        let mut sys = System::new();
+        let mut sys = match System::new() {
+            Ok(sys) => sys,
+            Err(e) => {
+                tracing::warn!("process metrics disabled, sysinfo init failed: {e:?}");
+                return;
+            }
+        };
         let mut interval = time::interval(Duration::from_secs(REFRESH_INTERVAL_SECS));
         // First tick returns immediately; second tick is REFRESH_INTERVAL_SECS
         // away. The first refresh seeds the CPU delta baseline (cpu_usage()
