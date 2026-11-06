@@ -5,7 +5,7 @@
     "": {
       "name": "hippo-browser-capture",
       "devDependencies": {
-        "esbuild": "^0.28",
+        "esbuild": "^0.28.2",
         "typescript": "^7.0.2",
       },
     },
