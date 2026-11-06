@@ -82,7 +82,7 @@ pub(crate) fn sha256_of(path: &Path) -> io::Result<[u8; 32]> {
 
 /// Renames without replacing an existing target. `Err(AlreadyExists)` means the target
 /// appeared first. `Err(Unsupported)` means the filesystem cannot do it atomically.
-fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     let c = |p: &Path| CString::new(p.as_os_str().as_bytes()).map_err(io::Error::other);
     let (from_c, to_c) = (c(from)?, c(to)?);
     // SAFETY: both pointers are valid NUL-terminated strings.

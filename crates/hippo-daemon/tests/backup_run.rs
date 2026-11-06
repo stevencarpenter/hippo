@@ -722,3 +722,47 @@ fn run_removes_scratch_dirs_of_dead_processes() {
         ]
     );
 }
+
+fn cp(label: &str) -> RunMode {
+    RunMode::Checkpoint {
+        label: label.into(),
+    }
+}
+
+#[test]
+fn same_label_same_second_checkpoints_keep_both_in_outbox() {
+    let fx = fixture();
+    let away = fx.t.path().join("dest.away");
+    fs::rename(&fx.dest, &away).unwrap();
+    let ids: Vec<String> = (0..2)
+        .map(|_| match run_backup(&fx.config, cp("same"), T0).unwrap() {
+            RunReport::Done { id, shipped, .. } => {
+                assert!(!shipped);
+                id
+            }
+            other => panic!("expected Done, got {other:?}"),
+        })
+        .collect();
+    assert_ne!(ids[0], ids[1]);
+    for id in &ids {
+        let ob = fx.work.join("outbox");
+        assert!(ob.join(format!("{id}.tar.zst.age")).is_file(), "{id}");
+        assert!(ob.join(format!("{id}.entry.json")).is_file(), "{id}");
+    }
+    assert_eq!(outbox_artifacts(&fx), 2);
+}
+
+#[test]
+fn same_label_same_second_checkpoints_both_reach_manifest() {
+    let fx = fixture();
+    let ids: Vec<String> = (0..2)
+        .map(|_| done(run_backup(&fx.config, cp("same"), T0).unwrap()).0)
+        .collect();
+    assert_ne!(ids[0], ids[1]);
+    let m = Manifest::load(&fx.dest).unwrap();
+    for id in &ids {
+        let e = m.entries.iter().find(|e| &e.meta.id == id).unwrap();
+        assert!(fx.dest.join(&e.file).is_file());
+    }
+    assert_eq!(m.entries.len(), 2);
+}

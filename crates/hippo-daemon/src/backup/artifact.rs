@@ -232,7 +232,7 @@ fn write_to(
     Ok(hw.hasher.finalize().into())
 }
 
-/// Writes the artifact to `out` (temp name, then rename) and returns the SHA-256
+/// Writes the artifact to `out` (temp name, then rename that fails if `out` exists) and returns the SHA-256
 /// of the ciphertext as written.
 pub fn write_artifact(
     meta: &ArtifactMeta,
@@ -244,7 +244,8 @@ pub fn write_artifact(
     tmp_name.push(".tmp");
     let tmp = out.with_file_name(tmp_name);
     let res = write_to(&tmp, meta, inputs, recipient).and_then(|sum| {
-        fs::rename(&tmp, out).with_context(|| format!("rename to {}", out.display()))?;
+        super::ship::rename_noreplace(&tmp, out)
+            .with_context(|| format!("rename to {} (never replaces)", out.display()))?;
         Ok(sum)
     });
     if res.is_err() {

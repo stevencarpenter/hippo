@@ -363,7 +363,21 @@ fn run_locked(
         (_, Some(_)) => ArtifactKind::Delta,
         (_, None) => ArtifactKind::Full,
     };
-    let id = artifact_id(kind, now_ms, label);
+    // Same label in the same second would collide: step the id's timestamp until unused.
+    let taken = |id: &str| {
+        let file = format!("{id}{ARTIFACT_EXT}");
+        manifest
+            .as_ref()
+            .is_some_and(|m| m.entries.iter().any(|e| e.meta.id == id))
+            || outbox.join(&file).exists()
+            || outbox.join(format!("{id}{ENTRY_EXT}")).exists()
+            || dest.join(&file).exists()
+    };
+    let (id_ms, id) = (0..10)
+        .map(|i| now_ms + i * 1000)
+        .map(|ms| (ms, artifact_id(kind, ms, label)))
+        .find(|(_, id)| !taken(id))
+        .ok_or_else(|| anyhow!("no unused artifact id after 10 tries"))?;
     let new_hashes = match kind {
         ArtifactKind::Checkpoint => None,
         _ => Some(PageHashes::compute(&snap, &id)?),
@@ -385,7 +399,7 @@ fn run_locked(
         id: id.clone(),
         kind,
         label: label.map(str::to_owned),
-        created_ms: now_ms,
+        created_ms: id_ms,
         base_id: base.as_ref().map(|b| b.base_id.clone()),
         hippo_version: env!("HIPPO_VERSION_FULL").to_owned(),
         schema_version: info.schema_version,
@@ -657,7 +671,8 @@ fn write_sidecar(path: &Path, entry: &ManifestEntry) -> Result<()> {
         let f = File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
         serde_json::to_writer(&f, entry)?;
         f.sync_all()?;
-        fs::rename(&tmp, path).with_context(|| format!("rename to {}", path.display()))
+        super::ship::rename_noreplace(&tmp, path)
+            .with_context(|| format!("rename to {} (never replaces)", path.display()))
     })();
     if res.is_err() {
         let _ = fs::remove_file(&tmp);
