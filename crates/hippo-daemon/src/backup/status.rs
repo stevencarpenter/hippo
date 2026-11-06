@@ -16,8 +16,12 @@ const STATUS_TMP: &str = ".status.json.tmp";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BackupStatus {
-    /// `created_ms` of the last run that shipped its artifact.
+    /// `created_ms` of the last run that shipped its artifact, of any kind. Watchdog
+    /// I-21 and doctor use it for freshness.
     pub last_success_ms: Option<i64>,
+    /// `created_ms` of the last shipped Full or Delta. The 20-hour skip uses it, so
+    /// checkpoints cannot starve the scheduled tier. Absent in older files: `None`.
+    pub last_scheduled_ms: Option<i64>,
     pub last_kind: Option<ArtifactKind>,
     /// Error of the last run; cleared by the next successful run.
     pub last_error: Option<String>,
@@ -68,6 +72,7 @@ pub fn report(config: &HippoConfig) -> String {
     let _ = writeln!(out, "destination:     {}", dest.display());
     let _ = writeln!(out, "last success:    {}", when(s.last_success_ms));
     let _ = writeln!(out, "last kind:       {:?}", s.last_kind);
+    let _ = writeln!(out, "last scheduled:  {}", when(s.last_scheduled_ms));
     let _ = writeln!(
         out,
         "last error:      {}",

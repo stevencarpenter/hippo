@@ -177,6 +177,9 @@ fn run_holding_lock(
             if *shipped {
                 st.last_success_ms = Some(now_ms);
                 st.last_kind = Some(*kind);
+                if *kind != ArtifactKind::Checkpoint {
+                    st.last_scheduled_ms = Some(now_ms);
+                }
             }
             st.last_error = (!notes.is_empty()).then(|| notes.join("; "));
         }
@@ -304,11 +307,11 @@ fn run_locked(
                 dest.display()
             );
             if st
-                .last_success_ms
+                .last_scheduled_ms
                 .is_some_and(|t| now_ms.saturating_sub(t) < SKIP_WITHIN_MS)
             {
                 return Ok(RunReport::Skipped {
-                    reason: "a backup succeeded within the last 20 hours".into(),
+                    reason: "a scheduled backup succeeded within the last 20 hours".into(),
                 });
             }
             None

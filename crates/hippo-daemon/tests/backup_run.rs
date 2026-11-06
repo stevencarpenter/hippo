@@ -637,3 +637,53 @@ fn destination_that_fails_every_copy_does_not_grow_the_outbox() {
     assert!(names(&fx.work.join("outbox")).is_empty());
     assert!(status::load(&fx.work).last_error.is_some());
 }
+
+#[test]
+fn shipped_checkpoint_does_not_delay_the_scheduled_run() {
+    let fx = fixture();
+    let (_, kind) = done(checkpoint_at(&fx, T0));
+    assert_eq!(kind, ArtifactKind::Checkpoint);
+    let (_, kind) = done(run_backup(&fx.config, RunMode::Scheduled, T0 + H).unwrap());
+    assert_eq!(kind, ArtifactKind::Full);
+    let s = status::load(&fx.work);
+    assert_eq!(s.last_scheduled_ms, Some(T0 + H));
+    assert_eq!(s.last_success_ms, Some(T0 + H));
+
+    // A later checkpoint updates freshness but not the scheduled clock.
+    done(checkpoint_at(&fx, T0 + 2 * H));
+    let s = status::load(&fx.work);
+    assert_eq!(s.last_success_ms, Some(T0 + 2 * H));
+    assert_eq!(s.last_kind, Some(ArtifactKind::Checkpoint));
+    assert_eq!(s.last_scheduled_ms, Some(T0 + H));
+    let r = run_backup(&fx.config, RunMode::Scheduled, T0 + 3 * H).unwrap();
+    assert!(matches!(r, RunReport::Skipped { .. }), "{r:?}");
+}
+
+#[test]
+fn status_without_last_scheduled_does_not_skip() {
+    let fx = fixture();
+    fs::create_dir_all(&fx.work).unwrap();
+    // status.json written before last_scheduled_ms existed.
+    fs::write(
+        fx.work.join("status.json"),
+        format!(
+            r#"{{"last_success_ms": {}, "last_kind": "checkpoint"}}"#,
+            T0
+        ),
+    )
+    .unwrap();
+    assert_eq!(status::load(&fx.work).last_success_ms, Some(T0));
+    assert_eq!(status::load(&fx.work).last_scheduled_ms, None);
+    done(run_backup(&fx.config, RunMode::Scheduled, T0 + H).unwrap());
+}
+
+fn checkpoint_at(fx: &Fx, now_ms: i64) -> RunReport {
+    run_backup(
+        &fx.config,
+        RunMode::Checkpoint {
+            label: "pre-gc".into(),
+        },
+        now_ms,
+    )
+    .unwrap()
+}
