@@ -3712,7 +3712,8 @@ fn has_uploaded_full(dest: &std::path::Path) -> bool {
         })
 }
 
-/// Count and total bytes of legacy `hippo.db.*` copies (and their `-shm`/`-wal` files).
+/// Count and total bytes of legacy `hippo.db.*` copies, their `-shm`/`-wal` files, and
+/// `hippo.db-wal.*`/`hippo.db-shm.*` copies. Never the live `hippo.db-wal`/`-shm`.
 fn legacy_db_copies(data_dir: &std::path::Path) -> (usize, u64) {
     let Ok(rd) = std::fs::read_dir(data_dir) else {
         return (0, 0);
@@ -3720,7 +3721,9 @@ fn legacy_db_copies(data_dir: &std::path::Path) -> (usize, u64) {
     rd.flatten()
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
-            let rest = name.strip_prefix("hippo.db.")?;
+            let rest = ["hippo.db.", "hippo.db-wal.", "hippo.db-shm."]
+                .iter()
+                .find_map(|p| name.strip_prefix(p))?;
             let rest = rest
                 .strip_suffix("-shm")
                 .or_else(|| rest.strip_suffix("-wal"))
@@ -3816,7 +3819,7 @@ fn check_backup_at(
             if explain {
                 println!("     CAUSE:  manual database copies remain in the data dir.");
                 println!(
-                    "     FIX:    delete the hippo.db.*.bak, hippo.db.pre-*, hippo.db.bak* and hippo.db.v5-backup* files by hand."
+                    "     FIX:    delete the hippo.db.*.bak, hippo.db.pre-*, hippo.db.bak*, hippo.db.v5-backup*, hippo.db-wal.* and hippo.db-shm.* files by hand."
                 );
                 println!("     DOC:    docs/backup.md");
             }
@@ -5358,11 +5361,15 @@ mod tests {
                 ("hippo.db.pre-v5-shm", 60),
                 ("hippo.db", 1000),
                 ("hippo.db-wal", 1000),
+                ("hippo.db-shm", 1000),
                 ("hippo.db.other", 1000),
+                ("hippo.db-wal.pre-dedup-20260529.bak", 70),
+                ("hippo.db-shm.pre-dedup-20260529.bak", 80),
+                ("hippo.db-wal.other", 1000),
             ] {
                 std::fs::write(d.path().join(n), vec![0u8; len]).unwrap();
             }
-            assert_eq!(legacy_db_copies(d.path()), (6, 210));
+            assert_eq!(legacy_db_copies(d.path()), (8, 360));
         }
 
         #[test]
