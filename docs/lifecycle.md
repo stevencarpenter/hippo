@@ -45,7 +45,8 @@ events table (source_kind='shell'); source_health updated by flush_events
        |
        v
 brain/src/hippo_brain/enrichment.py::claim_pending_events_by_session
-       |  -- session-grouped, 60s gap-split, max_claim_batch cap
+       |  -- session-grouped, then grouped by git repository,
+       |     then 60s gap-split, max_claim_batch cap
        |  -- calls _skip_ineligible_shell_events() to stamp
        |     enrichment_queue.status='skipped' for ineligible shell events
        v

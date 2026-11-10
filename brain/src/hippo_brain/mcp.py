@@ -1,6 +1,7 @@
 """Hippo MCP Server — expose the knowledge base as tools for Claude Code."""
 
 import dataclasses
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -42,6 +43,12 @@ from hippo_brain.memory_query import (
     query_memory_current,
     resolve_limit,
     run_memory_history_query,
+)
+from hippo_brain.projects import (
+    directory_in_project,
+    directory_repos,
+    load_aliases,
+    mixed_repository_nodes,
 )
 from hippo_brain.rag import ask as rag_ask
 from hippo_brain.rag import format_rag_response
@@ -188,6 +195,147 @@ def _clamp_limit(limit: int) -> int:
     return max(0, min(limit, MAX_LIMIT))
 
 
+# An MCP client rejects a tool result near 50,000 characters, or keeps only a
+# 2 KB preview of it. Stay well below that: a lookup does not need more.
+RESULT_BUDGET_CHARS = 24_000
+_SUMMARY_CAP = 500
+_TEXT_CAP = 300
+_LIST_CAP = 5
+_EVIDENCE_CAP = 3
+
+
+def _clip(text: str, cap: int) -> str:
+    return text if len(text) <= cap else text[: cap - 1] + "…"
+
+
+def _snippet(text: str, query: str, cap: int = _SUMMARY_CAP) -> str:
+    """Return at most ``cap`` characters of ``text``, around the first ``query`` match if any."""
+    at = text.lower().find(query.lower()) if query else -1
+    if len(text) <= cap or at < cap // 2:
+        return _clip(text, cap)
+    start = at - cap // 4
+    body = text[start : start + cap - 2]
+    return "…" + body + ("…" if start + len(body) < len(text) else "")
+
+
+def _compact(value):
+    """Clip strings and keep the first items of lists and dicts."""
+    if isinstance(value, str):
+        return _clip(value, _TEXT_CAP)
+    if isinstance(value, dict):
+        return {k: _compact(v) for k, v in list(value.items())[:_LIST_CAP]}
+    if isinstance(value, list | tuple):
+        return [_compact(v) for v in value[:_LIST_CAP]]
+    return value
+
+
+def _compact_hit(hit: dict, query: str) -> dict:
+    """Bound one hit. Evidence stays citable by ``ref``; ``agent_query`` returns full packets."""
+    out = {}
+    for key, value in hit.items():
+        if key == "summary" and isinstance(value, str):
+            out[key] = _snippet(value, query)
+        elif key == "evidence" and isinstance(value, list):
+            out[key] = [
+                {
+                    "ref": packet.get("ref"),
+                    "source_kind": packet.get("source_kind"),
+                    "timestamp_ms": packet.get("timestamp_ms"),
+                    "stale": bool((packet.get("freshness") or {}).get("stale")),
+                }
+                for packet in value[:_EVIDENCE_CAP]
+                if isinstance(packet, dict)
+            ]
+            if len(value) > _EVIDENCE_CAP:
+                out["evidence_total"] = len(value)
+        elif key == "confidence" and isinstance(value, dict):
+            out[key] = {k: value[k] for k in ("level", "score") if k in value}
+            if value.get("withheld"):
+                out[key]["withheld"] = True
+        else:
+            out[key] = _compact(value)
+    return out
+
+
+def _size(value) -> int:
+    """Characters as an MCP client counts them: compact JSON, not ASCII-escaped."""
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False))
+
+
+def _fit(hits: list[dict], budget: int) -> list[dict]:
+    """Keep the top-ranked hits whose JSON fits ``budget`` characters."""
+    kept: list[dict] = []
+    used = 0
+    for hit in hits:
+        size = _size(hit) + 1
+        if kept and used + size > budget:
+            break
+        if size > budget and isinstance(hit.get("evidence"), list):
+            # A node linked to many runs or sessions carries more evidence packets
+            # than a client accepts: keep the packets that fit and give the count.
+            packets = hit["evidence"]
+            hit = {**hit, "evidence": [], "evidence_total": len(packets)}
+            room = budget - _size(hit) - 1
+            for packet in packets:
+                room -= _size(packet) + 1
+                if room < 0:
+                    break
+                hit["evidence"].append(packet)
+            size = _size(hit) + 1
+        kept.append(hit)
+        used += size
+    return kept
+
+
+def _bounded(hits: list[dict], query: str = "") -> list[dict]:
+    """Compact every hit, then keep the top-ranked hits that fit ``RESULT_BUDGET_CHARS``.
+
+    The client counts the list wrapped as ``{"result": [...]}``.
+    """
+    marker_room = 200
+    out = _fit(
+        [_compact_hit(hit, query) for hit in hits],
+        RESULT_BUDGET_CHARS - len('{"result":[]}') - marker_room,
+    )
+    if len(out) < len(hits):
+        out.append(
+            {
+                "truncated": True,
+                "omitted_hits": len(hits) - len(out),
+                "hint": "Result size limit reached. Lower `limit` or narrow the query.",
+            }
+        )
+    return out
+
+
+def _checkout(path: Path) -> tuple[Path, Path] | None:
+    """Return ``(project root, checkout directory)`` for ``path``, or None outside a repository.
+
+    The checkout is the nearest directory with ``.git``. For a linked worktree
+    the project root is its main checkout, so a worktree directory of any name
+    maps to the project.
+    """
+    for directory in (path, *path.parents):
+        marker = directory / ".git"
+        if directory == Path.home() or not marker.exists():
+            continue
+        if marker.is_file():  # linked worktree: "gitdir: <main>/.git/worktrees/<name>"
+            main, found, _ = marker.read_text(errors="replace").partition("/.git/worktrees/")
+            if found:
+                return Path(main.removeprefix("gitdir:").strip()), directory
+        return directory, directory
+    return None
+
+
+def _server_project() -> str | None:
+    """The repository the MCP client started this server in, or None outside a repository."""
+    try:
+        checkout = _checkout(Path.cwd())
+    except OSError:  # the directory was removed while the server ran, e.g. a deleted worktree
+        return None
+    return str(checkout[0]) if checkout else None
+
+
 def _get_conn(db_path: str = "") -> sqlite3.Connection:
     """Open a SQLite connection with WAL mode and busy timeout."""
     path = db_path or _state.db_path
@@ -278,9 +426,12 @@ mcp = MCPServer(
     "hippo",
     lifespan=_mcp_lifespan,
     instructions=(
-        "Hippo is a local knowledge base capturing shell activity, Claude sessions, "
-        "and browser history. Use ask to get synthesized answers about past activity. "
-        "Use search_knowledge for raw semantic or lexical search over knowledge nodes. "
+        "Hippo is a local knowledge base capturing shell activity, agent sessions, "
+        "and browser history. "
+        "Use search_knowledge or search_hybrid to look up past work; hits are compact. "
+        "Use get_lessons before work in a project: it returns recurring failures and the "
+        "problems past sessions recorded. "
+        "Use ask for a synthesized answer; it runs a local LLM and is the slowest tool. "
         "Use query_memory for current Claude auto-memory documents and "
         "query_memory_history for explicit revision history. "
         "Use search_events for raw event history. "
@@ -303,6 +454,10 @@ async def search_knowledge(
     include_excluded: bool = False,
 ) -> list[dict]:
     """Search the Hippo knowledge base for enriched knowledge nodes.
+
+    Hits are compact: long fields are clipped and each evidence packet is reduced
+    to its ``ref``. A final ``{"truncated": true}`` entry reports hits omitted to
+    keep the result small. Use ``agent_query`` with mode ``evidence`` for full packets.
 
     Args:
         query: Search query text.
@@ -358,7 +513,7 @@ async def search_knowledge(
                         elapsed,
                         mode,
                     )
-                    return results
+                    return _bounded(results, query)
                 except Exception:
                     logger.exception("%s search failed, falling back to LIKE scan", mode)
 
@@ -387,7 +542,7 @@ async def search_knowledge(
                 len(results),
                 elapsed,
             )
-            return results
+            return _bounded(results, query)
 
         except Exception:
             _add(_tool_errors, tool="search_knowledge")
@@ -413,7 +568,10 @@ async def ask(
     with source references.
 
     Use this tool when you need to understand past activity, recall specific
-    commands or decisions, or answer questions about work history.
+    commands or decisions, or answer questions about work history. Synthesis
+    takes about 10 to 60 seconds. For a lookup, ``search_knowledge`` and
+    ``get_lessons`` are faster. If the inference server is down, the answer is
+    replaced by raw notes from a keyword search.
 
     Args:
         question: The natural language question to answer.
@@ -484,6 +642,8 @@ async def search_events(
 ) -> list[dict]:
     """Search raw events across shell commands, Claude sessions, and browser history.
 
+    A long session summary is cut to the part that contains ``query``.
+
     Args:
         query: Text to search for in event content.
         source: Filter by source: "shell", "claude", "browser", or "all" (default).
@@ -524,7 +684,7 @@ async def search_events(
             _hist(_tool_duration, elapsed * 1000, tool="search_events")
             _record_result("search_events", len(results))
             logger.info("search_events completed: %d results in %.3fs", len(results), elapsed)
-            return results
+            return _bounded(results, query)
 
         except Exception:
             _add(_tool_errors, tool="search_events")
@@ -640,17 +800,26 @@ async def get_lessons(
     path: str | None = None,
     tool: str | None = None,
     limit: int = 10,
+    query: str | None = None,
 ) -> list[dict]:
-    """Return distilled past-mistake lessons for the given filters.
+    """Return lessons for a project: recurring failures and problems past sessions recorded.
 
-    Use pre-flight before editing code in a known failure-prone area. Lessons
-    only appear for patterns seen 2+ times (single failures do not graduate).
+    Call it before work in a project. With no arguments it returns lessons for
+    the repository the MCP server was started in.
+
+    Each lesson has a ``source``. ``ci`` and ``capture-alarm`` lessons recur
+    (``occurrences``). ``session`` lessons are problems, with their resolution,
+    that one past session recorded (``uuid`` is its knowledge node); ``ci-run``
+    lessons are the same for one CI run.
 
     Args:
-        repo: Filter by repository in 'owner/repo' format.
-        path: Filter by file path — returns lessons whose stored path_prefix matches as a prefix of this path.
-        tool: Filter by tool name (e.g. 'ruff', 'clippy').
+        repo: Project to scope to. Any spelling works: 'owner/repo', a bare name,
+            or a checkout path. The owner is ignored.
+        path: File or directory in the repository. Recurring lessons match when
+            their directory contains it or lies under it.
+        tool: Tool or technology name (e.g. 'ruff', 'sqlx', 'launchd').
         limit: Maximum number of results to return (default 10).
+        query: Free-text topic, such as the change you plan to make.
     """
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="get_lessons")
@@ -666,8 +835,37 @@ async def get_lessons(
     )
     with span_ctx:
         try:
-            lessons = get_lessons_impl(_state.db_path, repo=repo, path=path, tool=tool, limit=limit)
-            result = [dataclasses.asdict(lesson) for lesson in lessons]
+            tool = tool or None
+            project, in_repo_path = repo, path or None
+            if repo and repo.startswith("/") and (checkout := _checkout(Path(repo))):
+                project = str(checkout[0])  # a worktree path names its main checkout
+            if path and path.startswith("/"):
+                # An absolute path names its checkout and a location inside it.
+                checkout = _checkout(Path(path))
+                project = project or str(checkout[0] if checkout else path)
+                inside = Path(path).relative_to(checkout[1]).as_posix() if checkout else "."
+                in_repo_path = None if inside == "." else inside
+            if not any((repo, path, tool, query)):
+                project = _server_project()
+            recurring = [
+                {
+                    "source": "capture-alarm"
+                    if lesson.tool.startswith(("hippo-capture:", "hippo-watchdog"))
+                    else "ci",
+                    **dataclasses.asdict(lesson),
+                }
+                for lesson in get_lessons_impl(
+                    _state.db_path, repo=project, path=in_repo_path, tool=tool, limit=limit
+                )
+                # A free-text topic cannot rank recurring lessons, so with no
+                # project, path, or tool beside it they would be unrelated to it.
+                if not query or project or in_repo_path or tool
+            ]
+            topic = " ".join(part for part in (query, tool, in_repo_path) if part)
+            session = await _session_lessons(project, topic, limit)
+            # Recurring lessons come first; session lessons get at least half the limit.
+            recurring = recurring[: max(limit - len(session), (limit + 1) // 2)]
+            result = recurring + session[: limit - len(recurring)]
             elapsed = time.monotonic() - t0
             _hist(_tool_duration, elapsed * 1000, tool="get_lessons")
             _record_result("get_lessons", len(result))
@@ -677,6 +875,77 @@ async def get_lessons(
             _add(_tool_errors, tool="get_lessons")
             logger.exception("get_lessons failed")
             raise
+
+
+async def _session_lessons(project: str | None, topic: str, limit: int) -> list[dict]:
+    """Problems that enriched sessions recorded: ranked by ``topic``, else newest first.
+
+    A topic with no match in a project falls back to that project's newest problems.
+    """
+    if limit <= 0:
+        return []
+    try:
+        hits = await _retrieve_filtered(
+            query=topic,
+            mode="hybrid" if topic else "recent",
+            limit=min(limit * 3, MAX_LIMIT),  # not every node records a problem
+            project=project or "",
+            since="",
+            source="",
+            branch="",
+        )
+    except Exception:
+        # Recurring lessons are still worth returning when retrieval is down.
+        logger.exception("session lessons lookup failed")
+        return []
+    lessons: list[dict] = []
+    seen: set[str] = set()
+    elsewhere: set[str] = set()
+    mixed: set[str] = set()
+    if project and hits:
+        # Older shell nodes mix commands from projects that were active together.
+        aliases = load_aliases()
+        cwds = {hit.get("cwd") or "" for hit in hits}
+        conn = _get_conn()
+        try:
+            evidence = directory_repos(conn, cwds)
+            mixed = mixed_repository_nodes(
+                conn,
+                {hit.get("uuid", ""): hit.get("linked_event_ids") or [] for hit in hits},
+                aliases,
+            )
+        finally:
+            conn.close()
+        elsewhere = {
+            cwd for cwd in cwds if directory_in_project(project, (cwd,), evidence, aliases) is False
+        }
+    for hit in hits:
+        cwd = hit.get("cwd") or ""
+        if cwd in elsewhere or hit.get("uuid", "") in mixed:
+            continue
+        # A workflow node records the failure of a CI run, not of a working session.
+        from_run = any(
+            str(ref).startswith("workflow-") for ref in hit.get("linked_source_ids") or []
+        )
+        for problem in hit.get("problems_encountered") or []:
+            key = " ".join(str(problem).lower().split())
+            if key in seen:
+                continue
+            seen.add(key)
+            lessons.append(
+                {
+                    "source": "ci-run" if from_run else "session",
+                    "summary": _clip(str(problem), _SUMMARY_CAP),
+                    "cwd": cwd,
+                    "git_branch": hit.get("git_branch", ""),
+                    "last_seen_at": hit.get("captured_at", 0),
+                    "uuid": hit.get("uuid", ""),
+                }
+            )
+    if topic and project and not lessons:
+        # Nothing recorded on this topic: the project's latest problems still inform the work.
+        return await _session_lessons(project, "", limit)
+    return lessons[:limit]
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -899,9 +1168,11 @@ async def search_hybrid(
 ) -> list[dict]:
     """Hybrid retrieval over the knowledge base — no synthesis.
 
-    Returns SearchResult-shaped dicts (uuid, score, summary, embed_text,
-    outcome, tags, cwd, git_branch, captured_at, linked_event_ids,
-    linked_claude_session_ids, linked_browser_event_ids).
+    Returns compact hits (uuid, score, summary, intent, outcome, tags, cwd,
+    git_branch, captured_at, key_decisions, problems_encountered,
+    design_decisions, evidence refs, confidence level). Long fields are clipped.
+    A final ``{"truncated": true}`` entry reports hits omitted to keep the result
+    small. Use ``agent_query`` with mode ``evidence`` for full evidence packets.
 
     Args:
         query: Natural language query.
@@ -931,7 +1202,7 @@ async def search_hybrid(
         _hist(_tool_duration, elapsed * 1000, tool="search_hybrid")
         _record_result("search_hybrid", len(results))
         logger.info("search_hybrid completed: %d results in %.3fs", len(results), elapsed)
-        return results
+        return _bounded(results, query)
     except Exception:
         _add(_tool_errors, tool="search_hybrid")
         logger.exception("search_hybrid failed")
@@ -1006,7 +1277,9 @@ async def agent_query(
     - ``decisions``: nodes with documented design decisions
 
     Returns bounded extracted notes: summary, key decisions, prior failures,
-    design decisions and source excerpts. Verify notes against cited evidence;
+    design decisions and source excerpts. Hits are dropped from the end, and
+    ``truncated`` is set, when the response would exceed the result size limit;
+    lower ``limit`` to read the packets of fewer hits. Verify notes against cited evidence;
     ranking is not factual confidence. Refine with search_knowledge or
     search_hybrid when the first lookup lacks the needed fact.
     """
@@ -1051,6 +1324,11 @@ async def agent_query(
             )
             result = run_agent_query(conn, req, query_vec, results=results)
             result["retrieval"] = diagnostics
+            # Evidence packets stay whole here, so fewer hits fit than in a search.
+            hits = result.get("hits", [])
+            kept = _fit(hits, RESULT_BUDGET_CHARS - _size({**result, "hits": []}))
+            if kept != hits:
+                result["hits"], result["truncated"] = kept, True
         except ValueError as exc:
             _add(_tool_errors, tool="agent_query")
             _record_result("agent_query", 0, degraded=True)

@@ -12,20 +12,32 @@ For setup (adding hippo to your MCP config), see the [README's MCP Server sectio
 
 | You want… | Reach for | Why |
 |---|---|---|
-| A synthesized prose answer with cited sources | `ask` | Performs retrieval + LLM synthesis end-to-end. Slow (~1-3 s) but most useful for "what was I working on?" / "how did I fix that?" / "why did we choose X?" |
+| A synthesized prose answer with cited sources | `ask` | Performs retrieval + LLM synthesis end-to-end. The slowest tool (measured over 182 agent calls in October 2026: 20.6 s at p50, 52.8 s at p90) but most useful for "what was I working on?" / "how did I fix that?" / "why did we choose X?" |
 | A compact answer plus evidence packets in one call | `agent_query` | Modes: `known`, `evidence`, `recent`, `decisions`. Returns bounded answer, hits with `evidence` (inline `freshness` + `confidence`), aggregated `freshness`, and `conflicts` when stale or contradictory evidence is detected. |
-| A list of relevant knowledge nodes (no synthesis) | `search_knowledge` or `search_hybrid` | Retrieval only. Fastest path. Use `search_hybrid` when you want score-fused vec0 + FTS5 results; `search_knowledge` for the simpler "semantic with lexical fallback" path. Each hit's `evidence` packets include inline capture `freshness` (SNUG-125) and an explainable `confidence` rating (SNUG-126). |
+| A list of relevant knowledge nodes (no synthesis) | `search_knowledge` or `search_hybrid` | Retrieval only. Fastest path. Use `search_hybrid` when you want score-fused vec0 + FTS5 results; `search_knowledge` for the simpler "semantic with lexical fallback" path. Hits are compact and the whole result stays under 24,000 characters; see [Result size](#result-size). |
 | A Markdown context block ready to paste into another agent's prompt | `get_context` | Same retrieval as `search_hybrid`, rendered as a prompt-shaped block (numbered list + per-hit summary/outcome/cwd/uuid). |
 | Raw shell commands / Claude tool calls / browser visits — not enriched summaries | `search_events` | Operates on the events tables, not knowledge nodes. Use for "what command did I run?" / "what URL was I on?" |
 | The list of projects in the corpus | `list_projects` | Use for discovery before filtering other tools by `project`. |
 | Extracted entities (project, file, tool, env_var, etc.) | `get_entities` | Knowledge graph view. Filter by `type` to scope. |
 | CI status for a recent push | `get_ci_status` | Structured data; preferred over `ask` for known-shape queries. |
-| Lessons (graduated recurring CI failures) | `get_lessons` | Pre-flight before editing in a known failure-prone area. Lessons require ≥ 2 occurrences to graduate. |
+| Lessons for a project | `get_lessons` | Pre-flight before work in a project. Returns recurring CI and capture failures, and the problems past sessions recorded with their resolution. |
 | How an agent performs (usage, review findings, verdicts, benchmarks) | `get_agent_scorecard` | Aggregates only; never returns finding or note text. |
 
 `agent_query` analyzes design decisions in every query mode before omitting them from non-`decisions` hit payloads. Its decision-conflict heuristic compares distinct nodes with matching cwd/branch and opposed explicit alternatives. A warning requires chronology review; no warning does not establish consistency. See the [confidence reference](capture/confidence-scoring.md) for confidence caps.
 
-The ones to reach for first: **`ask`** for natural-language questions with answer synthesis; **`search_hybrid`** for raw retrieval; **`search_events`** for raw event lookup.
+The ones to reach for first: **`search_hybrid`** for a lookup of past work; **`get_lessons`** before work in a project; **`search_events`** for raw event lookup; **`ask`** when a synthesized prose answer is worth the wait.
+
+## Result size
+
+An MCP client rejects a tool result near 50,000 characters, or keeps only a 2 KB preview of it. The client counts the compact JSON of `{"result": [...]}` in characters. `search_knowledge`, `search_hybrid`, and `search_events` therefore bound what they return (`_bounded` in `brain/src/hippo_brain/mcp.py`), counted the same way:
+
+- `summary` is cut to 500 characters. When `query` occurs in the summary, the cut is taken around its first match. This matters most in `search_events`, where a session summary runs to thousands of characters.
+- Other strings are cut to 300 characters. Lists and objects keep their first 5 entries.
+- Each `evidence` packet is reduced to `{ref, source_kind, timestamp_ms, stale}`, at most 3 per hit. `evidence_total` gives the full count when more exist. Use `agent_query` with mode `evidence`, or `hippo-evidence-inspect <ref>`, for the full packet with its excerpt and capture freshness.
+- `confidence` is reduced to `{level, score}`, plus `withheld` when true.
+- Hits are kept in rank order while the result fits 24,000 characters. When hits are omitted, the last list entry is `{"truncated": true, "omitted_hits": N, "hint": "..."}`.
+
+`agent_query` keeps every evidence packet whole and stays under the same 24,000 characters: it drops hits from the end and sets its `truncated` field. With full packets, 2 to 5 hits fit. Lower `limit` to read the packets of the top hits only. When the first hit alone is larger, its `evidence` list is cut to the packets that fit and `evidence_total` gives the full count.
 
 ## Common arguments
 
@@ -63,7 +75,8 @@ ask({"question": "What dep bumps shipped in v0.13.0?", "since": "30d"})
 
 **Pitfalls**
 
-- Returns an error string (not an exception) if `[models].query` is unset or the inference server is unreachable.
+- Returns an error string (not an exception) if `[models].query` is unset.
+- When the inference server is unreachable, the reply starts with `(degraded: ...)` and lists `Raw notes (synthesis unavailable):` from a keyword search. The inference server is often stopped on purpose, so read the notes instead of retrying.
 - Probe events filtered out at the query layer (AP-6) — they will never appear in source citations.
 
 ---
@@ -83,7 +96,7 @@ Search enriched knowledge nodes; no synthesis. Defaults to semantic; falls back 
 
 When any filter is applied, the implementation forces lexical mode (filter pushdown isn't supported in the semantic path).
 
-**Returns** — list of `SearchResult`-shaped dicts (from `shape_semantic_results` / `search_knowledge_lexical` in `brain/src/hippo_brain/mcp_queries.py`):
+**Returns** — list of compact `SearchResult`-shaped dicts, bounded as described in [Result size](#result-size):
 
 ```json
 {
@@ -93,31 +106,26 @@ When any filter is applied, the implementation forces lexical mode (filter pushd
   "intent": "",
   "outcome": "success" | "partial" | "failure" | "unknown",
   "tags": ["tag1", "tag2"],
-  "embed_text": "identifier-dense tag soup",
+  "embed_text": "identifier-dense tag soup, cut to 300 characters",
+  "commands_raw": "cargo build --release",
+  "key_decisions": ["..."],
+  "problems_encountered": ["..."],
+  "design_decisions": [{"considered": "...", "chosen": "...", "reason": "..."}],
   "cwd": "/Users/.../projects/hippo",
   "git_branch": "main",
   "captured_at": 1730000000000,
   "linked_event_ids": [12345, 12346],
-  "linked_claude_session_ids": [501, 502],
-  "linked_browser_event_ids": [9001],
+  "linked_source_ids": ["shell-12345", "shell-12346"],
   "evidence": [
-    {
-      "ref": "shell-12345",
-      "source_kind": "shell",
-      "table": "events",
-      "row_id": 12345,
-      "timestamp_ms": 1730000000000,
-      "excerpt": "cargo build --release",
-      "rank": 0,
-      "retrieval_score": 0.87
-    }
-  ]
+    {"ref": "shell-12345", "source_kind": "shell", "timestamp_ms": 1730000000000, "stale": false}
+  ],
+  "confidence": {"level": "medium", "score": 0.58}
 }
 ```
 
-`search_hybrid` and semantic `search_knowledge` (via `_retrieve_filtered`) include an `evidence` array on each hit — inspectable citations per [`source-trust-contracts.md`](capture/source-trust-contracts.md). Operator debug: `hippo-evidence-inspect shell-12345`.
+`search_hybrid` and semantic `search_knowledge` (via `_retrieve_filtered`) include an `evidence` array on each hit — citation refs per [`source-trust-contracts.md`](capture/source-trust-contracts.md). Resolve a ref to its full packet with `hippo-evidence-inspect shell-12345` or `agent_query` in `evidence` mode.
 
-The `linked_*_ids` arrays are empty when a node has no links to that source (e.g., a browser-only node returns `[]` for `linked_event_ids`).
+`linked_event_ids` and `linked_source_ids` keep their first 5 entries and are empty when a node has no such link (a browser-only node returns `[]` for `linked_event_ids`). The SQL `LIKE` fallback path returns `linked_claude_session_ids` and `linked_browser_event_ids` in place of `linked_source_ids`, `evidence`, and `confidence`.
 
 ---
 
@@ -134,7 +142,7 @@ Same as `search_knowledge`, plus:
 | `mode` | `str` | `"hybrid"` | `"hybrid"` (default — RRF score fusion), `"semantic"`, `"lexical"`, or `"recent"`. |
 | `entity` | `str` | `""` | Require a specific canonical entity name to appear among the node's linked entities. |
 
-**Returns**: the `SearchResult` shape above, including `score_semantics` and `confidence`. See the [retrieval score contract](eval-harness-design.md#metrics) for interpretation.
+**Returns**: the compact `SearchResult` shape above, including `confidence`. See the [retrieval score contract](eval-harness-design.md#metrics) for interpretation.
 
 **When to prefer over `search_knowledge`**
 
@@ -174,7 +182,7 @@ What lands in `summary` and `detail` is source-specific:
 | Source | `summary` | `detail` | `cwd` / `git_branch` |
 |---|---|---|---|
 | `shell` (rows from `events`) | the command text | `"exit=<code> duration=<ms>ms"` | `cwd` and `git_branch` from the event |
-| `claude` (rows from `agentic_sessions` where `harness IN ('claude-code', 'opencode', 'codex', 'cursor')`) | `summary_text` | `"messages=<count> tools=<count>"` (tool count derived from `tool_calls_json`) | `cwd` / `git_branch` from the session |
+| `claude` (rows from `agentic_sessions` where `harness IN ('claude-code', 'opencode', 'codex', 'cursor')`) | `summary_text`, cut to 500 characters around the first match of `query` | `"messages=<count> tools=<count>"` (tool count derived from `tool_calls_json`) | `cwd` / `git_branch` from the session |
 | `browser` (rows from `browser_events`) | `"<domain> — <title or url>"` | `"dwell=<ms>ms scroll=<pct>%"` | empty strings (browser events have no cwd/branch) |
 
 When `source="all"`, results are interleaved by `timestamp` desc and capped at `limit`.
@@ -286,20 +294,32 @@ Structured CI status from a recent `git push`.
 
 ### `get_lessons`
 
-Distilled past-mistake lessons. Pre-flight before editing in a known failure-prone area.
+Lessons for a project. Pre-flight before work in a project.
 
 **Arguments**
 
 | Name | Type | Default | Notes |
 |---|---|---|---|
-| `repo` | `str \| None` | `None` | `"owner/repo"` format. |
-| `path` | `str \| None` | `None` | Returns lessons whose stored `path_prefix` matches as a prefix of this path. |
-| `tool` | `str \| None` | `None` | Filter by tool name (`"ruff"`, `"clippy"`, etc.). |
+| `repo` | `str \| None` | `None` | The project. Any spelling resolves to the same project: `"owner/repo"`, a bare name, or a checkout path (a linked worktree resolves to its main checkout). The owner is ignored, and `[projects.aliases]` applies ([canonical project identity](canonical-project-identity.md)). |
+| `path` | `str \| None` | `None` | File or directory in the repository, relative (`web/src`, `./web/src/Map.tsx`) or absolute. `.` is the repository root and applies no path filter. A recurring lesson matches when its `path_prefix` directory contains the path or lies under it. An absolute path is resolved on disk to its checkout (the nearest parent with `.git`; a linked worktree resolves to its main checkout): the checkout names the project when `repo` is absent, and the rest is the path in the repository. |
+| `tool` | `str \| None` | `None` | Tool or technology name (`"ruff"`, `"sqlx"`, `"launchd"`). Exact match on a recurring lesson's `tool`; a search term for session lessons. Empty means no filter. |
 | `limit` | `int` | `10` | |
+| `query` | `str \| None` | `None` | Free-text topic, such as the change you plan to make. Ranks session lessons. |
 
-**Returns** — list of lesson dicts (from `dataclasses.asdict(Lesson)`): `{id, repo, tool, rule_id, path_prefix, summary, fix_hint, occurrences, first_seen_at, last_seen_at}`. `id` is the `lessons.id` primary key.
+With no arguments, the project is the repository the MCP server was started in (the checkout of its working directory, resolved as for an absolute `path`). With `tool` or `query` and no `repo`, every project is searched. With `query` as the only argument, only session lessons are returned: free text cannot rank recurring lessons.
 
-Lessons graduate only after 2+ occurrences (single failures stay in `lesson_pending` and don't surface here).
+**Returns** — list of lesson dicts. Each has a `source`:
+
+| `source` | Origin | Fields |
+|---|---|---|
+| `ci` | Failing workflow annotations that name a tool or a rule, clustered by `(repo, tool, rule_id, path_prefix)`. Graduates after 2+ occurrences; single failures stay in `lesson_pending`. | `{id, repo, tool, rule_id, path_prefix, summary, fix_hint, occurrences, first_seen_at, last_seen_at}` |
+| `capture-alarm` | Hippo's own recurring capture-invariant alarms (`tool` starts with `hippo-capture:` or is `hippo-watchdog`). | Same as `ci`. |
+| `session` | One `problems_encountered` entry of an enriched knowledge node: the problem and how the session resolved it. Ranked by `query`, `tool`, and `path` when given, else newest first. When a project is named and nothing matches the topic, the project's newest problems are returned. Duplicates are removed. A node is dropped when captured events place its directory in another repository, or when its linked events span more than one project ([concurrent projects](canonical-project-identity.md#concurrent-projects)). | `{summary, cwd, git_branch, last_seen_at, uuid}`; `uuid` is the knowledge node. |
+| `ci-run` | The same, for a node that workflow-run enrichment wrote: the failure of one CI run. | Same as `session`. |
+
+Recurring lessons come first and take at most half of `limit` when session lessons fill the rest.
+
+An annotation that names neither a tool nor a rule (for example `Process completed with exit code 1.`) no longer becomes a lesson, and existing lessons of that kind are not returned: they state only that something failed.
 
 ---
 

@@ -429,6 +429,80 @@ def test_recent_mode_with_query_no_fts_hits_falls_back_to_date_order(conn):
     assert [r.uuid for r in results] == ["uuid-2", "uuid-3", "uuid-1"]
 
 
+def test_recent_mode_hydrates_only_what_it_can_return(conn, monkeypatch):
+    """Details cost joins and evidence packets per node; the pool holds thousands."""
+    from hippo_brain import retrieval
+
+    for i in range(1, 41):
+        _insert_node(conn, i, summary=f"n{i}", created_at=i)
+    hydrated: list[int] = []
+    fetch_details = retrieval._fetch_details
+
+    def spy(c, node_ids, **kwargs):
+        hydrated.append(len(node_ids))
+        return fetch_details(c, node_ids, **kwargs)
+
+    monkeypatch.setattr(retrieval, "_fetch_details", spy)
+
+    results = search(conn, "", None, Filters(), mode="recent", limit=3, backend=FakeBackend())
+
+    assert [r.uuid for r in results] == ["uuid-40", "uuid-39", "uuid-38"]
+    assert hydrated == [6]
+
+
+def test_recent_mode_reaches_past_the_candidate_pool_for_a_filtered_scope(conn):
+    """A project that was idle while others produced a pool of nodes still has recent nodes."""
+    for i in range(1, 4):
+        _insert_node(conn, i, summary=f"feature {i}", created_at=i)
+        _link_event(conn, i, 100 + i, timestamp=i, branch="feature")
+    for i in range(4, 21):
+        _insert_node(conn, i, summary=f"main {i}", created_at=i)
+        _link_event(conn, i, 100 + i, timestamp=i, branch="main")
+
+    results = search(
+        conn,
+        "",
+        None,
+        Filters(branch="feature"),
+        mode="recent",
+        limit=2,
+        backend=FakeBackend(),
+        tuning=Tuning(candidate_pool=5),
+    )
+
+    assert [r.uuid for r in results] == ["uuid-3", "uuid-2"]
+
+
+def test_recent_mode_with_since_stops_at_the_first_page_older_than_the_window(conn, monkeypatch):
+    """Nodes are paged newest first, so nothing after an old page is inside the window."""
+    from hippo_brain import retrieval
+
+    for i in range(1, 21):
+        _insert_node(conn, i, summary=f"n{i}", created_at=i)
+    offsets: list[int] = []
+    all_recent_ids = retrieval._all_recent_ids
+
+    def spy(c, limit, offset=0):
+        offsets.append(offset)
+        return all_recent_ids(c, limit, offset)
+
+    monkeypatch.setattr(retrieval, "_all_recent_ids", spy)
+
+    results = search(
+        conn,
+        "",
+        None,
+        Filters(since_ms=18),
+        mode="recent",
+        limit=5,
+        backend=FakeBackend(),
+        tuning=Tuning(candidate_pool=5),
+    )
+
+    assert [r.uuid for r in results] == ["uuid-20", "uuid-19", "uuid-18"]
+    assert offsets == [0]
+
+
 def test_unknown_mode_raises(conn):
     with pytest.raises(ValueError):
         search(conn, "q", None, Filters(), mode="banana", backend=FakeBackend())

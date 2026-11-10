@@ -16,6 +16,8 @@ from hippo_brain.projects import (
     attribute_node,
     backfill,
     canonical_name,
+    directory_in_project,
+    directory_repos,
     infer_project,
     load_aliases,
     normalize,
@@ -522,3 +524,32 @@ def test_older_readable_schema_keeps_legacy_behavior(tmp_db):
     assert attribute_node(conn, 1, {}) is None
     assert infer_project(conn, "lumin") is None
     assert project_clause(conn, "lumin") is None
+
+
+def test_directory_in_project_trusts_the_captured_repository_before_the_name(tmp_db):
+    conn, _ = tmp_db
+    event(conn, "me/whistlepost", cwd="/p/whistlepost-claude-261031")  # worktree, any name
+    event(conn, "me/hippo", cwd="/p/hippo/.claude/agents")  # directory named like a project
+
+    every = ["/p/whistlepost-claude-261031", "/p/hippo/.claude/agents", "/p/.windrow", "-p-windrow"]
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    evidence = directory_repos(conn, every)
+    conn.set_trace_callback(None)
+    assert len(statements) == 1  # one read of events for every directory
+    assert evidence == {
+        "/p/whistlepost-claude-261031": {"me/whistlepost"},
+        "/p/hippo/.claude/agents": {"me/hippo"},
+    }
+
+    def verdict(project, *directories):
+        return directory_in_project(project, directories, evidence, {})
+
+    assert verdict("sj/whistlepost", "-p-whistlepost-claude-261031", "/p/whistlepost-claude-261031")
+    assert verdict("me/agents", "/p/hippo/.claude/agents") is False
+    assert verdict("me/hippo", "/p/hippo/.claude/agents") is True
+    # No event was recorded in the directory: the name decides, or nothing does.
+    assert verdict("me/windrow", "/p/.windrow") is True
+    assert verdict("me/windrow", "/p/windrow/crates") is None
+    assert verdict("me/windrow", "-p-windrow") is None  # an encoded session slug is not a path
+    assert verdict("", "/p/windrow") is None

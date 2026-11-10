@@ -257,3 +257,47 @@ async def test_rag_ask_degraded_mode_returns_sources_on_chat_timeout(
     assert result["answer"] is None
     assert result["sources"], "degraded mode must still return retrieved sources"
     assert any("rag-source" == s.get("uuid") for s in result["sources"])
+
+
+class _DownClient:
+    base_url = "http://localhost:1234"
+
+    async def health_check(self, model: str):
+        return {"ok": False, "reason": "inference backend unreachable"}
+
+    async def embed(self, texts, model):
+        raise AssertionError("embed must not run after a failed preflight")
+
+    async def chat(self, *a, **kw):
+        raise AssertionError("chat must not run after a failed preflight")
+
+
+@pytest.mark.asyncio
+async def test_rag_ask_returns_keyword_notes_when_inference_is_down(
+    db: sqlite3.Connection,
+) -> None:
+    """No mock on the search: the FTS5 path must find the node without an embedding."""
+    _insert_node(
+        db,
+        node_id=1,
+        uuid="rag-source",
+        summary="hippo retrieval stack",
+        embed_text="hippo retrieval stack over sqlite-vec",
+        tags=["rag"],
+        vec=_unit_vec(0),
+    )
+
+    result = await rag.ask(
+        question="retrieval stack",
+        inference_client=_DownClient(),
+        vector_table=db,
+        query_model="qwen",
+        embedding_model="embed",
+        limit=5,
+        conn=db,
+    )
+
+    assert result["degraded"] is True
+    assert result["stage"] == "preflight"
+    assert [s["uuid"] for s in result["sources"]] == ["rag-source"]
+    assert "Raw notes" in rag.format_rag_response(result)

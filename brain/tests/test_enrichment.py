@@ -1179,3 +1179,30 @@ def test_shell_claim_whole_session_of_noise(tmp_db):
     assert chunks == []
     status = conn.execute("SELECT status FROM enrichment_queue WHERE event_id = 1").fetchone()[0]
     assert status == "skipped"
+
+
+def test_chunk_events_splits_where_the_git_repository_changes():
+    """One terminal moves between projects; a node must not mix their commands."""
+    from hippo_brain.enrichment import _chunk_events
+
+    def event(ts: int, repo: str | None) -> dict:
+        return {"id": ts, "timestamp": ts, "git_repo": repo}
+
+    events = [
+        event(1, "me/dotfiles-manager"),
+        event(2, "me/dotfiles-manager"),
+        event(3, None),  # outside a repository: stays with the commands before it
+        event(4, "me/windrow"),
+        event(5, "me/windrow"),
+    ]
+
+    assert [[e["id"] for e in chunk] for chunk in _chunk_events(events, 10)] == [[1, 2, 3], [4, 5]]
+    # A terminal that alternates between two repositories yields two chunks, not four.
+    switching = [event(1, "me/a"), event(2, "me/b"), event(3, "me/a"), event(4, "me/b")]
+    assert [[e["id"] for e in chunk] for chunk in _chunk_events(switching, 10)] == [[1, 3], [2, 4]]
+    # Events before the first repository event stay with it.
+    leading = [event(1, None), event(2, "me/a")]
+    assert _chunk_events(leading, 10) == [leading]
+    # Within one repository the existing rule holds: a short batch is one chunk.
+    same_repo = [event(1, "me/windrow"), event(500_000, "me/windrow")]
+    assert _chunk_events(same_repo, 10) == [same_repo]

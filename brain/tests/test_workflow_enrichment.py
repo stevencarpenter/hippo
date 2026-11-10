@@ -13,7 +13,13 @@ from hippo_brain.workflow_enrichment import (
     _path_prefix,
     enrich_one_async,
     mark_workflow_queue_failed,
+    unlink_foreign_sessions,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_developer_aliases(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
 
 
 @pytest.fixture
@@ -299,8 +305,8 @@ def test_enrich_one_async_links_agentic_sessions(enrichment_db):
         INSERT INTO agentic_sessions
           (id, session_id, harness, project_dir, cwd, segment_index, start_time, end_time,
            summary_text, message_count, source_file, enriched, created_at)
-        VALUES (200, 'sess-xyz', 'claude-code', '/hippo', '/hippo', 0, 100, 2000,
-                'CI debugging session', 1, 'sess.jsonl', 0, 1000)
+        VALUES (200, 'sess-xyz', 'claude-code', '-Users-me-projects-r', '/Users/me/projects/r',
+                0, 100, 2000, 'CI debugging session', 1, 'sess.jsonl', 0, 1000)
     """)
     conn.commit()
     conn.close()
@@ -325,7 +331,7 @@ def test_enrich_one_async_skips_probe_agentic_session(enrichment_db):
         INSERT INTO agentic_sessions
           (id, session_id, harness, project_dir, cwd, segment_index, start_time, end_time,
            summary_text, message_count, source_file, enriched, created_at, probe_tag)
-        VALUES (300, 'sess-probe', 'claude-code', '/hippo', '/hippo', 0, 100, 2000,
+        VALUES (300, 'sess-probe', 'claude-code', '/p/r', '/p/r', 0, 100, 2000,
                 'probe session', 1, 'sess.jsonl', 0, 1000, 'probe-v1')
     """)
     conn.commit()
@@ -342,6 +348,155 @@ def test_enrich_one_async_skips_probe_agentic_session(enrichment_db):
     n = conn.execute("SELECT COUNT(*) FROM knowledge_node_agentic_sessions").fetchone()[0]
     conn.close()
     assert n == 0, "probe-tagged agentic session must not be linked"
+
+
+def _add_session(db: str, session_pk: int, cwd: str, start: int = 100, end: int = 2000) -> None:
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """INSERT INTO agentic_sessions
+             (id, session_id, harness, project_dir, cwd, segment_index, start_time, end_time,
+              summary_text, message_count, source_file, enriched, created_at)
+           VALUES (?, ?, 'codex', ?, ?, 0, ?, ?, 'work', 1, 's.jsonl', 0, 1000)""",
+        (session_pk, f"sess-{session_pk}", cwd, cwd, start, end),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _enrich(db: str) -> None:
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(return_value=_VALID_WORKFLOW_JSON)
+    asyncio.run(enrich_one_async(db, run_id=1, inference=fake_lm, query_model="test-model"))
+
+
+def _linked_sessions(db: str) -> list[int]:
+    conn = sqlite3.connect(db)
+    try:
+        return [
+            row[0]
+            for row in conn.execute(
+                "SELECT agentic_session_id FROM knowledge_node_agentic_sessions ORDER BY 1"
+            )
+        ]
+    finally:
+        conn.close()
+
+
+def _add_event(db: str, cwd: str, git_repo: str) -> None:
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """INSERT INTO events (session_id, timestamp, command, duration_ms, cwd, hostname, shell,
+                               git_repo)
+           VALUES (1, 5, 'ls', 1, ?, 'localhost', 'zsh', ?)""",
+        (cwd, git_repo),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_enrich_one_async_links_only_sessions_in_the_run_repository(enrichment_db):
+    """Several projects are active in the same 15 minutes; only the run's repo is related."""
+    for pk in range(400, 415):  # more foreign sessions than the link cap
+        _add_session(enrichment_db, pk, "/Users/me/projects/homelab")
+    _add_session(enrichment_db, 420, "/Users/me/projects/r/brain")  # subdirectory of the repo
+    _add_event(enrichment_db, "/Users/me/projects/r/brain", "me/r")
+    _add_session(enrichment_db, 421, "/Users/me/.r")  # named after the repo, no event recorded
+    _add_session(enrichment_db, 422, "/Users/me/projects/r-claude-123")  # worktree, any name
+    _add_event(enrichment_db, "/Users/me/projects/r-claude-123", "me/r")
+    _add_session(enrichment_db, 423, "/Users/me/projects/other/r")  # another repo's directory
+    _add_event(enrichment_db, "/Users/me/projects/other/r", "me/other")
+    _add_session(enrichment_db, 424, "/tmp/scratch")  # repository unknown
+
+    _enrich(enrichment_db)
+
+    assert _linked_sessions(enrichment_db) == [420, 421, 422]
+
+
+def test_enrich_one_async_does_not_promote_a_lesson_without_tool_and_rule(enrichment_db):
+    """ "Process completed with exit code 1." names nothing an agent can act on."""
+    conn = sqlite3.connect(enrichment_db)
+    conn.execute("DELETE FROM workflow_annotations")
+    conn.execute(
+        """INSERT INTO workflow_annotations (job_id, level, tool, rule_id, path, start_line, message)
+           VALUES (10, 'failure', NULL, NULL, '.github', 1, 'Process completed with exit code 1.')"""
+    )
+    conn.commit()
+    conn.close()
+
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(return_value=_VALID_WORKFLOW_JSON)
+    asyncio.run(
+        enrich_one_async(
+            enrichment_db, run_id=1, inference=fake_lm, query_model="m", min_occurrences=1
+        )
+    )
+
+    conn = sqlite3.connect(enrichment_db)
+    counts = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM lessons), (SELECT COUNT(*) FROM lesson_pending)"
+    ).fetchone()
+    conn.close()
+    assert counts == (0, 0)
+
+
+def _seed_old_links(db: str) -> None:
+    """A node linked the way enrichment linked before it checked the repository."""
+    _add_session(db, 500, "/Users/me/projects/r")
+    _enrich(db)
+    _add_session(db, 501, "/Users/me/projects/homelab")
+    _add_event(db, "/Users/me/projects/homelab", "me/homelab")
+    _add_session(db, 502, "/tmp/scratch")  # repository unknown: no evidence to remove it
+    conn = sqlite3.connect(db)
+    node_id = conn.execute("SELECT knowledge_node_id FROM knowledge_node_workflow_runs").fetchone()[
+        0
+    ]
+    conn.executemany(
+        "INSERT INTO knowledge_node_agentic_sessions VALUES (?, ?)",
+        [(node_id, 501), (node_id, 502)],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_unlink_foreign_sessions_removes_only_links_proven_foreign(enrichment_db):
+    _seed_old_links(enrichment_db)
+    conn = sqlite3.connect(enrichment_db)
+
+    assert unlink_foreign_sessions(conn, dry_run=True) == 1
+    assert _linked_sessions(enrichment_db) == [500, 501, 502]
+    assert unlink_foreign_sessions(conn) == 1
+    conn.commit()
+    conn.close()
+    assert _linked_sessions(enrichment_db) == [500, 502]
+
+
+def test_repair_command_counts_by_default_and_deletes_with_apply(
+    enrichment_db, monkeypatch, capsys
+):
+    from hippo_brain import workflow_enrichment
+
+    _seed_old_links(enrichment_db)
+    checkpoints: list[tuple] = []
+
+    def checkpoint(label, db_path):
+        # The backup must be taken while the links still exist.
+        checkpoints.append((label, str(db_path), _linked_sessions(enrichment_db)))
+
+    monkeypatch.setattr("hippo_brain.backup_checkpoint.checkpoint_before_mutation", checkpoint)
+
+    monkeypatch.setattr("sys.argv", ["workflow_enrichment", "--db", enrichment_db])
+    workflow_enrichment.main()
+    assert "Would remove 1 foreign session links" in capsys.readouterr().out
+    assert _linked_sessions(enrichment_db) == [500, 501, 502]
+    assert checkpoints == []
+
+    monkeypatch.setattr("sys.argv", ["workflow_enrichment", "--db", enrichment_db, "--apply"])
+    workflow_enrichment.main()
+    assert "Removed 1 foreign session links" in capsys.readouterr().out
+    assert _linked_sessions(enrichment_db) == [500, 502]
+    assert checkpoints == [
+        ("unlink-foreign-sessions", str(Path(enrichment_db).resolve()), [500, 501, 502])
+    ]
 
 
 def test_enrich_one_async_skips_missing_run(enrichment_db):

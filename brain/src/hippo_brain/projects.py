@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 
 from hippo_brain import _default_config_path
@@ -54,6 +55,87 @@ def canonical_name(value: str, aliases: dict[str, str], **kwargs) -> str:
     if not name:
         raise ValueError("empty canonical project name")
     return name
+
+
+def directory_repos(conn, directories: Iterable[str]) -> dict[str, set[str]]:
+    """Captured ``git_repo`` values per directory, from one read of ``events``."""
+    paths = sorted({d for d in directories if d.startswith("/")})  # not an encoded session slug
+    repos: dict[str, set[str]] = {}
+    if paths:
+        placeholders = ",".join("?" for _ in paths)
+        for cwd, repo in conn.execute(
+            f"SELECT e.cwd, e.git_repo FROM events e WHERE e.cwd IN ({placeholders}) "
+            "AND e.probe_tag IS NULL AND trim(coalesce(e.git_repo, '')) != '' "
+            "GROUP BY e.cwd, e.git_repo",
+            paths,
+        ):
+            repos.setdefault(cwd, set()).add(repo)
+    return repos
+
+
+def mixed_repository_nodes(
+    conn, event_ids_by_node: dict[str, Iterable[int]], aliases: dict[str, str]
+) -> set[str]:
+    """Nodes whose linked events were captured in more than one project.
+
+    Shell enrichment once put the commands of projects that were active together
+    into one node. Such a node belongs to no single project.
+    """
+    ids = sorted({event_id for event_ids in event_ids_by_node.values() for event_id in event_ids})
+    if not ids:
+        return set()
+    placeholders = ",".join("?" for _ in ids)
+    project_of: dict[int, str] = {}
+    for event_id, repo in conn.execute(
+        f"SELECT e.id, e.git_repo FROM events e WHERE e.id IN ({placeholders}) "
+        "AND e.probe_tag IS NULL AND trim(coalesce(e.git_repo, '')) != ''",
+        ids,
+    ):
+        try:
+            project_of[event_id] = canonical_name(repo, aliases)
+        except ValueError:  # the value normalizes to an empty name
+            continue
+    return {
+        node
+        for node, event_ids in event_ids_by_node.items()
+        if len({project_of[i] for i in event_ids if i in project_of}) > 1
+    }
+
+
+def directory_in_project(
+    project: str,
+    directories: Iterable[str],
+    repos_by_directory: dict[str, set[str]],
+    aliases: dict[str, str],
+) -> bool | None:
+    """Whether captured provenance places one of ``directories`` in ``project``.
+
+    ``repos_by_directory`` comes from :func:`directory_repos`.
+
+    True: an event recorded in the directory carries the project's ``git_repo``,
+    or no event was recorded there and the directory is named after the project.
+    False: events recorded there carry only other repositories. None: unknown.
+
+    The captured repository decides before the name does. A worktree can have any
+    name, and another repository can hold a directory named after this project.
+    The directory is where the session started: a session that works on a second
+    repository from there is not placed in that repository.
+    """
+
+    def key(value: str, **kwargs) -> str:
+        try:
+            return canonical_name(value, aliases, **kwargs)
+        except ValueError:  # the value normalizes to an empty name
+            return ""
+
+    target = key(project)
+    paths = [d for d in directories if d.startswith("/")]  # not an encoded session slug
+    if not target or not paths:
+        return None
+    repos = {key(repo) for path in paths for repo in repos_by_directory.get(path, ())}
+    if repos:
+        return target in repos
+    return True if any(key(path, directory=True) == target for path in paths) else None
 
 
 def upsert_project(

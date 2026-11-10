@@ -102,3 +102,62 @@ def test_get_lessons_filters(db_with_run: Path):
 def test_get_lessons_empty_when_no_match(db_with_run: Path):
     result = get_lessons_impl(str(db_with_run), repo="nonexistent/repo")
     assert result == []
+
+
+def _add_lesson(db: Path, repo: str, tool: str, rule_id: str, path_prefix: str, occurrences=3):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """INSERT INTO lessons (repo, tool, rule_id, path_prefix, summary, occurrences,
+                                first_seen_at, last_seen_at)
+           VALUES (?, ?, ?, ?, ?, ?, 1000, 5000)""",
+        (repo, tool, rule_id, path_prefix, f"{tool}:{rule_id} in {path_prefix}", occurrences),
+    )
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "sjcarpenter/whistlepost",
+        "stevencarpenter/whistlepost",  # the owner an agent guessed
+        "whistlepost",
+        "Whistlepost",
+        "/Users/me/projects/whistlepost",
+    ],
+)
+def test_get_lessons_matches_any_spelling_of_the_repo(db_with_run: Path, spelling: str):
+    _add_lesson(db_with_run, "sjcarpenter/whistlepost", "ruff", "F401", "web/src/")
+    assert len(get_lessons_impl(str(db_with_run), repo=spelling)) == 1
+
+
+def test_get_lessons_does_not_match_a_partial_repo_name(db_with_run: Path):
+    _add_lesson(db_with_run, "sjcarpenter/whistlepost", "ruff", "F401", "web/src/")
+    assert get_lessons_impl(str(db_with_run), repo="whistle") == []
+
+
+def test_get_lessons_hides_lessons_that_name_no_tool_and_no_rule(db_with_run: Path):
+    # Annotations such as "Process completed with exit code 1." cluster to ": in .github".
+    _add_lesson(db_with_run, "me/r", "", "", ".github", occurrences=976)
+    assert get_lessons_impl(str(db_with_run), repo="me/r") == []
+
+
+@pytest.mark.parametrize(
+    ("path", "matches"),
+    [
+        ("web/src", True),  # no trailing slash
+        ("web", True),  # parent directory
+        ("web/src/components/Map.tsx", True),
+        ("./web/src/components/Map.tsx", True),
+        (".", True),  # the repository root
+        ("./", True),
+        ("web/srcx", False),
+        ("web_src", False),  # "_" is not a wildcard
+        ("backend/", False),
+    ],
+)
+def test_get_lessons_path_matches_parent_and_child_directories(
+    db_with_run: Path, path: str, matches: bool
+):
+    _add_lesson(db_with_run, "me/r", "ruff", "F401", "web/src/")
+    assert bool(get_lessons_impl(str(db_with_run), path=path)) is matches
