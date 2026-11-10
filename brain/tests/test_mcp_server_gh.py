@@ -246,6 +246,94 @@ class TestSessionLessons:
 
         assert [r["uuid"] for r in results] == ["n2", "n3", "n4"]
 
+    def test_a_node_that_mixes_repositories_is_not_a_project_lesson(self, lessons_db, monkeypatch):
+        """Shell nodes written before chunks were grouped by repository hold both projects."""
+        conn, db_path = lessons_db
+        _state.db_path = str(db_path)
+        conn.execute(
+            "INSERT INTO sessions (id, start_time, shell, hostname, username) "
+            "VALUES (1, 1, 'zsh', 'h', 'u')"
+        )
+        conn.executemany(
+            "INSERT INTO events (id, session_id, timestamp, command, duration_ms, cwd, hostname, "
+            "shell, git_repo) VALUES (?, 1, 1, 'gfp', 1, ?, 'h', 'zsh', ?)",
+            [
+                (1, "/p/dotfiles", "me/dotfiles"),
+                (2, "/p/windrow", "me/windrow"),
+                (3, "/p/dotfiles", "sj/dotfiles"),  # another owner, the same project
+            ],
+        )
+        conn.commit()
+        self._fake_retrieval(
+            monkeypatch,
+            [
+                {
+                    "uuid": "mixed",
+                    "problems_encountered": ["a"],
+                    "cwd": "/p/dotfiles",
+                    "linked_event_ids": [1, 2],
+                },
+                {
+                    "uuid": "one-repo",
+                    "problems_encountered": ["b"],
+                    "cwd": "/p/dotfiles",
+                    "linked_event_ids": [1, 3],
+                },
+                {"uuid": "no-events", "problems_encountered": ["c"], "cwd": ""},
+            ],
+        )
+
+        results = asyncio.run(get_lessons(repo="me/dotfiles"))
+
+        assert [r["uuid"] for r in results] == ["one-repo", "no-events"]
+
+    def test_a_problem_from_a_ci_run_is_not_labelled_as_a_session_lesson(
+        self, lessons_db, monkeypatch
+    ):
+        _, db_path = lessons_db
+        _state.db_path = str(db_path)
+        self._fake_retrieval(
+            monkeypatch,
+            [
+                {
+                    "uuid": "run",
+                    "problems_encountered": ["clippy failed"],
+                    "cwd": "",
+                    "linked_source_ids": ["workflow-7", "shell-3"],
+                },
+                {
+                    "uuid": "work",
+                    "problems_encountered": ["hook failed"],
+                    "cwd": "",
+                    "linked_source_ids": ["claude-9"],
+                },
+            ],
+        )
+
+        results = asyncio.run(get_lessons(repo="other/repo"))
+
+        assert [(r["uuid"], r["source"]) for r in results] == [
+            ("run", "ci-run"),
+            ("work", "session"),
+        ]
+
+    def test_a_worktree_path_as_repo_resolves_to_its_main_checkout(
+        self, lessons_db, monkeypatch, tmp_path
+    ):
+        _, db_path = lessons_db
+        _state.db_path = str(db_path)
+        main = tmp_path / "r"
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        worktree = tmp_path / "r-claude-123"
+        worktree.mkdir()
+        (worktree / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt\n")
+        captured = self._fake_retrieval(monkeypatch, [])
+
+        results = asyncio.run(get_lessons(repo=str(worktree)))
+
+        assert captured["project"] == str(main)
+        assert [r["repo"] for r in results] == ["me/r"]
+
     def test_without_a_topic_the_most_recent_problems_are_used(self, lessons_db, monkeypatch):
         _, db_path = lessons_db
         _state.db_path = str(db_path)

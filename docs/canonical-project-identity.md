@@ -37,7 +37,7 @@ Several projects are usually active in the same minutes, so time overlap does no
 
 - Shell enrichment groups a claimed batch by captured `git_repo` before it splits on time (`_chunk_events` in `brain/src/hippo_brain/enrichment.py`). A node no longer mixes the commands of two repositories, and a terminal that alternates between two repositories yields two chunks. An event outside a repository stays with the repository of the events before it.
 - Workflow-run enrichment links an agentic session to a run only when the session directory belongs to the run's repository. The ±15 minute window still applies.
-- `get_lessons` drops a session lesson whose node directory belongs to another repository.
+- `get_lessons` drops a session lesson whose node directory belongs to another repository, and a node whose linked events span more than one project (`mixed_repository_nodes`).
 
 `directory_in_project` in `brain/src/hippo_brain/projects.py` decides membership from stored metadata, with no filesystem lookup. `directory_repos` supplies the captured repositories for all directories in one read of `events`:
 

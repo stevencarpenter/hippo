@@ -44,7 +44,12 @@ from hippo_brain.memory_query import (
     resolve_limit,
     run_memory_history_query,
 )
-from hippo_brain.projects import directory_in_project, directory_repos, load_aliases
+from hippo_brain.projects import (
+    directory_in_project,
+    directory_repos,
+    load_aliases,
+    mixed_repository_nodes,
+)
 from hippo_brain.rag import ask as rag_ask
 from hippo_brain.rag import format_rag_response
 from hippo_brain.retrieval_eligibility import include_excluded_from_env
@@ -262,13 +267,23 @@ def _fit(hits: list[dict], budget: int) -> list[dict]:
     kept: list[dict] = []
     used = 0
     for hit in hits:
-        used += _size(hit) + 1
-        # shortcut: the first hit is kept even above the budget; the largest seen is
-        # 36k characters, under the client limit of about 50k. Cut its evidence list
-        # here if single hits grow past that.
-        if kept and used > budget:
+        size = _size(hit) + 1
+        if kept and used + size > budget:
             break
+        if size > budget and isinstance(hit.get("evidence"), list):
+            # A node linked to many runs or sessions carries more evidence packets
+            # than a client accepts: keep the packets that fit and give the count.
+            packets = hit["evidence"]
+            hit = {**hit, "evidence": [], "evidence_total": len(packets)}
+            room = budget - _size(hit) - 1
+            for packet in packets:
+                room -= _size(packet) + 1
+                if room < 0:
+                    break
+                hit["evidence"].append(packet)
+            size = _size(hit) + 1
         kept.append(hit)
+        used += size
     return kept
 
 
@@ -794,7 +809,8 @@ async def get_lessons(
 
     Each lesson has a ``source``. ``ci`` and ``capture-alarm`` lessons recur
     (``occurrences``). ``session`` lessons are problems, with their resolution,
-    that one past session recorded (``uuid`` is its knowledge node).
+    that one past session recorded (``uuid`` is its knowledge node); ``ci-run``
+    lessons are the same for one CI run.
 
     Args:
         repo: Project to scope to. Any spelling works: 'owner/repo', a bare name,
@@ -821,10 +837,12 @@ async def get_lessons(
         try:
             tool = tool or None
             project, in_repo_path = repo, path or None
+            if repo and repo.startswith("/") and (checkout := _checkout(Path(repo))):
+                project = str(checkout[0])  # a worktree path names its main checkout
             if path and path.startswith("/"):
                 # An absolute path names its checkout and a location inside it.
                 checkout = _checkout(Path(path))
-                project = repo or str(checkout[0] if checkout else path)
+                project = project or str(checkout[0] if checkout else path)
                 inside = Path(path).relative_to(checkout[1]).as_posix() if checkout else "."
                 in_repo_path = None if inside == "." else inside
             if not any((repo, path, tool, query)):
@@ -883,6 +901,7 @@ async def _session_lessons(project: str | None, topic: str, limit: int) -> list[
     lessons: list[dict] = []
     seen: set[str] = set()
     elsewhere: set[str] = set()
+    mixed: set[str] = set()
     if project and hits:
         # Older shell nodes mix commands from projects that were active together.
         aliases = load_aliases()
@@ -890,6 +909,11 @@ async def _session_lessons(project: str | None, topic: str, limit: int) -> list[
         conn = _get_conn()
         try:
             evidence = directory_repos(conn, cwds)
+            mixed = mixed_repository_nodes(
+                conn,
+                {hit.get("uuid", ""): hit.get("linked_event_ids") or [] for hit in hits},
+                aliases,
+            )
         finally:
             conn.close()
         elsewhere = {
@@ -897,8 +921,12 @@ async def _session_lessons(project: str | None, topic: str, limit: int) -> list[
         }
     for hit in hits:
         cwd = hit.get("cwd") or ""
-        if cwd in elsewhere:
+        if cwd in elsewhere or hit.get("uuid", "") in mixed:
             continue
+        # A workflow node records the failure of a CI run, not of a working session.
+        from_run = any(
+            str(ref).startswith("workflow-") for ref in hit.get("linked_source_ids") or []
+        )
         for problem in hit.get("problems_encountered") or []:
             key = " ".join(str(problem).lower().split())
             if key in seen:
@@ -906,7 +934,7 @@ async def _session_lessons(project: str | None, topic: str, limit: int) -> list[
             seen.add(key)
             lessons.append(
                 {
-                    "source": "session",
+                    "source": "ci-run" if from_run else "session",
                     "summary": _clip(str(problem), _SUMMARY_CAP),
                     "cwd": cwd,
                     "git_branch": hit.get("git_branch", ""),
@@ -1299,7 +1327,7 @@ async def agent_query(
             # Evidence packets stay whole here, so fewer hits fit than in a search.
             hits = result.get("hits", [])
             kept = _fit(hits, RESULT_BUDGET_CHARS - _size({**result, "hits": []}))
-            if len(kept) < len(hits):
+            if kept != hits:
                 result["hits"], result["truncated"] = kept, True
         except ValueError as exc:
             _add(_tool_errors, tool="agent_query")

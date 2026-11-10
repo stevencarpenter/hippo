@@ -170,3 +170,34 @@ def test_agent_query_keeps_whole_evidence_packets_and_fits_the_budget(monkeypatc
     assert result["truncated"] is True
     assert [h["uuid"] for h in result["hits"]] == ["u0", "u1"]
     assert result["hits"][0]["evidence"] == packets
+
+
+def test_agent_query_cuts_the_evidence_of_one_hit_that_is_larger_than_the_budget(monkeypatch):
+    """A node linked to many runs carries more packets than a client accepts."""
+    packets = [{"ref": f"workflow-{n}", "excerpt": "x" * 500} for n in range(100)]
+    hits = [{"uuid": "u0", "summary": "s", "evidence": packets}, {"uuid": "u1", "summary": "s"}]
+
+    async def fake_search_context(*_args, **_kwargs):
+        return [], {}
+
+    monkeypatch.setattr("hippo_brain.mcp._search_context", fake_search_context)
+    monkeypatch.setattr("hippo_brain.mcp._open_retrieval_conn", lambda: sqlite3.connect(":memory:"))
+    monkeypatch.setattr(
+        "hippo_brain.mcp.run_agent_query",
+        lambda *_args, **_kwargs: {
+            "mode": "evidence",
+            "answer": "a",
+            "hits": hits,
+            "truncated": False,
+        },
+    )
+    monkeypatch.setattr(_state, "inference_client", None)
+
+    result = asyncio.run(agent_query("q", mode="evidence"))
+
+    assert len(json.dumps(result, separators=(",", ":"), ensure_ascii=False)) <= RESULT_BUDGET_CHARS
+    assert result["truncated"] is True
+    hit = result["hits"][0]
+    assert hit["evidence_total"] == 100
+    assert 1 <= len(hit["evidence"]) < 100
+    assert hit["evidence"] == packets[: len(hit["evidence"])]

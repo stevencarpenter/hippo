@@ -73,6 +73,35 @@ def directory_repos(conn, directories: Iterable[str]) -> dict[str, set[str]]:
     return repos
 
 
+def mixed_repository_nodes(
+    conn, event_ids_by_node: dict[str, Iterable[int]], aliases: dict[str, str]
+) -> set[str]:
+    """Nodes whose linked events were captured in more than one project.
+
+    Shell enrichment once put the commands of projects that were active together
+    into one node. Such a node belongs to no single project.
+    """
+    ids = sorted({event_id for event_ids in event_ids_by_node.values() for event_id in event_ids})
+    if not ids:
+        return set()
+    placeholders = ",".join("?" for _ in ids)
+    project_of: dict[int, str] = {}
+    for event_id, repo in conn.execute(
+        f"SELECT e.id, e.git_repo FROM events e WHERE e.id IN ({placeholders}) "
+        "AND e.probe_tag IS NULL AND trim(coalesce(e.git_repo, '')) != ''",
+        ids,
+    ):
+        try:
+            project_of[event_id] = canonical_name(repo, aliases)
+        except ValueError:  # the value normalizes to an empty name
+            continue
+    return {
+        node
+        for node, event_ids in event_ids_by_node.items()
+        if len({project_of[i] for i in event_ids if i in project_of}) > 1
+    }
+
+
 def directory_in_project(
     project: str,
     directories: Iterable[str],

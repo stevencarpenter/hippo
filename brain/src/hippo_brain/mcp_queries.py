@@ -750,7 +750,8 @@ def get_lessons_impl(
             return ""
 
     def directory(value: str) -> str:
-        return value.removeprefix("./").strip("/") + "/"
+        value = value.strip("/")
+        return ("" if value == "." else value.removeprefix("./")) + "/"
 
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA secure_delete=ON")
@@ -773,8 +774,8 @@ def get_lessons_impl(
     if repo:
         target = project_key(repo)
         rows = [r for r in rows if target and project_key(r["repo"]) == target]
-    if path:
-        want = directory(path)
+    want = directory(path) if path else "/"
+    if want != "/":  # "/" is the repository root: every lesson directory lies under it
         rows = [
             r
             for r in rows

@@ -37,7 +37,7 @@ An MCP client rejects a tool result near 50,000 characters, or keeps only a 2 KB
 - `confidence` is reduced to `{level, score}`, plus `withheld` when true.
 - Hits are kept in rank order while the result fits 24,000 characters. When hits are omitted, the last list entry is `{"truncated": true, "omitted_hits": N, "hint": "..."}`.
 
-`agent_query` keeps every evidence packet whole and stays under the same 24,000 characters: it drops hits from the end and sets its `truncated` field. With full packets, 2 to 5 hits fit. Lower `limit` to read the packets of the top hits only. The first hit is always returned, even when it alone is larger.
+`agent_query` keeps every evidence packet whole and stays under the same 24,000 characters: it drops hits from the end and sets its `truncated` field. With full packets, 2 to 5 hits fit. Lower `limit` to read the packets of the top hits only. When the first hit alone is larger, its `evidence` list is cut to the packets that fit and `evidence_total` gives the full count.
 
 ## Common arguments
 
@@ -300,8 +300,8 @@ Lessons for a project. Pre-flight before work in a project.
 
 | Name | Type | Default | Notes |
 |---|---|---|---|
-| `repo` | `str \| None` | `None` | The project. Any spelling resolves to the same project: `"owner/repo"`, a bare name, or a checkout path. The owner is ignored, and `[projects.aliases]` applies ([canonical project identity](canonical-project-identity.md)). |
-| `path` | `str \| None` | `None` | File or directory in the repository, relative (`web/src`, `./web/src/Map.tsx`) or absolute. A recurring lesson matches when its `path_prefix` directory contains the path or lies under it. An absolute path is resolved on disk to its checkout (the nearest parent with `.git`; a linked worktree resolves to its main checkout): the checkout names the project when `repo` is absent, and the rest is the path in the repository. |
+| `repo` | `str \| None` | `None` | The project. Any spelling resolves to the same project: `"owner/repo"`, a bare name, or a checkout path (a linked worktree resolves to its main checkout). The owner is ignored, and `[projects.aliases]` applies ([canonical project identity](canonical-project-identity.md)). |
+| `path` | `str \| None` | `None` | File or directory in the repository, relative (`web/src`, `./web/src/Map.tsx`) or absolute. `.` is the repository root and applies no path filter. A recurring lesson matches when its `path_prefix` directory contains the path or lies under it. An absolute path is resolved on disk to its checkout (the nearest parent with `.git`; a linked worktree resolves to its main checkout): the checkout names the project when `repo` is absent, and the rest is the path in the repository. |
 | `tool` | `str \| None` | `None` | Tool or technology name (`"ruff"`, `"sqlx"`, `"launchd"`). Exact match on a recurring lesson's `tool`; a search term for session lessons. Empty means no filter. |
 | `limit` | `int` | `10` | |
 | `query` | `str \| None` | `None` | Free-text topic, such as the change you plan to make. Ranks session lessons. |
@@ -314,7 +314,8 @@ With no arguments, the project is the repository the MCP server was started in (
 |---|---|---|
 | `ci` | Failing workflow annotations that name a tool or a rule, clustered by `(repo, tool, rule_id, path_prefix)`. Graduates after 2+ occurrences; single failures stay in `lesson_pending`. | `{id, repo, tool, rule_id, path_prefix, summary, fix_hint, occurrences, first_seen_at, last_seen_at}` |
 | `capture-alarm` | Hippo's own recurring capture-invariant alarms (`tool` starts with `hippo-capture:` or is `hippo-watchdog`). | Same as `ci`. |
-| `session` | One `problems_encountered` entry of an enriched knowledge node: the problem and how the session resolved it. Ranked by `query`, `tool`, and `path` when given, else newest first. When a project is named and nothing matches the topic, the project's newest problems are returned. Duplicates are removed. A node is dropped when captured events place its directory in another repository ([concurrent projects](canonical-project-identity.md#concurrent-projects)). | `{summary, cwd, git_branch, last_seen_at, uuid}`; `uuid` is the knowledge node. |
+| `session` | One `problems_encountered` entry of an enriched knowledge node: the problem and how the session resolved it. Ranked by `query`, `tool`, and `path` when given, else newest first. When a project is named and nothing matches the topic, the project's newest problems are returned. Duplicates are removed. A node is dropped when captured events place its directory in another repository, or when its linked events span more than one project ([concurrent projects](canonical-project-identity.md#concurrent-projects)). | `{summary, cwd, git_branch, last_seen_at, uuid}`; `uuid` is the knowledge node. |
+| `ci-run` | The same, for a node that workflow-run enrichment wrote: the failure of one CI run. | Same as `session`. |
 
 Recurring lessons come first and take at most half of `limit` when session lessons fill the rest.
 

@@ -149,6 +149,8 @@ def test_get_lessons_hides_lessons_that_name_no_tool_and_no_rule(db_with_run: Pa
         ("web", True),  # parent directory
         ("web/src/components/Map.tsx", True),
         ("./web/src/components/Map.tsx", True),
+        (".", True),  # the repository root
+        ("./", True),
         ("web/srcx", False),
         ("web_src", False),  # "_" is not a wildcard
         ("backend/", False),
