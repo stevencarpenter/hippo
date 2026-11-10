@@ -2,12 +2,14 @@
 
 import asyncio
 import json
+import sqlite3
 
 from hippo_brain.mcp import (
     RESULT_BUDGET_CHARS,
     _bounded,
     _snippet,
     _state,
+    agent_query,
     search_events,
     search_hybrid,
 )
@@ -137,3 +139,34 @@ def test_search_events_shows_the_matching_part_of_a_long_session_summary(tmp_db)
     assert len(results) == 1
     assert "frobnicator" in results[0]["summary"]
     assert len(results[0]["summary"]) <= 500
+
+
+def test_agent_query_keeps_whole_evidence_packets_and_fits_the_budget(monkeypatch):
+    packets = [
+        {"ref": f"claude-{n}", "excerpt": "x" * 500, "freshness": {"capture_health": {"a": 1}}}
+        for n in range(20)
+    ]
+    hits = [{"uuid": f"u{i}", "summary": "s", "evidence": packets} for i in range(10)]
+
+    async def fake_search_context(*_args, **_kwargs):
+        return [], {"rerank_enabled": False}
+
+    monkeypatch.setattr("hippo_brain.mcp._search_context", fake_search_context)
+    monkeypatch.setattr("hippo_brain.mcp._open_retrieval_conn", lambda: sqlite3.connect(":memory:"))
+    monkeypatch.setattr(
+        "hippo_brain.mcp.run_agent_query",
+        lambda *_args, **_kwargs: {
+            "mode": "evidence",
+            "answer": "a",
+            "hits": hits,
+            "truncated": False,
+        },
+    )
+    monkeypatch.setattr(_state, "inference_client", None)
+
+    result = asyncio.run(agent_query("q", mode="evidence"))
+
+    assert len(json.dumps(result, separators=(",", ":"), ensure_ascii=False)) <= RESULT_BUDGET_CHARS
+    assert result["truncated"] is True
+    assert [h["uuid"] for h in result["hits"]] == ["u0", "u1"]
+    assert result["hits"][0]["evidence"] == packets

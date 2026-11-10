@@ -473,6 +473,36 @@ def test_recent_mode_reaches_past_the_candidate_pool_for_a_filtered_scope(conn):
     assert [r.uuid for r in results] == ["uuid-3", "uuid-2"]
 
 
+def test_recent_mode_with_since_stops_at_the_first_page_older_than_the_window(conn, monkeypatch):
+    """Nodes are paged newest first, so nothing after an old page is inside the window."""
+    from hippo_brain import retrieval
+
+    for i in range(1, 21):
+        _insert_node(conn, i, summary=f"n{i}", created_at=i)
+    offsets: list[int] = []
+    all_recent_ids = retrieval._all_recent_ids
+
+    def spy(c, limit, offset=0):
+        offsets.append(offset)
+        return all_recent_ids(c, limit, offset)
+
+    monkeypatch.setattr(retrieval, "_all_recent_ids", spy)
+
+    results = search(
+        conn,
+        "",
+        None,
+        Filters(since_ms=18),
+        mode="recent",
+        limit=5,
+        backend=FakeBackend(),
+        tuning=Tuning(candidate_pool=5),
+    )
+
+    assert [r.uuid for r in results] == ["uuid-20", "uuid-19", "uuid-18"]
+    assert offsets == [0]
+
+
 def test_unknown_mode_raises(conn):
     with pytest.raises(ValueError):
         search(conn, "q", None, Filters(), mode="banana", backend=FakeBackend())

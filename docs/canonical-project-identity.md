@@ -39,7 +39,7 @@ Several projects are usually active in the same minutes, so time overlap does no
 - Workflow-run enrichment links an agentic session to a run only when the session directory belongs to the run's repository. The ±15 minute window still applies.
 - `get_lessons` drops a session lesson whose node directory belongs to another repository.
 
-`directory_in_project` in `brain/src/hippo_brain/projects.py` decides membership from stored metadata, with no filesystem lookup:
+`directory_in_project` in `brain/src/hippo_brain/projects.py` decides membership from stored metadata, with no filesystem lookup. `directory_repos` supplies the captured repositories for all directories in one read of `events`:
 
 | Result | Condition |
 |---|---|
@@ -50,6 +50,8 @@ Several projects are usually active in the same minutes, so time overlap does no
 
 Enrichment links a session only on `True`, so a session in a directory with no captured event and an unrelated name (a new worktree, a Cursor empty window) is not linked.
 
+The directory is where the session started. A session that starts in repository A and pushes repository B from there (for example with `git -C`) is placed in A: it is not linked to B's CI run, and the repair below removes its old link to that run.
+
 Nodes written before this change keep their content. Workflow nodes written before it also keep links to sessions from other repositories. Count those links, then remove them, with this idempotent command against an explicit existing database:
 
 ```sh
@@ -57,7 +59,7 @@ uv run --project brain python -m hippo_brain.workflow_enrichment --db /explicit/
 uv run --project brain python -m hippo_brain.workflow_enrichment --db /explicit/path/to/hippo.db --apply
 ```
 
-Without `--apply` the command opens the database read-only and prints the count. With `--apply` it deletes a link only on `False` (events place the session in another repository), keeps a link whose session repository is unknown, and re-attributes the affected nodes. Take a checkpoint first (`hippo backup now --label before-session-unlink`). This source change does not authorize running `--apply` on an installed database.
+Without `--apply` the command opens the database read-only and prints the count. With `--apply` it first takes a backup checkpoint of the configured database (`checkpoint_before_mutation`, the same step the dedup and re-enrich scripts take) and stops if the checkpoint fails. It then deletes a link only on `False` (events place the session in another repository), keeps a link whose session repository is unknown, and re-attributes the affected nodes. This source change does not authorize running `--apply` on an installed database.
 
 ## Chosen acceptance approach
 

@@ -46,3 +46,12 @@ def test_unknown_candidates_and_errors_remain_visible():
         assert not score_response(case, wire, 1)["success"]
     duplicates = {"structuredContent": {"hits": [{"uuid": "support"}, {"uuid": "support"}]}}
     assert score_response(case, duplicates, 1)["known_support_recall"] == 1
+
+
+def test_truncation_marker_does_not_fail_a_response():
+    """Search tools end a cut result with a marker entry that is not a hit."""
+    hits = [{"uuid": "support", "summary": "x"}]
+    marker = {"truncated": True, "omitted_hits": 3, "hint": "..."}
+    got, metadata = response_hits({"structuredContent": {"result": [*hits, marker]}})
+    assert got == hits
+    assert metadata["parsed_context"] is True

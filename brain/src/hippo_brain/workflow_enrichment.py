@@ -111,7 +111,7 @@ async def enrich_one_async(
         # Co-temporal agentic sessions (claude-code / codex / cursor / opencode).
         # Several projects are usually active inside one window, so time overlap
         # alone does not relate a session to this run: keep the run's repository.
-        from hippo_brain.projects import directory_in_project, load_aliases
+        from hippo_brain.projects import directory_in_project, directory_repos, load_aliases
 
         aliases = load_aliases()
         candidates = conn.execute(
@@ -124,14 +124,14 @@ async def enrich_one_async(
                 started - CORRELATION_WINDOW_MS,
             ),
         ).fetchall()
-        # One lookup per directory: many segments share a session directory.
-        in_repo = {
-            dirs: directory_in_project(conn, repo_name, dirs, aliases)
-            for dirs in {(row["project_dir"], row["cwd"]) for row in candidates}
-        }
-        claude_rows = [row for row in candidates if in_repo[(row["project_dir"], row["cwd"])]][
-            :SESSION_LINK_LIMIT
-        ]
+        evidence = directory_repos(
+            conn, {d for row in candidates for d in (row["project_dir"], row["cwd"])}
+        )
+        claude_rows = [
+            row
+            for row in candidates
+            if directory_in_project(repo_name, (row["project_dir"], row["cwd"]), evidence, aliases)
+        ][:SESSION_LINK_LIMIT]
 
         # Top failing annotations (up to 10)
         ann_rows = conn.execute(
@@ -313,32 +313,36 @@ def unlink_foreign_sessions(conn: sqlite3.Connection, *, dry_run: bool = False) 
     removed, or that a real run would remove when ``dry_run`` is set. The caller
     commits.
     """
-    from hippo_brain.projects import attribute_node, directory_in_project, load_aliases
+    from hippo_brain.projects import (
+        attribute_node,
+        directory_in_project,
+        directory_repos,
+        load_aliases,
+    )
 
     aliases = load_aliases()
-    verdicts: dict[tuple[str, str, str], bool | None] = {}
-
-    def elsewhere(repo: str, project_dir: str, cwd: str) -> bool:
-        cache_key = (repo, project_dir, cwd)
-        if cache_key not in verdicts:
-            verdicts[cache_key] = directory_in_project(conn, repo, (project_dir, cwd), aliases)
-        return verdicts[cache_key] is False
-
     repos: dict[int, set[str]] = {}
     for node_id, repo in conn.execute(
         "SELECT l.knowledge_node_id, r.repo FROM knowledge_node_workflow_runs l "
         "JOIN workflow_runs r ON r.id = l.run_id"
     ):
         repos.setdefault(node_id, set()).add(repo)
+    links = conn.execute(
+        "SELECT l.knowledge_node_id, s.id, s.project_dir, s.cwd "
+        "FROM knowledge_node_agentic_sessions l "
+        "JOIN agentic_sessions s ON s.id = l.agentic_session_id "
+        "WHERE l.knowledge_node_id IN (SELECT knowledge_node_id FROM knowledge_node_workflow_runs)"
+    ).fetchall()
+    evidence = directory_repos(
+        conn, {d for _, _, project_dir, cwd in links for d in (project_dir, cwd)}
+    )
     foreign = [
         (node_id, session_id)
-        for node_id, session_id, project_dir, cwd in conn.execute(
-            "SELECT l.knowledge_node_id, s.id, s.project_dir, s.cwd "
-            "FROM knowledge_node_agentic_sessions l "
-            "JOIN agentic_sessions s ON s.id = l.agentic_session_id "
-            "WHERE l.knowledge_node_id IN (SELECT knowledge_node_id FROM knowledge_node_workflow_runs)"
+        for node_id, session_id, project_dir, cwd in links
+        if all(
+            directory_in_project(repo, (project_dir, cwd), evidence, aliases) is False
+            for repo in repos[node_id]
         )
-        if all(elsewhere(repo, project_dir, cwd) for repo in repos[node_id])
     ]
     if not dry_run:
         conn.executemany(
@@ -451,6 +455,10 @@ def main() -> None:
     parser.add_argument("--db", type=Path, required=True, help="Explicit existing database path")
     parser.add_argument("--apply", action="store_true", help="Delete the links (default: count)")
     args = parser.parse_args()
+    if args.apply:
+        from hippo_brain.backup_checkpoint import checkpoint_before_mutation
+
+        checkpoint_before_mutation("unlink-foreign-sessions", args.db.resolve())
     mode = "rw" if args.apply else "ro"
     conn = sqlite3.connect(f"{args.db.resolve().as_uri()}?mode={mode}", uri=True)
     try:

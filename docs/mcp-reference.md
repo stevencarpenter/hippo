@@ -37,6 +37,8 @@ An MCP client rejects a tool result near 50,000 characters, or keeps only a 2 KB
 - `confidence` is reduced to `{level, score}`, plus `withheld` when true.
 - Hits are kept in rank order while the result fits 24,000 characters. When hits are omitted, the last list entry is `{"truncated": true, "omitted_hits": N, "hint": "..."}`.
 
+`agent_query` keeps every evidence packet whole and stays under the same 24,000 characters: it drops hits from the end and sets its `truncated` field. With full packets, 2 to 5 hits fit. Lower `limit` to read the packets of the top hits only. The first hit is always returned, even when it alone is larger.
+
 ## Common arguments
 
 Several tools share filter arguments. Project matching differs between knowledge queries and raw event or entity lookups:

@@ -476,16 +476,27 @@ def test_repair_command_counts_by_default_and_deletes_with_apply(
     from hippo_brain import workflow_enrichment
 
     _seed_old_links(enrichment_db)
+    checkpoints: list[tuple] = []
+
+    def checkpoint(label, db_path):
+        # The backup must be taken while the links still exist.
+        checkpoints.append((label, str(db_path), _linked_sessions(enrichment_db)))
+
+    monkeypatch.setattr("hippo_brain.backup_checkpoint.checkpoint_before_mutation", checkpoint)
 
     monkeypatch.setattr("sys.argv", ["workflow_enrichment", "--db", enrichment_db])
     workflow_enrichment.main()
     assert "Would remove 1 foreign session links" in capsys.readouterr().out
     assert _linked_sessions(enrichment_db) == [500, 501, 502]
+    assert checkpoints == []
 
     monkeypatch.setattr("sys.argv", ["workflow_enrichment", "--db", enrichment_db, "--apply"])
     workflow_enrichment.main()
     assert "Removed 1 foreign session links" in capsys.readouterr().out
     assert _linked_sessions(enrichment_db) == [500, 502]
+    assert checkpoints == [
+        ("unlink-foreign-sessions", str(Path(enrichment_db).resolve()), [500, 501, 502])
+    ]
 
 
 def test_enrich_one_async_skips_missing_run(enrichment_db):

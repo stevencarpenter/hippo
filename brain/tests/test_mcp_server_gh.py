@@ -135,6 +135,15 @@ class TestGetLessonsTool:
         results = asyncio.run(get_lessons())
         assert [r["repo"] for r in results] == ["me/r"]
 
+    def test_a_deleted_server_directory_means_no_default_project(self, monkeypatch):
+        from hippo_brain import mcp as mcp_module
+
+        def gone():
+            raise FileNotFoundError("the worktree was removed")
+
+        monkeypatch.setattr(mcp_module.Path, "cwd", gone)
+        assert mcp_module._server_project() is None
+
     def test_empty_tool_means_no_tool_filter(self, lessons_db):
         _, db_path = lessons_db
         _state.db_path = str(db_path)

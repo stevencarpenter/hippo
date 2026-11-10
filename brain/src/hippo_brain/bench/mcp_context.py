@@ -46,7 +46,10 @@ def response_hits(wire: dict) -> tuple[list[dict], dict]:
             parsed_context |= bool(value.get("uuid"))
             value = [value]
         if isinstance(value, list):
-            parsed_context |= all(isinstance(hit, dict) and hit.get("uuid") for hit in value)
+            # A search tool ends a cut result with a {"truncated": true} entry.
+            parsed_context |= all(
+                isinstance(hit, dict) and (hit.get("uuid") or hit.get("truncated")) for hit in value
+            )
             hits.extend(hit for hit in value if isinstance(hit, dict) and hit.get("uuid"))
     metadata["parsed_context"] = parsed_context
     return hits, metadata

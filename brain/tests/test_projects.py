@@ -17,6 +17,7 @@ from hippo_brain.projects import (
     backfill,
     canonical_name,
     directory_in_project,
+    directory_repos,
     infer_project,
     load_aliases,
     normalize,
@@ -530,8 +531,19 @@ def test_directory_in_project_trusts_the_captured_repository_before_the_name(tmp
     event(conn, "me/whistlepost", cwd="/p/whistlepost-claude-261031")  # worktree, any name
     event(conn, "me/hippo", cwd="/p/hippo/.claude/agents")  # directory named like a project
 
+    every = ["/p/whistlepost-claude-261031", "/p/hippo/.claude/agents", "/p/.windrow", "-p-windrow"]
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    evidence = directory_repos(conn, every)
+    conn.set_trace_callback(None)
+    assert len(statements) == 1  # one read of events for every directory
+    assert evidence == {
+        "/p/whistlepost-claude-261031": {"me/whistlepost"},
+        "/p/hippo/.claude/agents": {"me/hippo"},
+    }
+
     def verdict(project, *directories):
-        return directory_in_project(conn, project, directories, {})
+        return directory_in_project(project, directories, evidence, {})
 
     assert verdict("sj/whistlepost", "-p-whistlepost-claude-261031", "/p/whistlepost-claude-261031")
     assert verdict("me/agents", "/p/hippo/.claude/agents") is False

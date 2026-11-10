@@ -44,7 +44,7 @@ from hippo_brain.memory_query import (
     resolve_limit,
     run_memory_history_query,
 )
-from hippo_brain.projects import directory_in_project, load_aliases
+from hippo_brain.projects import directory_in_project, directory_repos, load_aliases
 from hippo_brain.rag import ask as rag_ask
 from hippo_brain.rag import format_rag_response
 from hippo_brain.retrieval_eligibility import include_excluded_from_env
@@ -252,27 +252,44 @@ def _compact_hit(hit: dict, query: str) -> dict:
     return out
 
 
+def _size(value) -> int:
+    """Characters as an MCP client counts them: compact JSON, not ASCII-escaped."""
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False))
+
+
+def _fit(hits: list[dict], budget: int) -> list[dict]:
+    """Keep the top-ranked hits whose JSON fits ``budget`` characters."""
+    kept: list[dict] = []
+    used = 0
+    for hit in hits:
+        used += _size(hit) + 1
+        # shortcut: the first hit is kept even above the budget; the largest seen is
+        # 36k characters, under the client limit of about 50k. Cut its evidence list
+        # here if single hits grow past that.
+        if kept and used > budget:
+            break
+        kept.append(hit)
+    return kept
+
+
 def _bounded(hits: list[dict], query: str = "") -> list[dict]:
     """Compact every hit, then keep the top-ranked hits that fit ``RESULT_BUDGET_CHARS``.
 
-    The size is counted as the client counts it: the compact JSON of the list,
-    wrapped as ``{"result": [...]}``, in characters.
+    The client counts the list wrapped as ``{"result": [...]}``.
     """
-    out: list[dict] = []
-    used = len('{"result":[]}')
-    for hit in hits:
-        compact = _compact_hit(hit, query)
-        used += len(json.dumps(compact, separators=(",", ":"), ensure_ascii=False)) + 1
-        if out and used > RESULT_BUDGET_CHARS - 200:  # 200: room for the marker below
-            out.append(
-                {
-                    "truncated": True,
-                    "omitted_hits": len(hits) - len(out),
-                    "hint": "Result size limit reached. Lower `limit` or narrow the query.",
-                }
-            )
-            break
-        out.append(compact)
+    marker_room = 200
+    out = _fit(
+        [_compact_hit(hit, query) for hit in hits],
+        RESULT_BUDGET_CHARS - len('{"result":[]}') - marker_room,
+    )
+    if len(out) < len(hits):
+        out.append(
+            {
+                "truncated": True,
+                "omitted_hits": len(hits) - len(out),
+                "hint": "Result size limit reached. Lower `limit` or narrow the query.",
+            }
+        )
     return out
 
 
@@ -297,7 +314,10 @@ def _checkout(path: Path) -> tuple[Path, Path] | None:
 
 def _server_project() -> str | None:
     """The repository the MCP client started this server in, or None outside a repository."""
-    checkout = _checkout(Path.cwd())
+    try:
+        checkout = _checkout(Path.cwd())
+    except OSError:  # the directory was removed while the server ran, e.g. a deleted worktree
+        return None
     return str(checkout[0]) if checkout else None
 
 
@@ -866,15 +886,15 @@ async def _session_lessons(project: str | None, topic: str, limit: int) -> list[
     if project and hits:
         # Older shell nodes mix commands from projects that were active together.
         aliases = load_aliases()
+        cwds = {hit.get("cwd") or "" for hit in hits}
         conn = _get_conn()
         try:
-            elsewhere = {
-                cwd
-                for cwd in {hit.get("cwd") or "" for hit in hits}
-                if directory_in_project(conn, project, (cwd,), aliases) is False
-            }
+            evidence = directory_repos(conn, cwds)
         finally:
             conn.close()
+        elsewhere = {
+            cwd for cwd in cwds if directory_in_project(project, (cwd,), evidence, aliases) is False
+        }
     for hit in hits:
         cwd = hit.get("cwd") or ""
         if cwd in elsewhere:
@@ -1229,7 +1249,9 @@ async def agent_query(
     - ``decisions``: nodes with documented design decisions
 
     Returns bounded extracted notes: summary, key decisions, prior failures,
-    design decisions and source excerpts. Verify notes against cited evidence;
+    design decisions and source excerpts. Hits are dropped from the end, and
+    ``truncated`` is set, when the response would exceed the result size limit;
+    lower ``limit`` to read the packets of fewer hits. Verify notes against cited evidence;
     ranking is not factual confidence. Refine with search_knowledge or
     search_hybrid when the first lookup lacks the needed fact.
     """
@@ -1274,6 +1296,11 @@ async def agent_query(
             )
             result = run_agent_query(conn, req, query_vec, results=results)
             result["retrieval"] = diagnostics
+            # Evidence packets stay whole here, so fewer hits fit than in a search.
+            hits = result.get("hits", [])
+            kept = _fit(hits, RESULT_BUDGET_CHARS - _size({**result, "hits": []}))
+            if len(kept) < len(hits):
+                result["hits"], result["truncated"] = kept, True
         except ValueError as exc:
             _add(_tool_errors, tool="agent_query")
             _record_result("agent_query", 0, degraded=True)

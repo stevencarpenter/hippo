@@ -57,10 +57,31 @@ def canonical_name(value: str, aliases: dict[str, str], **kwargs) -> str:
     return name
 
 
+def directory_repos(conn, directories: Iterable[str]) -> dict[str, set[str]]:
+    """Captured ``git_repo`` values per directory, from one read of ``events``."""
+    paths = sorted({d for d in directories if d.startswith("/")})  # not an encoded session slug
+    repos: dict[str, set[str]] = {}
+    if paths:
+        placeholders = ",".join("?" for _ in paths)
+        for cwd, repo in conn.execute(
+            f"SELECT e.cwd, e.git_repo FROM events e WHERE e.cwd IN ({placeholders}) "
+            "AND e.probe_tag IS NULL AND trim(coalesce(e.git_repo, '')) != '' "
+            "GROUP BY e.cwd, e.git_repo",
+            paths,
+        ):
+            repos.setdefault(cwd, set()).add(repo)
+    return repos
+
+
 def directory_in_project(
-    conn, project: str, directories: Iterable[str], aliases: dict[str, str]
+    project: str,
+    directories: Iterable[str],
+    repos_by_directory: dict[str, set[str]],
+    aliases: dict[str, str],
 ) -> bool | None:
     """Whether captured provenance places one of ``directories`` in ``project``.
+
+    ``repos_by_directory`` comes from :func:`directory_repos`.
 
     True: an event recorded in the directory carries the project's ``git_repo``,
     or no event was recorded there and the directory is named after the project.
@@ -68,6 +89,8 @@ def directory_in_project(
 
     The captured repository decides before the name does. A worktree can have any
     name, and another repository can hold a directory named after this project.
+    The directory is where the session started: a session that works on a second
+    repository from there is not placed in that repository.
     """
 
     def key(value: str, **kwargs) -> str:
@@ -80,15 +103,7 @@ def directory_in_project(
     paths = [d for d in directories if d.startswith("/")]  # not an encoded session slug
     if not target or not paths:
         return None
-    placeholders = ",".join("?" for _ in paths)
-    repos = {
-        key(repo)
-        for (repo,) in conn.execute(
-            f"SELECT DISTINCT e.git_repo FROM events e WHERE e.cwd IN ({placeholders}) "
-            "AND e.probe_tag IS NULL AND trim(coalesce(e.git_repo, '')) != ''",
-            paths,
-        )
-    }
+    repos = {key(repo) for path in paths for repo in repos_by_directory.get(path, ())}
     if repos:
         return target in repos
     return True if any(key(path, directory=True) == target for path in paths) else None

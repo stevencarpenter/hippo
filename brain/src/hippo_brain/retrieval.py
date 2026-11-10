@@ -662,6 +662,14 @@ def _recent(
             allowed = _apply_filters(conn, page, filters)
             newest.extend(nid for nid in page if nid in allowed)
             offset += len(page)
+            if filters.since_ms is not None:
+                # Pages run newest first: after a page that reaches past the
+                # window, every later node was created before it.
+                oldest = conn.execute(
+                    "SELECT created_at FROM knowledge_nodes WHERE id = ?", (page[-1],)
+                ).fetchone()[0]
+                if (oldest or 0) < filters.since_ms:
+                    break
         newest = newest[:want]
     details = _fetch_details(conn, newest, include_excluded=filters.include_excluded)
     ordered = sorted(
