@@ -4,6 +4,7 @@
 ![macOS](https://img.shields.io/badge/platform-macOS_arm64-lightgrey.svg)
 [![Rust](https://img.shields.io/badge/rust-edition_2024-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/)
 [![Python](https://img.shields.io/badge/python-3.15%2B-blue.svg)](https://www.python.org/)
+[![Sponsor](https://img.shields.io/badge/sponsor-GitHub_Sponsors-ea4aaa.svg?logo=githubsponsors)](https://github.com/sponsors/stevencarpenter)
 
 Local-first knowledge capture daemon for macOS. Hippo watches your shell activity, Claude Code sessions, and Firefox browsing, redacts known secret formats, enriches events with a local LLM, and builds a searchable second brain with local inference by default. LLM inference runs against any OpenAI-compatible local server on your machine — defaults target [oMLX](https://omlx.ai) (continuous batching + tiered KV cache for Apple Silicon), and [LM Studio](https://lmstudio.ai/) works as a drop-in alternative. Telemetry is off by default and points at localhost when on. See [Privacy and Security](#privacy-and-security) for the full data-flow story.
 
@@ -405,6 +406,10 @@ findings and escapes. It is destructive;
 startup and migration do not run it automatically. See
 [event payload retention](docs/schema.md#event-payload-retention) for evidence
 pins, shared snapshots, checkpoint outcomes and the limits of erasure.
+
+## Sponsor
+
+Hippo is free and MIT-licensed. If it is useful to you, you can support its development through [GitHub Sponsors](https://github.com/sponsors/stevencarpenter).
 
 ## License
 
