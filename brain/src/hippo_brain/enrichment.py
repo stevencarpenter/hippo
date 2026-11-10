@@ -435,7 +435,23 @@ def _skip_ineligible_shell_events(conn, events: list[dict]) -> list[dict]:
 
 
 def _chunk_events(events: list[dict], max_size: int) -> list[list[dict]]:
-    """Split events into chunks at time gaps > 60s or at max_size."""
+    """Group events by git repository, then split at time gaps > 60s or at max_size.
+
+    One terminal moves between projects that are active together. A node that
+    mixes their commands belongs to no project and misleads a project lookup.
+    An event outside a repository stays with the repository of the events before
+    it. Grouping the whole batch keeps a terminal that alternates between two
+    repositories at two chunks, not one chunk per switch.
+    """
+    repo = next((ev["git_repo"] for ev in events if ev.get("git_repo")), "")
+    groups: dict[str, list[dict]] = {}
+    for ev in events:
+        repo = ev.get("git_repo") or repo
+        groups.setdefault(repo, []).append(ev)
+    return [chunk for group in groups.values() for chunk in _chunk_by_time(group, max_size)]
+
+
+def _chunk_by_time(events: list[dict], max_size: int) -> list[list[dict]]:
     if len(events) <= max_size:
         return [events]
 

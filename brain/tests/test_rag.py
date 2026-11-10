@@ -392,6 +392,32 @@ class TestAsk:
         client.chat.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing_stage", ["preflight", "embed"])
+    async def test_unreachable_backend_still_returns_lexical_notes(self, failing_stage):
+        """Keyword retrieval needs no inference server, so a degraded answer keeps its sources."""
+        client = _healthy_client()
+        if failing_stage == "preflight":
+            client.health_check.return_value = {"ok": False, "reason": "backend unreachable"}
+        else:
+            client.embed.side_effect = RuntimeError("backend unreachable")
+        conn = sqlite3.connect(":memory:")
+        try:
+            with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
+                retrieval_mock.return_value = [_fake_search_result()]
+                result = await ask("q", client, None, "m", "e", project="hippo", conn=conn)
+        finally:
+            conn.close()
+
+        assert result["degraded"] is True
+        assert result["stage"] == failing_stage
+        assert len(result["sources"]) == 1
+        assert retrieval_mock.call_args.args[2] is None  # no query vector
+        assert retrieval_mock.call_args.kwargs["mode"] == "lexical"
+        assert retrieval_mock.call_args.kwargs["filters"].project == "hippo"
+        client.chat.assert_not_called()
+        assert "Raw notes" in format_rag_response(result)
+
+    @pytest.mark.asyncio
     async def test_preflight_exception_is_trapped(self):
         client = _healthy_client()
         client.health_check.side_effect = RuntimeError("socket gone")

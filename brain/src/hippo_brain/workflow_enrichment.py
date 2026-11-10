@@ -2,11 +2,15 @@
 
 For each completed workflow run in the enrichment queue:
 1. Find co-temporal shell events (same SHA or within ±15min window)
-2. Find co-temporal Claude sessions (overlapping time window)
+2. Find co-temporal agentic sessions in the run's repository (overlapping time window)
 3. Fetch top failing annotations
 4. Build a prompt → call LLM → write a knowledge node
 5. Link the node to the run, shell events, and Claude sessions
-6. For each failing annotation, call lessons.upsert_cluster
+6. For each failing annotation that names a tool or a rule, call lessons.upsert_cluster
+
+Repair links written before step 2 checked the repository (dry run unless --apply):
+
+    python -m hippo_brain.workflow_enrichment --db /explicit/path/to/hippo.db [--apply]
 """
 
 import json
@@ -27,6 +31,7 @@ from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 logger = logging.getLogger("hippo_brain")
 
 CORRELATION_WINDOW_MS = 15 * 60 * 1000  # ±15 minutes
+SESSION_LINK_LIMIT = 10
 
 WORKFLOW_SYSTEM_PROMPT = """You are a CI/CD activity analyst. You receive a summary of a GitHub Actions workflow run and the developer activity around it.
 
@@ -103,17 +108,30 @@ async def enrich_one_async(
                 ),
             ).fetchall()
 
-        # Co-temporal agentic sessions (claude-code / codex / cursor / opencode)
-        claude_rows = conn.execute(
-            """SELECT id, session_id, summary_text FROM agentic_sessions
+        # Co-temporal agentic sessions (claude-code / codex / cursor / opencode).
+        # Several projects are usually active inside one window, so time overlap
+        # alone does not relate a session to this run: keep the run's repository.
+        from hippo_brain.projects import directory_in_project, load_aliases
+
+        aliases = load_aliases()
+        candidates = conn.execute(
+            """SELECT id, project_dir, cwd FROM agentic_sessions
                WHERE start_time <= ? AND end_time >= ?
                  AND probe_tag IS NULL
-               LIMIT 10""",
+               ORDER BY start_time DESC""",
             (
                 started + CORRELATION_WINDOW_MS,
                 started - CORRELATION_WINDOW_MS,
             ),
         ).fetchall()
+        # One lookup per directory: many segments share a session directory.
+        in_repo = {
+            dirs: directory_in_project(conn, repo_name, dirs, aliases)
+            for dirs in {(row["project_dir"], row["cwd"]) for row in candidates}
+        }
+        claude_rows = [row for row in candidates if in_repo[(row["project_dir"], row["cwd"])]][
+            :SESSION_LINK_LIMIT
+        ]
 
         # Top failing annotations (up to 10)
         ann_rows = conn.execute(
@@ -256,6 +274,9 @@ async def enrich_one_async(
         # mark the run failed and re-enrich it into a duplicate node.
         try:
             for a in ann_rows:
+                if not (a["tool"] or a["rule_id"]):
+                    # "Process completed with exit code 1." names nothing to act on.
+                    continue
                 path_prefix = _path_prefix(a["path"], path_prefix_segments)
                 upsert_cluster(
                     db_path,
@@ -280,6 +301,54 @@ async def enrich_one_async(
         return node_id, {"id": node_id, "embed_text": result.embed_text, "commands_raw": ""}
     finally:
         conn.close()
+
+
+def unlink_foreign_sessions(conn: sqlite3.Connection, *, dry_run: bool = False) -> int:
+    """Remove workflow-node links to sessions that ran in another repository.
+
+    Before ``enrich_one_async`` checked the repository, it linked every session
+    active inside the correlation window. A link is removed only when captured
+    events place the session directory in a different repository; a session
+    whose repository is unknown keeps its link. Returns the number of links
+    removed, or that a real run would remove when ``dry_run`` is set. The caller
+    commits.
+    """
+    from hippo_brain.projects import attribute_node, directory_in_project, load_aliases
+
+    aliases = load_aliases()
+    verdicts: dict[tuple[str, str, str], bool | None] = {}
+
+    def elsewhere(repo: str, project_dir: str, cwd: str) -> bool:
+        cache_key = (repo, project_dir, cwd)
+        if cache_key not in verdicts:
+            verdicts[cache_key] = directory_in_project(conn, repo, (project_dir, cwd), aliases)
+        return verdicts[cache_key] is False
+
+    repos: dict[int, set[str]] = {}
+    for node_id, repo in conn.execute(
+        "SELECT l.knowledge_node_id, r.repo FROM knowledge_node_workflow_runs l "
+        "JOIN workflow_runs r ON r.id = l.run_id"
+    ):
+        repos.setdefault(node_id, set()).add(repo)
+    foreign = [
+        (node_id, session_id)
+        for node_id, session_id, project_dir, cwd in conn.execute(
+            "SELECT l.knowledge_node_id, s.id, s.project_dir, s.cwd "
+            "FROM knowledge_node_agentic_sessions l "
+            "JOIN agentic_sessions s ON s.id = l.agentic_session_id "
+            "WHERE l.knowledge_node_id IN (SELECT knowledge_node_id FROM knowledge_node_workflow_runs)"
+        )
+        if all(elsewhere(repo, project_dir, cwd) for repo in repos[node_id])
+    ]
+    if not dry_run:
+        conn.executemany(
+            "DELETE FROM knowledge_node_agentic_sessions "
+            "WHERE knowledge_node_id = ? AND agentic_session_id = ?",
+            foreign,
+        )
+        for node_id in {node_id for node_id, _ in foreign}:
+            attribute_node(conn, node_id, aliases)
+    return len(foreign)
 
 
 def claim_pending_workflow_runs(
@@ -371,3 +440,30 @@ def _build_prompt(run, shell_rows, claude_rows, ann_rows) -> str:
         "failed, the root cause and one-line fix suggestion."
     )
     return index_text("\n".join(parts))
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Remove workflow-node links to sessions from other repositories"
+    )
+    parser.add_argument("--db", type=Path, required=True, help="Explicit existing database path")
+    parser.add_argument("--apply", action="store_true", help="Delete the links (default: count)")
+    args = parser.parse_args()
+    mode = "rw" if args.apply else "ro"
+    conn = sqlite3.connect(f"{args.db.resolve().as_uri()}?mode={mode}", uri=True)
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
+        if args.apply:
+            conn.execute("PRAGMA secure_delete=ON")
+        count = unlink_foreign_sessions(conn, dry_run=not args.apply)
+        conn.commit()
+        print(f"{'Removed' if args.apply else 'Would remove'} {count} foreign session links")
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()

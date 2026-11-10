@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 
 from hippo_brain import _default_config_path
@@ -54,6 +55,43 @@ def canonical_name(value: str, aliases: dict[str, str], **kwargs) -> str:
     if not name:
         raise ValueError("empty canonical project name")
     return name
+
+
+def directory_in_project(
+    conn, project: str, directories: Iterable[str], aliases: dict[str, str]
+) -> bool | None:
+    """Whether captured provenance places one of ``directories`` in ``project``.
+
+    True: an event recorded in the directory carries the project's ``git_repo``,
+    or no event was recorded there and the directory is named after the project.
+    False: events recorded there carry only other repositories. None: unknown.
+
+    The captured repository decides before the name does. A worktree can have any
+    name, and another repository can hold a directory named after this project.
+    """
+
+    def key(value: str, **kwargs) -> str:
+        try:
+            return canonical_name(value, aliases, **kwargs)
+        except ValueError:  # the value normalizes to an empty name
+            return ""
+
+    target = key(project)
+    paths = [d for d in directories if d.startswith("/")]  # not an encoded session slug
+    if not target or not paths:
+        return None
+    placeholders = ",".join("?" for _ in paths)
+    repos = {
+        key(repo)
+        for (repo,) in conn.execute(
+            f"SELECT DISTINCT e.git_repo FROM events e WHERE e.cwd IN ({placeholders}) "
+            "AND e.probe_tag IS NULL AND trim(coalesce(e.git_repo, '')) != ''",
+            paths,
+        )
+    }
+    if repos:
+        return target in repos
+    return True if any(key(path, directory=True) == target for path in paths) else None
 
 
 def upsert_project(

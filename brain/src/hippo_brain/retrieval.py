@@ -638,15 +638,32 @@ def _recent(
 ) -> list[SearchResult]:
     # "date-ordered with loose query match" — use FTS if query provided, else
     # pull most recent knowledge_nodes filtered by the same WHERE stack.
-    if query:
-        raw = _call_fts(backend, conn, query, t.candidate_pool, t)
-        candidate_ids = [nid for nid, _ in raw]
+    #
+    # Rank on created_at before hydrating: details cost joins and evidence
+    # packets per node, and a pool holds up to candidate_pool nodes. captured_at
+    # exceeds created_at only for a node that gained a later link, so hydrate a
+    # margin of 2x and settle the final order on captured_at.
+    want = limit * 2
+    fts_ids = (
+        [nid for nid, _ in _call_fts(backend, conn, query, t.candidate_pool, t)] if query else []
+    )
+    if fts_ids:
+        allowed = _apply_filters(conn, fts_ids, filters)
+        newest = [nid for nid in _newest_first(conn, fts_ids) if nid in allowed][:want]
     else:
-        candidate_ids = []
-    if not candidate_ids:
-        candidate_ids = _all_recent_ids(conn, t.candidate_pool)
-    allowed = _apply_filters(conn, candidate_ids, filters)
-    details = _fetch_details(conn, list(allowed), include_excluded=filters.include_excluded)
+        # Page through every node, so a scope that was idle while other projects
+        # filled a pool still returns its most recent nodes.
+        newest = []
+        offset = 0
+        while len(newest) < want:
+            page = _all_recent_ids(conn, t.candidate_pool, offset)
+            if not page:
+                break
+            allowed = _apply_filters(conn, page, filters)
+            newest.extend(nid for nid in page if nid in allowed)
+            offset += len(page)
+        newest = newest[:want]
+    details = _fetch_details(conn, newest, include_excluded=filters.include_excluded)
     ordered = sorted(
         (d for d in details.values()),
         key=lambda d: d["captured_at"],
@@ -1358,10 +1375,20 @@ def _fetch_details(
     return details
 
 
-def _all_recent_ids(conn: sqlite3.Connection, limit: int) -> list[int]:
+def _all_recent_ids(conn: sqlite3.Connection, limit: int, offset: int = 0) -> list[int]:
     rows = conn.execute(
-        "SELECT id FROM knowledge_nodes ORDER BY created_at DESC LIMIT ?",
-        (limit,),
+        "SELECT id FROM knowledge_nodes ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _newest_first(conn: sqlite3.Connection, node_ids: Sequence[int]) -> list[int]:
+    placeholders = ",".join("?" for _ in node_ids)
+    rows = conn.execute(
+        f"SELECT id FROM knowledge_nodes WHERE id IN ({placeholders}) "
+        "ORDER BY created_at DESC, id DESC",
+        list(node_ids),
     ).fetchall()
     return [r[0] for r in rows]
 

@@ -16,6 +16,7 @@ from hippo_brain.auto_memory_categories import (
     validate_memory_category_filter,
 )
 from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
+from hippo_brain.projects import canonical_name, load_aliases
 from hippo_brain.retrieval_eligibility import (
     agentic_session_eligible_sql,
     knowledge_node_eligible_exists_sql,
@@ -731,10 +732,26 @@ def get_lessons_impl(
     tool: str | None = None,
     limit: int = 10,
 ) -> list[Lesson]:
-    """Return distilled past-mistake lessons matching the filters.
+    """Return recurring-failure lessons matching the filters.
+
+    ``repo`` matches by canonical project name, so the owner, letter case, a
+    ``.git`` suffix, and a checkout path do not matter. ``path`` matches a lesson
+    whose directory contains it or lies under it. A lesson that names neither a
+    tool nor a rule is omitted: it says only that something failed.
 
     Ordered by occurrences DESC, then last_seen_at DESC.
     """
+    aliases = load_aliases()
+
+    def project_key(value: str) -> str:
+        try:
+            return canonical_name(value, aliases)
+        except ValueError:  # the value normalizes to an empty name
+            return ""
+
+    def directory(value: str) -> str:
+        return value.removeprefix("./").strip("/") + "/"
+
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA secure_delete=ON")
     conn.row_factory = sqlite3.Row
@@ -743,15 +760,28 @@ def get_lessons_impl(
             """SELECT id, repo, tool, rule_id, path_prefix, summary, fix_hint,
                       occurrences, first_seen_at, last_seen_at
                FROM lessons
-               WHERE (? IS NULL OR repo = ?)
-                 AND (? IS NULL OR tool = ?)
-                 AND (? IS NULL OR ? LIKE path_prefix || '%')
-               ORDER BY occurrences DESC, last_seen_at DESC
-               LIMIT ?""",
-            (repo, repo, tool, tool, path, path, min(limit, MAX_LIMIT)),
+               WHERE NOT (tool = '' AND rule_id = '')
+                 AND (? IS NULL OR tool = ? COLLATE NOCASE)
+               ORDER BY occurrences DESC, last_seen_at DESC""",
+            (tool, tool),
         ).fetchall()
     finally:
         conn.close()
+
+    # The remaining filters run here: SQL cannot apply project aliases, and LIKE
+    # treats the "_" in a path as a wildcard.
+    if repo:
+        target = project_key(repo)
+        rows = [r for r in rows if target and project_key(r["repo"]) == target]
+    if path:
+        want = directory(path)
+        rows = [
+            r
+            for r in rows
+            if not r["path_prefix"]
+            or want.startswith(directory(r["path_prefix"]))
+            or directory(r["path_prefix"]).startswith(want)
+        ]
 
     return [
         Lesson(
@@ -766,7 +796,7 @@ def get_lessons_impl(
             first_seen_at=r["first_seen_at"],
             last_seen_at=r["last_seen_at"],
         )
-        for r in rows
+        for r in rows[: min(limit, MAX_LIMIT)]
     ]
 
 

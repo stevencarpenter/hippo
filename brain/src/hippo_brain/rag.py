@@ -578,7 +578,8 @@ async def ask(
         {"answer": str, "sources": [...], "model": str, "degraded": False}
 
     On failure at any stage, returns a *degraded* response — ``answer`` is
-    ``None`` but ``sources`` is still populated where possible, and ``error``
+    ``None`` but ``sources`` is still populated where possible (a keyword search
+    supplies them when the inference server is unreachable), and ``error``
     contains exception type, stage, model, and endpoint. ``format_rag_response``
     renders degraded responses as a "Raw notes" Markdown block so callers still
     get useful material.
@@ -602,6 +603,34 @@ async def ask(
             connection positionally).
     """
     endpoint = getattr(inference_client, "base_url", "<unknown>")
+    effective_filters = _resolve_filters(
+        filters,
+        project=project,
+        since=since,
+        source=source,
+        branch=branch,
+        entity=entity,
+        include_excluded=include_excluded,
+    )
+    retrieval_conn = conn if conn is not None else vector_table
+
+    def lexical_sources() -> list[dict]:
+        """Keyword retrieval needs no inference server, so a degraded answer keeps its notes."""
+        if not isinstance(retrieval_conn, sqlite3.Connection):
+            return []
+        try:
+            results = retrieval_search(
+                retrieval_conn,
+                question,
+                None,
+                filters=effective_filters,
+                mode="lexical",
+                limit=limit,
+            )
+        except Exception as e:
+            logger.warning("RAG lexical fallback failed: %s", e)
+            return []
+        return _shape_rag_sources([_result_to_hit(r) for r in results], limit=limit)
 
     # 0. Preflight: is the query model actually loaded?
     if not skip_preflight:
@@ -623,7 +652,7 @@ async def ask(
             logger.error("RAG preflight failed: %s", reason)
             return _degraded_response(
                 model=query_model,
-                sources=[],
+                sources=lexical_sources(),
                 error=f"preflight: {reason}",
                 stage="preflight",
             )
@@ -638,7 +667,7 @@ async def ask(
         logger.error("RAG embed failed: %s", e)
         return _degraded_response(
             model=query_model,
-            sources=[],
+            sources=lexical_sources(),
             error=_describe_exception(e, stage="embed", model=embedding_model, endpoint=endpoint),
             stage="embed",
         )
@@ -646,7 +675,7 @@ async def ask(
     if not vecs:
         return _degraded_response(
             model=query_model,
-            sources=[],
+            sources=lexical_sources(),
             error=f"embed failed [EmptyResponse] model={embedding_model!r} endpoint={endpoint}: "
             "embedding endpoint returned no vectors",
             stage="embed",
@@ -662,16 +691,6 @@ async def ask(
     # MMR's lexical+temporal diversity instead of pure-semantic KNN. The
     # legacy ``search_similar`` path is kept for non-sqlite handles (e.g.
     # LanceDB tables on deploys without sqlite-vec).
-    effective_filters = _resolve_filters(
-        filters,
-        project=project,
-        since=since,
-        source=source,
-        branch=branch,
-        entity=entity,
-        include_excluded=include_excluded,
-    )
-    retrieval_conn = conn if conn is not None else vector_table
     use_retrieval_search = isinstance(retrieval_conn, sqlite3.Connection)
     try:
         _t1 = time.monotonic()
