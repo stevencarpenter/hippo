@@ -6,12 +6,14 @@
 #   - devalue / dompurify / vite / esbuild / yaml / js-yaml : astro + vitest
 #   - undici                                      : unifont, jsdom, linkinator
 #   - brace-expansion@5                           : dev-only, via linkinator
+#   - glob@13 (and its minimatch@10)              : dev-only, via linkinator
 #   - fast-uri                                    : dev-only, via @astrojs/check -> ajv
 #   - source-map-js                               : astro -> svgo, magicast
 #   - smol-toml                                   : astro -> @astrojs/internal-helpers
 #
 #   Advisory floors: devalue >=5.9.3, dompurify >=3.4.17, js-yaml >=4.3.2,
 #   fast-uri >=3.1.9, undici >=7.30.1, brace-expansion >=5.0.12,
+#   glob >=14.0.2 (brings minimatch >=11.0.1; neither has a patched 13.x/10.x),
 #   vite >=8.2.4, source-map-js >=1.2.2, smol-toml >=1.9.0.
 #   Loosening any of them below its floor reopens a Dependabot alert.
 #
@@ -29,6 +31,8 @@ overrides:
   fast-uri: "^3.1.9"
   undici: "^7.30.1"
   "brace-expansion@5": "^5.0.12"
+  # Override glob, not minimatch: glob 13 relies on minimatch 10 RegExp internals.
+  "glob@13": "^14.0.4"
   source-map-js: "^1.2.2"
   smol-toml: "^1.9.0"
   # Pin until an upstream fix passes tests/cache-security.test.ts.
