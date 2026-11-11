@@ -830,7 +830,7 @@
       "gridPos": {
         "x": 0,
         "y": 32,
-        "w": 12,
+        "w": 9,
         "h": 8
       },
       "datasource": {
@@ -877,9 +877,9 @@
       "description": "Auto-resolved alarms (watchdog cleared the violation itself) vs manually reset alarms (operator acked). Spiky auto-resolve + reset counts on the same invariant indicate a flapping capture source.",
       "type": "timeseries",
       "gridPos": {
-        "x": 12,
+        "x": 9,
         "y": 32,
-        "w": 12,
+        "w": 9,
         "h": 8
       },
       "datasource": {
@@ -928,6 +928,69 @@
           "displayMode": "list",
           "placement": "bottom"
         }
+      }
+    },
+    {
+      "id": 213,
+      "title": "Watchdog Runs / hr",
+      "description": "Watchdog ticks in the last hour. launchd runs `hippo watchdog run` every 60 s, so a healthy value is near 60. A value near 0 means invariants are not being checked and the panels to the left go silent. The provisioned \"Watchdog not running\" alert fires on the same metric.",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 32,
+        "w": 6,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(hippo_watchdog_run_total[1h])) or vector(0)",
+          "legendFormat": "runs/hr",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 30
+              },
+              {
+                "color": "green",
+                "value": 50
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
       }
     }
   ]

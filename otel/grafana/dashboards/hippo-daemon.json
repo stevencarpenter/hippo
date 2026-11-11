@@ -468,7 +468,7 @@
     },
     {
       "id": 10,
-      "title": "Fallback Recovered / s",
+      "title": "Fallback Writes vs Recovered / s",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
@@ -490,6 +490,16 @@
           "expr": "rate(hippo_daemon_fallback_recovered_total[5m])",
           "legendFormat": "recovered/s",
           "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(hippo_daemon_fallback_writes_total[5m])) or vector(0)",
+          "legendFormat": "written/s",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
@@ -510,7 +520,8 @@
           "displayMode": "list",
           "placement": "bottom"
         }
-      }
+      },
+      "description": "Writes: events the daemon spilled to the fallback JSONL because SQLite was unavailable. Any sustained non-zero rate means capture is degraded. Recovered: fallback events later replayed into SQLite."
     },
     {
       "id": 11,

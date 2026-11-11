@@ -70,7 +70,7 @@ All dashboards provision automatically from `otel/grafana/dashboards/` into the 
 
 | Dashboard | UID | URL | What it shows |
 |-----------|-----|-----|---------------|
-| **Hippo Overview** | `hippo-overview` | http://localhost:3030/d/hippo-overview | Health grade, capture lag, probe success/lag, invariant violations, alarm firings, daemon drops |
+| **Hippo Overview** | `hippo-overview` | http://localhost:3030/d/hippo-overview | Health grade, capture lag, probe success/lag, invariant violations, alarm firings, watchdog liveness, daemon drops |
 | **Hippo Daemon** | `hippo-daemon` | http://localhost:3030/d/hippo-daemon | Event ingest/drop rates, flush latency, redactions, fallback writes, watcher throughput |
 | **Hippo Enrichment** | `hippo-enrichment` | http://localhost:3030/d/hippo-enrichment | Brain queue depth, LLM latency, enrichment throughput, MCP tool metrics, Jev/rules/local decision outcomes, stage latency, Jev tokens, error ratio, and classification backlog (see [Jev decisions](jev-decisions.md#observability-and-rollback)) |
 | **Hippo Processes** | `hippo-processes` | http://localhost:3030/d/hippo-processes | `process.*` CPU/memory for daemon, brain, and MCP, plus recently observed MCP telemetry instances |
