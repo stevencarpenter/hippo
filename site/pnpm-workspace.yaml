@@ -13,7 +13,7 @@
 #
 #   Advisory floors: devalue >=5.9.3, dompurify >=3.4.17, js-yaml >=4.3.2,
 #   fast-uri >=3.1.9, undici >=7.30.1, brace-expansion >=5.0.12,
-#   glob >=14.0.2 (brings minimatch >=11.0.1; neither has a patched 13.x/10.x),
+#   glob >=14.0.2, minimatch >=11.0.7 (no patched glob 13.x or minimatch 10.x),
 #   vite >=8.2.4, source-map-js >=1.2.2, smol-toml >=1.9.0.
 #   Loosening any of them below its floor reopens a Dependabot alert.
 #
@@ -33,6 +33,8 @@ overrides:
   "brace-expansion@5": "^5.0.12"
   # Override glob, not minimatch: glob 13 relies on minimatch 10 RegExp internals.
   "glob@13": "^14.0.4"
+  # 11.0.7 fixes GHSA-cf2h-pxjq-68xw (quadratic compile, regression in 11.0.0).
+  "minimatch@11": "^11.0.7"
   source-map-js: "^1.2.2"
   smol-toml: "^1.9.0"
   # Pin until an upstream fix passes tests/cache-security.test.ts.
@@ -41,3 +43,8 @@ overrides:
 patchedDependencies:
   # GHSA-ch52-4w7c-c8xp also reproduces in the published 4.3.0 source.
   http-cache-semantics@4.3.0: patches/http-cache-semantics@4.3.0.patch
+
+# minimatch 11.0.7 (2026-11-10) is newer than the default minimum release
+# age; it carries the GHSA-cf2h-pxjq-68xw fix. Remove once it ages past the gate.
+minimumReleaseAgeExclude:
+  - minimatch@11.0.7
