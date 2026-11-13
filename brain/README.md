@@ -53,11 +53,12 @@ uv run --project brain hippo-mcp
 | `search_hybrid` | Hybrid sqlite-vec + FTS5 search with score fusion |
 | `search_events` | Search raw events (shell commands, Claude sessions, browser visits) |
 | `get_entities` | List extracted entities (projects, tools, files, env vars, concepts) |
-| `get_context` / `get_lessons` / `list_projects` / `get_ci_status` | Auxiliary lookups; see source for details |
+| `get_lessons` | Recorded lessons and recurring failures for a project |
+| `agent_query` / `get_context` / `get_ci_status` / `get_agent_scorecard` / `list_projects` / `query_memory` / `query_memory_history` | Evidence packets, context blocks, CI outcomes, agent scorecards, project names, and auto-memory documents; see `docs/mcp-reference.md` |
 
 **Transport:** stdio using newline-delimited JSON (JSONL) — one JSON-RPC message per line. This is the default for MCP SDK v1.x stdio transport.
 
-**Configuration:** See the MCP Server section in the project root `CLAUDE.md` for mcp-master.json setup and config propagation steps.
+**Configuration:** See the MCP Server section in the project root `AGENTS.md`.
 
 ## Modules
 
