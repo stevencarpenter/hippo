@@ -244,7 +244,7 @@ def test_config_preserves_local_default_and_clamps_budget():
             {"rerank_backend": "typo", "rerank_recipe": {}, "decision_deadline_ms": float("nan")}
         )
         assert invalid.rerank_backend == "local"
-        assert invalid.rerank_recipe == "multi-v1"
+        assert invalid.rerank_recipe == "note-v1"
         assert invalid.decision_deadline_ms == 2000
     finally:
         configure(None)

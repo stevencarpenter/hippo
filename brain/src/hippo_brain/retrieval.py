@@ -81,9 +81,10 @@ class Tuning:
     rerank_pool: int = 30
     rerank_backend: str = "local"
     rerank_adaptive: bool = False
-    rerank_recipe: str = "multi-v1"
+    rerank_recipe: str = "note-v1"
     decision_deadline_ms: int = 2000
     topic_retrieval: bool = False
+    decision_log: bool = False
 
 
 DEFAULT_TUNING = Tuning()
@@ -141,9 +142,10 @@ def configure(section: dict | None) -> Tuning:
         rerank_pool=int(_num("rerank_pool", DEFAULT_TUNING.rerank_pool, lo=1, hi=200)),
         rerank_backend=_choice("rerank_backend", "local", ("local", "jev", "rules")),
         rerank_adaptive=_flag("rerank_adaptive", False),
-        rerank_recipe=_choice("rerank_recipe", "multi-v1", ("multi-v1", "single-v1")),
+        rerank_recipe=_choice("rerank_recipe", "note-v1", ("note-v1", "multi-v1", "single-v1")),
         decision_deadline_ms=int(_num("decision_deadline_ms", 2000, lo=1, hi=2000)),
         topic_retrieval=_flag("topic_retrieval", False),
+        decision_log=_flag("decision_log", False),
     )
     return _active_tuning
 
@@ -193,6 +195,8 @@ class SearchResult:
     confidence: dict = field(default_factory=dict)
     controlled_topics: dict[str, float] = field(default_factory=dict)
     score_semantics: ScoreSemantics = "relative_rank"
+    # Composed Jev relevance (0 to 1). None when Jev did not rank this result.
+    relevance: float | None = None
 
 
 class _Backend(Protocol):

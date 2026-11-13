@@ -121,12 +121,49 @@ def capture_query(question: str, results: list, *, filters=None, origin="interac
         logger.warning("query capture failed (%s)", type(exc).__name__)
 
 
+_DECISION_LOG_MAX_BYTES = 32 * 1024 * 1024
+
+
+def _log_decision(diagnostics: dict, origin: str) -> None:
+    """Append one content-free line; the only decision record that outlives telemetry retention."""
+    from hippo_brain.telemetry import summarize_decision
+
+    uuids = [u for u in diagnostics.get("original_order") or [] if isinstance(u, str)]
+    position = {uuid: index for index, uuid in enumerate(uuids)}
+    scores = diagnostics.get("scores")
+    record = {
+        "schema_version": 1,
+        "ts_ms": int(time.time() * 1000),
+        "origin": origin,
+        **summarize_decision(diagnostics),
+        "original_order": uuids,
+        # Positions in original_order, so the line stays one small atomic append.
+        "final_order": [position[u] for u in diagnostics.get("final_order") or [] if u in position],
+        "scores": [round(score, 3) for score in scores]
+        if isinstance(scores, list) and all(type(score) in (int, float) for score in scores)
+        else None,
+    }
+    directory = decision_root() / "decision-log"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = directory / time.strftime("%Y-%m.jsonl", time.gmtime())
+    if path.exists() and path.stat().st_size > _DECISION_LOG_MAX_BYTES:
+        return
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write((json.dumps(record, allow_nan=False) + "\n").encode())
+
+
 def capture_decision(diagnostics: dict, *, origin="interactive") -> None:
-    if os.environ.get("HIPPO_DECISION_CAPTURE") != "1" or origin not in (
-        "interactive",
-        "http",
-        "mcp",
-    ):
+    if origin not in ("interactive", "http", "mcp"):
+        return
+    try:
+        from hippo_brain.retrieval import get_tuning
+
+        if get_tuning().decision_log:
+            _log_decision(diagnostics, origin)
+    except Exception as exc:
+        logger.warning("decision log failed (%s)", type(exc).__name__)
+    if os.environ.get("HIPPO_DECISION_CAPTURE") != "1":
         return
     try:
         _write_capture(

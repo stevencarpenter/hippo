@@ -6,7 +6,9 @@ import json
 import logging
 import sqlite3
 import time
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
+from typing import Any
 
 from hippo_brain.decision_capture import capture_decision, capture_query
 from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate, search_similar
@@ -570,6 +572,7 @@ async def ask(
     jev_client=None,
     capture_origin: str = "interactive",
     decision_diagnostics: dict | None = None,
+    decision_runner: Callable[[Coroutine[Any, Any, Any]], Awaitable[Any]] | None = None,
 ) -> dict:
     """Run the full RAG pipeline: preflight → embed → retrieve → synthesize.
 
@@ -730,7 +733,7 @@ async def ask(
                     # Honor wider caller limits without sending more than the
                     # validated online candidate ceiling to a fast backend.
                     tail = results[30:]
-                    results = await rerank_results(
+                    decision = rerank_results(
                         inference_client,
                         query_model,
                         question,
@@ -745,6 +748,9 @@ async def ask(
                         diagnostics=diagnostics,
                         recipe=tuning.rerank_recipe,
                     )
+                    # A caller whose loop runs blocking work supplies a runner that
+                    # keeps the decision deadline independent of that loop.
+                    results = await (decision_runner(decision) if decision_runner else decision)
                     diagnostics["unranked_tail_count"] = min(len(tail), max(0, limit - 30))
                     results = (results + tail)[:limit]
                     capture_decision(diagnostics, origin=capture_origin)

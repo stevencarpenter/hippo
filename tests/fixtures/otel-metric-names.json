@@ -1,8 +1,11 @@
 {
   "hippo_brain_classification_queue_depth": "gauge",
+  "hippo_brain_decision_best_relevance": "histogram",
   "hippo_brain_decision_count_total": "counter",
   "hippo_brain_decision_duration_milliseconds": "histogram",
+  "hippo_brain_decision_effects_total": "counter",
   "hippo_brain_decision_errors_total": "counter",
+  "hippo_brain_decision_fallbacks_total": "counter",
   "hippo_brain_decision_requests_total": "counter",
   "hippo_brain_decision_requests_unknown_total": "counter",
   "hippo_brain_decision_tokens_total": "counter",

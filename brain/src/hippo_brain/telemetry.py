@@ -193,13 +193,93 @@ def hist(histogram, value, **attrs):
 
 
 # Outcomes each task's recorder can produce. Rerank maps every stop reason to
-# success, fallback, or cancelled; classification records ready (success),
-# stale, cancelled, failed, or retry.
+# success, fallback, cancelled, or skipped (no backend call was warranted);
+# classification records ready (success), stale, cancelled, failed, or retry.
 DECISION_TASK_OUTCOMES = {
-    "rerank": ("success", "fallback", "cancelled"),
+    "rerank": ("success", "fallback", "cancelled", "skipped"),
     "classification": ("success", "stale", "cancelled", "failed", "retry"),
 }
 DECISION_ERROR_OUTCOMES = ("fallback", "failed", "error", "retry")
+# Bounded causes for a rerank fallback. Exception text never becomes a label.
+FALLBACK_CAUSES = (
+    "deadline",
+    "connect_timeout",
+    "transport",
+    "http_auth",
+    "http_rate_limit",
+    "http_server",
+    "http_other",
+    "no_credentials",
+    "cooldown",
+    "invalid_request",
+    "invalid_response",
+    "other",
+)
+# What a completed ranking did to the delivered results, against retrieval order.
+RANK_EFFECTS = ("unchanged", "reordered", "top_changed", "set_changed", "set_and_top_changed")
+_DURATION_BUCKETS_MS = (5, 10, 25, 50, 100, 250, 500, 750, 1000, 1500, 2000, 2500, 5000, 10000)
+_RELEVANCE_BUCKETS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+_SUCCESS_STATUSES = (
+    "ready",
+    "complete",
+    "success",
+    "single_pass",
+    "stable_order",
+    "request_budget",
+    "no_new_evidence",
+    "unambiguous",
+    "rules_complete",
+)
+
+
+def decision_outcome(diagnostics: dict) -> str:
+    """Map decision diagnostics to one bounded outcome, shared by metrics and logs."""
+    status = diagnostics.get("status", diagnostics.get("stop_reason"))
+    if status == "cancelled":
+        return "cancelled"
+    if diagnostics.get("fallback_reason") or status in (
+        "deadline",
+        "assessment_failed",
+        "invalid_decision",
+    ):
+        return "fallback"
+    if status in _SUCCESS_STATUSES:
+        return "success"
+    if status == "native_preserve":
+        return "skipped"
+    return status if status in ("failed", "error", "retry", "stale", "skipped") else "unknown"
+
+
+def summarize_decision(diagnostics: dict) -> dict:
+    """Flatten rerank diagnostics to content-free fields for logs and the decision log."""
+    passes = diagnostics.get("passes") or [{}]
+    last = passes[-1] if isinstance(passes[-1], dict) else {}
+    transport = last.get("transport") if isinstance(last.get("transport"), dict) else {}
+    usage = last.get("usage") if isinstance(last.get("usage"), dict) else {}
+
+    def whole(value: object) -> int | None:
+        return round(value) if type(value) in (int, float) and math.isfinite(value) else None
+
+    best = diagnostics.get("best_relevance")
+    return {
+        "backend": diagnostics.get("backend"),
+        "recipe": diagnostics.get("recipe"),
+        "outcome": decision_outcome(diagnostics),
+        "cause": diagnostics.get("fallback_cause"),
+        "stop": diagnostics.get("stop_reason"),
+        "candidates": diagnostics.get("candidates"),
+        "limit": diagnostics.get("limit"),
+        "effect": diagnostics.get("effect"),
+        "best_relevance": round(best, 3) if type(best) in (int, float) else None,
+        "elapsed_ms": whole(diagnostics.get("elapsed_ms")),
+        "deadline_ms": whole(diagnostics.get("deadline_ms")),
+        "http_ms": whole(transport.get("http_ms")),
+        "status": transport.get("status_code"),
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+        "payload_bytes": transport.get("payload_bytes"),
+        "input": str(diagnostics.get("input_hash") or "")[:12] or None,
+    }
 
 
 def _decision_instruments(meter):
@@ -234,8 +314,27 @@ def _decision_instruments(meter):
         "hippo.brain.decision.duration",
         unit="ms",
         description="Measured decision stages; overlapping, not additive",
+        explicit_bucket_boundaries_advisory=_DURATION_BUCKETS_MS,
     )
     return counts, tokens, duration
+
+
+def _rerank_instruments(meter):
+    """Create (or fetch) the instruments that describe what a rerank decision did."""
+    return (
+        meter.create_counter(
+            "hippo.brain.decision.fallbacks", description="Rerank fallbacks by bounded cause"
+        ),
+        meter.create_counter(
+            "hippo.brain.decision.effects",
+            description="Completed rankings by their effect on the delivered results",
+        ),
+        meter.create_histogram(
+            "hippo.brain.decision.best_relevance",
+            description="Highest composed relevance (0 to 1) among ranked candidates",
+            explicit_bucket_boundaries_advisory=_RELEVANCE_BUCKETS,
+        ),
+    )
 
 
 def prime_decision_metrics(rerank_backend: str | None, *, classification: bool = False) -> None:
@@ -268,6 +367,12 @@ def prime_decision_metrics(rerank_backend: str | None, *, classification: bool =
                         counter.add(0, attrs)
                 for direction in ("input", "output"):
                     tokens.add(0, {**attrs, "direction": direction})
+            if task == "rerank":
+                fallbacks, effects, _ = _rerank_instruments(meter)
+                for cause in FALLBACK_CAUSES:
+                    fallbacks.add(0, {"backend": backend, "task": task, "cause": cause})
+                for effect in RANK_EFFECTS:
+                    effects.add(0, {"backend": backend, "task": task, "effect": effect})
         from opentelemetry import metrics as otel_metrics
 
         # The global may be a proxy provider without force_flush. A short timeout
@@ -297,30 +402,7 @@ def record_decision_metrics(diagnostics: dict, task: str = "rerank") -> None:
         def label(value: object, allowed: tuple[str, ...]) -> str:
             return value if isinstance(value, str) and value in allowed else "unknown"
 
-        status = diagnostics.get("status", diagnostics.get("stop_reason"))
-        if status == "cancelled":
-            outcome = "cancelled"
-        elif diagnostics.get("fallback_reason") or status in (
-            "deadline",
-            "assessment_failed",
-            "invalid_decision",
-        ):
-            outcome = "fallback"
-        elif status in (
-            "ready",
-            "complete",
-            "success",
-            "single_pass",
-            "stable_order",
-            "request_budget",
-            "native_preserve",
-            "no_new_evidence",
-            "unambiguous",
-            "rules_complete",
-        ):
-            outcome = "success"
-        else:
-            outcome = label(status, ("failed", "error", "retry", "stale", "skipped"))
+        outcome = decision_outcome(diagnostics)
         attrs = {
             "backend": label(diagnostics.get("backend"), ("jev", "local", "rules")),
             "task": label(task, ("rerank", "classification", "query_topic")),
@@ -335,8 +417,25 @@ def record_decision_metrics(diagnostics: dict, task: str = "rerank") -> None:
             if type(value) in (int, float) and math.isfinite(value) and value >= 0:
                 duration.record(value, {**attrs, "stage": stage})
 
-        timing(diagnostics.get("elapsed_ms", diagnostics.get("total_ms")), "decision")
+        elapsed = diagnostics.get("elapsed_ms", diagnostics.get("total_ms"))
+        timing(elapsed, "decision")
         timing(diagnostics.get("rule_ms"), "rules")
+        if attrs["task"] == "rerank":
+            base = {"backend": attrs["backend"], "task": "rerank"}
+            fallbacks, effects, best_relevance = _rerank_instruments(meter)
+            if outcome == "fallback":
+                cause = label(diagnostics.get("fallback_cause"), FALLBACK_CAUSES)
+                fallbacks.add(1, {**base, "cause": cause if cause != "unknown" else "other"})
+            if diagnostics.get("effect") in RANK_EFFECTS:
+                effects.add(1, {**base, "effect": diagnostics["effect"]})
+            best = diagnostics.get("best_relevance")
+            if type(best) in (int, float) and 0 <= best <= 1:
+                best_relevance.record(best, base)
+            deadline = diagnostics.get("deadline_ms")
+            if type(deadline) in (int, float) and type(elapsed) in (int, float):
+                # Zero would hide in the first bucket; only a real overrun is an observation.
+                if elapsed > deadline:
+                    timing(elapsed - deadline, "overrun")
         records = diagnostics.get("passes", [diagnostics] if task == "classification" else [])
         if not isinstance(records, list):
             return
