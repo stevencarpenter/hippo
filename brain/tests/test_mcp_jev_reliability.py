@@ -254,3 +254,110 @@ async def test_hits_carry_jev_relevance_only_when_jev_ranked_them(tmp_db, monkey
 
     assert [hit["relevance"] for hit in ranked] == [1.0, 1.0, 1.0]
     assert all("relevance" not in hit for hit in fallback)
+
+
+async def test_ask_also_retries_a_failed_key_lookup(tmp_path, tmp_db, monkeypatch, dispatched):
+    _, path = tmp_db
+    lookups = []
+    _start_mcp_with_failing_key_lookup(tmp_path, monkeypatch, lookups)
+    monkeypatch.setattr(rag, "retrieval_search", lambda *a, **k: _results())
+    inference = AsyncMock()
+    inference.embed.return_value = [[0.0] * 768]
+    inference.chat.return_value = "answer"
+    mcp_module._state.db_path = str(path)
+    mcp_module._state.inference_client = inference
+    mcp_module._state.vector_table = object()
+    mcp_module._state.query_model = "query"
+    mcp_module._state.jev_retry_at = 0.0
+
+    await mcp_module.ask(question="q", limit=3)
+    for _ in range(200):
+        if mcp_module._state.jev_client is not None:
+            break
+        await asyncio.sleep(0.005)
+
+    assert len(lookups) == 2 and dispatched == []
+    await mcp_module._close_jev_client()
+
+
+async def test_the_jev_client_is_closed_on_the_loop_that_owns_it(monkeypatch):
+    import threading
+
+    closed_on = []
+
+    class Client(QuickJev):
+        async def aclose(self):
+            closed_on.append(threading.current_thread().name)
+
+    monkeypatch.setattr(mcp_module._state, "jev_client", Client())
+    await mcp_module._close_jev_client()
+    assert closed_on == ["hippo-decisions"] and mcp_module._state.jev_client is None
+
+
+async def test_the_local_backend_stays_on_the_server_loop(monkeypatch):
+    """Its inference client belongs to the server loop; only Jev and rules move."""
+    import threading
+
+    ran_on = []
+
+    class Inference:
+        async def chat(self, messages, model):
+            ran_on.append(threading.current_thread() is threading.main_thread())
+            return "[2, 1, 3]"
+
+    retrieval.configure({"rerank": True, "rerank_backend": "local"})
+    monkeypatch.setattr(retrieval, "search", lambda *a, **k: _results())
+    monkeypatch.setattr(mcp_module._state, "inference_client", Inference())
+    monkeypatch.setattr(mcp_module._state, "query_model", "query", raising=False)
+    results, _ = await mcp_module._search_context(
+        None, "q", None, retrieval.Filters(), mode="lexical", limit=3
+    )
+    assert ran_on == [True] and [r.uuid for r in results] == ["node-1", "node-0", "node-2"]
+
+
+async def test_cancelling_a_tool_call_cancels_its_decision(monkeypatch):
+    cancelled = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    class Slow(QuickJev):
+        async def assess(self, state, questions, *, timeout_seconds=None):
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                loop.call_soon_threadsafe(cancelled.set)
+                raise
+
+    retrieval.configure({"rerank": True, "rerank_backend": "jev"})
+    monkeypatch.setattr(retrieval, "search", lambda *a, **k: _results())
+    monkeypatch.setattr(mcp_module._state, "jev_client", Slow())
+    task = asyncio.create_task(
+        mcp_module._search_context(None, "q", None, retrieval.Filters(), mode="lexical", limit=3)
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+
+async def test_a_failed_loop_start_does_not_strand_later_decisions(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(mcp_module, "_decision_loop", None)
+    real_start = threading.Thread.start
+    failures = [RuntimeError("can't start new thread")]
+
+    def start(self):
+        if failures and self.name == "hippo-decisions":
+            raise failures.pop()
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+
+    async def answer():
+        return 42
+
+    with pytest.raises(RuntimeError):
+        await mcp_module._on_decision_loop(answer())
+    # Bounded: before the fix this await never finished.
+    assert await asyncio.wait_for(mcp_module._on_decision_loop(answer()), timeout=2) == 42

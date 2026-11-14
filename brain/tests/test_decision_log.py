@@ -78,6 +78,7 @@ def test_a_log_failure_cannot_fail_a_query(log_dir, monkeypatch):
     log_dir.parent.mkdir(parents=True)
     log_dir.write_text("a file where the directory should be")
     capture_decision(TRACE, origin="mcp")
+    assert log_dir.read_text() == "a file where the directory should be"
 
 
 def test_a_symlinked_log_directory_is_not_followed(log_dir, tmp_path):
@@ -100,3 +101,14 @@ def test_a_symlinked_log_file_is_not_followed(log_dir, tmp_path):
     (log_dir / time.strftime("%Y-%m.jsonl", time.gmtime())).symlink_to(victim)
     capture_decision(TRACE, origin="mcp")
     assert victim.read_text() == "keep"
+
+
+def test_a_full_monthly_file_stops_growing(log_dir, monkeypatch):
+    import hippo_brain.decision_capture as module
+
+    retrieval.configure({"decision_log": True})
+    capture_decision(TRACE, origin="mcp")
+    (path,) = log_dir.glob("*.jsonl")
+    monkeypatch.setattr(module, "_DECISION_LOG_MAX_BYTES", path.stat().st_size - 1)
+    capture_decision(TRACE, origin="mcp")
+    assert len(path.read_text().splitlines()) == 1

@@ -196,10 +196,15 @@ def _on_decision_loop(coro: Coroutine[Any, Any, Any]) -> "asyncio.Future[Any]":
     """
     global _decision_loop
     if _decision_loop is None:
-        _decision_loop = asyncio.new_event_loop()
-        threading.Thread(
-            target=_decision_loop.run_forever, name="hippo-decisions", daemon=True
-        ).start()
+        loop = asyncio.new_event_loop()
+        try:
+            threading.Thread(target=loop.run_forever, name="hippo-decisions", daemon=True).start()
+        except BaseException:
+            # Publish the loop only once its thread runs; a stranded loop would hang every rerank.
+            coro.close()
+            loop.close()
+            raise
+        _decision_loop = loop
     return asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, _decision_loop))
 
 

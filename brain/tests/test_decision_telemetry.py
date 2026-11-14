@@ -546,3 +546,22 @@ def test_decision_summary_is_flat_and_carries_no_identifiers_or_text():
         "payload_bytes": 88012,
         "input": "a" * 12,
     }
+
+
+def test_decision_summary_sums_tokens_over_every_pass():
+    summary = telemetry.summarize_decision(
+        {
+            "backend": "jev",
+            "stop_reason": "stable_order",
+            "passes": [
+                {"usage": {"input_tokens": 23000, "output_tokens": 300}},
+                {"usage": None},
+                {"usage": {"input_tokens": 5000, "output_tokens": 60}},
+            ],
+        }
+    )
+    assert (summary["input_tokens"], summary["output_tokens"]) == (28000, 360)
+
+
+def test_best_relevance_buckets_cover_the_whole_range():
+    assert telemetry._RELEVANCE_BUCKETS[-1] == 1.0

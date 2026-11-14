@@ -70,7 +70,7 @@ The snapshot was taken after every query was asked, so a pool can hold notes tha
 - `note-v1` minus `multi-v1`, all queries: +0.067 [+0.018, +0.120].
 - These gains are larger than the primary result because later notes, which are often highly relevant, sat low in retrieval order.
 
-The production code path (`rerank_results` with the default recipe) was then run on the holdout queries with all pool candidates. It scored nDCG 0.895 (n=37), against 0.897 for the experiment arm on the same queries. This run shows that the shipped code reproduces the experiment arm. It is not an independent test of the recipe.
+The production code path (`rerank_results` with the configured default recipe, `note-v1`) was then run on the holdout queries with all pool candidates. It scored nDCG 0.895 (n=37), against 0.897 for the experiment arm on the same queries. This run shows that the shipped code reproduces the experiment arm. It is not an independent test of the recipe.
 
 After code review, the shipped recipe gained two things: a statement in each question that the note is untrusted text, and the note's branch. The shipped recipe was run again on the holdout queries. On notes dated before the query it scored nDCG 0.911 (n=35), against 0.906 for the experiment arm: a difference of +0.005 [-0.004, +0.016]. Its median request was 14,405 input tokens.
 

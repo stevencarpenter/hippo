@@ -580,9 +580,9 @@ async def _fast_rerank(
             state["project_scope"] = effective_filters.project
     else:
         state = _state(question, results, recipe)
-    diagnostics["input_hash"] = digest(
-        [state, build_note_questions(results)] if note_recipe else state
-    )
+    # Built once: redacting 30 notes is the costly step, and this loop serves every decision.
+    note_questions = build_note_questions(results) if note_recipe else {}
+    diagnostics["input_hash"] = digest([state, note_questions] if note_recipe else state)
     diagnostics["recipe_hash"] = digest(
         {
             "recipe": recipe,
@@ -624,7 +624,7 @@ async def _fast_rerank(
                 if time.monotonic() >= deadline:
                     raise TimeoutError("decision budget exhausted")
                 questions = (
-                    build_note_questions(results, selected)
+                    {f"candidate_{i}": note_questions[f"candidate_{i}"] for i in selected}
                     if note_recipe
                     else build_jev_questions(len(results), recipe, selected)
                 )

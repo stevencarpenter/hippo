@@ -1002,3 +1002,22 @@ def test_note_names_the_branch_unless_it_is_detached_or_unknown(branch, expected
 
     note = _note(dataclasses.replace(result("a"), git_branch=branch))
     assert note.get("branch") == expected
+
+
+async def test_note_recipe_builds_each_note_once_per_decision(monkeypatch):
+    import hippo_brain.rerank as module
+
+    built = []
+    original = module._note
+    monkeypatch.setattr(module, "_note", lambda r: built.append(r.uuid) or original(r))
+    await rerank_results(
+        None,
+        "local",
+        "q",
+        [result("a"), result("b"), result("c")],
+        3,
+        backend="jev",
+        jev_client=FakeJev([nouls([0.1, 0.9, 0.5])]),
+        recipe="note-v1",
+    )
+    assert sorted(built) == ["a", "b", "c"]

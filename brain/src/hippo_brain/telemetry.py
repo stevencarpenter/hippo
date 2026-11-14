@@ -218,7 +218,7 @@ FALLBACK_CAUSES = (
 # What a completed ranking did to the delivered results, against retrieval order.
 RANK_EFFECTS = ("unchanged", "reordered", "top_changed", "set_changed", "set_and_top_changed")
 _DURATION_BUCKETS_MS = (5, 10, 25, 50, 100, 250, 500, 750, 1000, 1500, 2000, 2500, 5000, 10000)
-_RELEVANCE_BUCKETS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+_RELEVANCE_BUCKETS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
 _SUCCESS_STATUSES = (
     "ready",
     "complete",
@@ -255,7 +255,17 @@ def summarize_decision(diagnostics: dict) -> dict:
     passes = diagnostics.get("passes") or [{}]
     last = passes[-1] if isinstance(passes[-1], dict) else {}
     transport = last.get("transport") if isinstance(last.get("transport"), dict) else {}
-    usage = last.get("usage") if isinstance(last.get("usage"), dict) else {}
+
+    def tokens(direction: str) -> int | None:
+        # Adaptive mode makes several passes; the decision cost is their sum.
+        counts = [
+            record["usage"][direction + "_tokens"]
+            for record in passes
+            if isinstance(record, dict)
+            and isinstance(record.get("usage"), dict)
+            and type(record["usage"].get(direction + "_tokens")) is int
+        ]
+        return sum(counts) if counts else None
 
     def whole(value: object) -> int | None:
         return round(value) if type(value) in (int, float) and math.isfinite(value) else None
@@ -275,8 +285,8 @@ def summarize_decision(diagnostics: dict) -> dict:
         "deadline_ms": whole(diagnostics.get("deadline_ms")),
         "http_ms": whole(transport.get("http_ms")),
         "status": transport.get("status_code"),
-        "input_tokens": usage.get("input_tokens"),
-        "output_tokens": usage.get("output_tokens"),
+        "input_tokens": tokens("input"),
+        "output_tokens": tokens("output"),
         "payload_bytes": transport.get("payload_bytes"),
         "input": str(diagnostics.get("input_hash") or "")[:12] or None,
     }
