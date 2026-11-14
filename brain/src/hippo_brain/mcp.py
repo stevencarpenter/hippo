@@ -1,12 +1,16 @@
 """Hippo MCP Server — expose the knowledge base as tools for Claude Code."""
 
+import asyncio
 import dataclasses
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 import tomllib
+from collections.abc import Coroutine
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from functools import wraps
@@ -171,10 +175,65 @@ class _ServerState:
     query_model: str = ""
     vector_table: object | None = None  # lancedb.table.Table
     jev_client: object | None = None
+    jev_ref: str = ""
+    jev_retry_at: float = 0.0
     classification_enabled: bool = False
 
 
 _state = _ServerState()
+_JEV_LOOKUP_ERRORS = (OSError, subprocess.SubprocessError, ValueError, RuntimeError)
+# Each lookup against a locked 1Password can raise an authorization prompt.
+_JEV_RETRY_SECONDS = 300.0
+_decision_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _on_decision_loop(coro: Coroutine[Any, Any, Any]) -> "asyncio.Future[Any]":
+    """Run a Jev decision on a private loop.
+
+    Tool handlers run synchronous SQLite on the server loop. A decision awaiting
+    there could not observe its response or its deadline while another call held
+    the loop, so on-time answers were discarded as timeouts.
+    """
+    global _decision_loop
+    if _decision_loop is None:
+        loop = asyncio.new_event_loop()
+        try:
+            threading.Thread(target=loop.run_forever, name="hippo-decisions", daemon=True).start()
+        except BaseException:
+            # Publish the loop only once its thread runs; a stranded loop would hang every rerank.
+            coro.close()
+            loop.close()
+            raise
+        _decision_loop = loop
+    return asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, _decision_loop))
+
+
+def _retry_jev_lookup() -> None:
+    """Retry a failed key lookup in the background; the current decision still falls back."""
+    if (
+        _state.jev_client is not None
+        or not _state.jev_ref
+        or time.monotonic() < _state.jev_retry_at
+    ):
+        return
+    _state.jev_retry_at = time.monotonic() + _JEV_RETRY_SECONDS
+    state = _state
+
+    def lookup() -> None:
+        try:
+            state.jev_client = _jev_client_from_config({"typesafe_api_key_op_ref": state.jev_ref})
+            logger.info("Jev key lookup recovered")
+        except _JEV_LOOKUP_ERRORS as exc:
+            logger.warning("Jev unavailable (%s)", type(exc).__name__)
+
+    threading.Thread(target=lookup, name="hippo-jev-key", daemon=True).start()
+
+
+async def _close_jev_client() -> None:
+    """Close the client on the loop that owns its connections."""
+    client, _state.jev_client = _state.jev_client, None
+    if client is not None:
+        await _on_decision_loop(client.aclose())
 
 
 def _query_priority(handler):
@@ -389,12 +448,19 @@ def _init_state() -> None:
     _state.query_model = config["query_model"]
     _state.inference_client = InferenceClient(base_url=config["inference_base_url"])
     _state.jev_client = None
+    _state.jev_ref = ""
+    _state.jev_retry_at = 0.0
     if tuning.rerank and tuning.rerank_backend == "jev":
+        _state.jev_ref = config.get("typesafe_api_key_op_ref", "")
+        if _state.jev_ref:
+            # The reference is the only key source. Without this, a failed lookup
+            # let rerank build a client from a stale inherited key (HTTP 403).
+            os.environ.pop("TYPESAFE_API_KEY", None)
         try:
             _state.jev_client = _jev_client_from_config(config)
-        except (OSError, subprocess.SubprocessError, ValueError, RuntimeError) as exc:
+        except _JEV_LOOKUP_ERRORS as exc:
             logger.warning("Jev unavailable (%s)", type(exc).__name__)
-            _state.jev_client = None
+            _state.jev_retry_at = time.monotonic() + _JEV_RETRY_SECONDS
 
     try:
         db = open_vector_db(config["data_dir"])
@@ -417,9 +483,7 @@ async def _mcp_lifespan(_server):
     try:
         yield {}
     finally:
-        if _state.jev_client is not None:
-            await _state.jev_client.aclose()
-            _state.jev_client = None
+        await _close_jev_client()
 
 
 mcp = MCPServer(
@@ -598,6 +662,7 @@ async def ask(
         return "Error: No query model configured (set models.query in config.toml)"
 
     conn = _open_retrieval_conn()
+    _retry_jev_lookup()
     try:
         result = await rag_ask(
             question=question,
@@ -614,6 +679,7 @@ async def ask(
             conn=conn,
             jev_client=_state.jev_client,
             capture_origin="mcp",
+            decision_runner=_on_decision_loop,
         )
     except Exception:
         _add(_tool_errors, tool="ask")
@@ -1018,6 +1084,8 @@ def _result_to_dict(result) -> dict:
             if result.controlled_topics
             else {}
         ),
+        # Present only on results Jev ranked, so a consumer can tell them from a fallback.
+        **({"relevance": result.relevance} if result.relevance is not None else {}),
     }
 
 
@@ -1041,7 +1109,9 @@ async def _search_context(conn, query, query_vec, filters, *, mode, limit):
     diagnostics = {}
     if enabled:
         tail = results[30:] if tuning.rerank_backend != "local" else []
-        results = await rerank_results(
+        if tuning.rerank_backend == "jev":
+            _retry_jev_lookup()
+        decision = rerank_results(
             _state.inference_client,
             _state.query_model,
             query,
@@ -1056,6 +1126,10 @@ async def _search_context(conn, query, query_vec, filters, *, mode, limit):
             diagnostics=diagnostics,
             recipe=tuning.rerank_recipe,
         )
+        # The local backend uses the inference client, which belongs to this loop.
+        results = await (
+            _on_decision_loop(decision) if tuning.rerank_backend != "local" else decision
+        )
         results = (results + tail)[:limit]
         if diagnostics:
             capture_decision(diagnostics, origin="mcp")
@@ -1063,7 +1137,9 @@ async def _search_context(conn, query, query_vec, filters, *, mode, limit):
         "rerank_enabled": enabled,
         "backend": tuning.rerank_backend if enabled else None,
         "fallback_reason": diagnostics.get("fallback_reason"),
+        "fallback_cause": diagnostics.get("fallback_cause"),
         "stop_reason": diagnostics.get("stop_reason"),
+        "effect": diagnostics.get("effect"),
     }
 
 
@@ -1145,7 +1221,8 @@ def _open_retrieval_conn() -> sqlite3.Connection:
     try:
         from hippo_brain.vector_store import open_conn
 
-        conn = open_conn(_state.db_path)
+        # Adaptive rerank reads this connection from the decision loop's thread.
+        conn = open_conn(_state.db_path, check_same_thread=False)
     except ImportError:
         # vector_store may be missing in older deploys; fall back to plain conn
         return _get_conn()

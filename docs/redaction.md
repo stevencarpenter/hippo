@@ -16,7 +16,7 @@ Redaction is **best-effort**. It catches known secret formats; it cannot catch s
 
 ## What redaction isn't
 
-- **Not a network filter.** Capture redaction cannot prevent all sensitive data from reaching inference. Jev additionally redacts structured credential fields and text before truncating outbound inputs (`brain/src/hippo_brain/jev.py` and `redaction.py`). For external data flows, see [README Privacy and Security](../README.md#privacy-and-security).
+- **Not a network filter.** Capture redaction cannot prevent all sensitive data from reaching inference. Jev additionally redacts structured credential fields and text before truncating outbound inputs (`brain/src/hippo_brain/jev.py` and `redaction.py`). The Jev client redacts the request `state`. The `note-v1` rerank recipe places each candidate inside a question, which that pass does not cover, so `rerank.py` redacts every note field before it truncates the field. For external data flows, see [README Privacy and Security](../README.md#privacy-and-security).
 - **Not a database scrubber.** Once a non-redacted secret has been stored in `events`, hippo doesn't re-process old rows when you add a pattern. Add a pattern → only future captures benefit.
 - **Not a substitute for FileVault.** The DB is unencrypted at rest.
 

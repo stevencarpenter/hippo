@@ -119,9 +119,12 @@ When any filter is applied, the implementation forces lexical mode (filter pushd
   "evidence": [
     {"ref": "shell-12345", "source_kind": "shell", "timestamp_ms": 1730000000000, "stale": false}
   ],
-  "confidence": {"level": "medium", "score": 0.58}
+  "confidence": {"level": "medium", "score": 0.58},
+  "relevance": 0.83
 }
 ```
+
+`relevance` is present only on hits that Jev ranked. It is the composed Jev relevance for the query, from 0 to 1, and it is comparable across queries, unlike `score`. A hit without `relevance` kept retrieval order: reranking was disabled, skipped, or fell back. See [Jev decisions](jev-decisions.md#observability-and-rollback).
 
 `search_hybrid` and semantic `search_knowledge` (via `_retrieve_filtered`) include an `evidence` array on each hit — citation refs per [`source-trust-contracts.md`](capture/source-trust-contracts.md). Resolve a ref to its full packet with `hippo-evidence-inspect shell-12345` or `agent_query` in `evidence` mode.
 

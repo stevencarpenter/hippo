@@ -58,13 +58,13 @@ class EmbedDriftError(Exception):
     """
 
 
-def open_conn(path: str | Path) -> sqlite3.Connection:
+def open_conn(path: str | Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
     """Open a SQLite connection with the sqlite-vec extension loaded.
 
     Applies the standard hippo PRAGMAs (WAL, foreign_keys, busy_timeout=5000)
     and ensures the vec0 ``knowledge_vectors`` virtual table exists.
     """
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), check_same_thread=check_same_thread)
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)

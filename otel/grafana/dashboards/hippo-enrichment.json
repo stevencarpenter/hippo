@@ -7,7 +7,7 @@
     "performance"
   ],
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "editable": true,
   "graphTooltip": 1,
   "time": {
@@ -1370,7 +1370,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\",outcome=\"success\"}) or on (exported_job) (0 * sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\"}))) / (sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\"}) > 0)",
+          "expr": "(sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\",outcome=\"success\"}) or on (exported_job) (0 * sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\",outcome!=\"skipped\"}))) / (sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\",outcome!=\"skipped\"}) > 0)",
           "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
@@ -1391,7 +1391,7 @@
         "textMode": "auto",
         "colorMode": "value"
       },
-      "description": "Successful Jev decisions divided by completed decisions for each recently observed process service. Values reset when processes restart; brain success does not hide MCP fallback."
+      "description": "Successful Jev decisions divided by completed decisions for each recently observed process service. Skipped decisions, which needed no Jev call, are excluded. Values reset when processes restart; brain success does not hide MCP fallback."
     },
     {
       "id": 31,
@@ -1743,6 +1743,298 @@
         "mode": "markdown",
         "content": "**Offline evaluation, 2026-09-22. These are not live accuracy measures.**\n\n- Topic classification at Noul \u2265 0.8: **86.7% precision (39/45)** and **41.9% recall (39/93)** on 50 nodes and 93 agent-reviewed reference labels. The labels were not human-adjudicated ground truth.\n- Reranking: Jev placed the known target first in **25/50** questions, versus **12/50** for baseline retrieval. Candidate relevance was not exhaustively judged.\n- The live Noul and coverage panels describe stored production scores and publication. They do not measure correctness. Source: `docs/superpowers/specs/2026-09-22-jev-retrieval-classification-design.md`."
       }
+    },
+    {
+      "id": 42,
+      "type": "row",
+      "title": "Rerank reliability and effect",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 91,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 43,
+      "type": "timeseries",
+      "title": "Jev-ranked share of rerank decisions",
+      "description": "Decisions where Jev returned a ranking, over decisions sent to Jev. Skipped decisions (one candidate, no budget) are excluded.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 92,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(hippo_brain_decision_count_total{task=\"rerank\",backend=\"jev\",outcome=\"success\"}[$__rate_interval])) / sum(rate(hippo_brain_decision_count_total{task=\"rerank\",backend=\"jev\",outcome=~\"success|fallback\"}[$__rate_interval]))",
+          "legendFormat": "Jev-ranked share",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 44,
+      "type": "timeseries",
+      "title": "Rerank fallbacks / hour by cause",
+      "description": "Why a rerank kept retrieval order. deadline: no answer within the budget. no_credentials: the key lookup failed. http_auth: the key was rejected.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 92,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (cause) (rate(hippo_brain_decision_fallbacks_total[$__rate_interval])) * 3600",
+          "legendFormat": "{{cause}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "type": "timeseries",
+      "title": "Rerank latency by outcome",
+      "description": "Decision wall time split by outcome. A fallback spends its time and returns retrieval order.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 92,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, outcome) (rate(hippo_brain_decision_duration_milliseconds_bucket{task=\"rerank\",stage=\"decision\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{outcome}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, outcome) (rate(hippo_brain_decision_duration_milliseconds_bucket{task=\"rerank\",stage=\"decision\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{outcome}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "type": "timeseries",
+      "title": "Rerank effect on delivered results / hour",
+      "description": "What a completed ranking changed against retrieval order: nothing, order only, the top result, or which results were delivered.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 100,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (effect) (rate(hippo_brain_decision_effects_total[$__rate_interval])) * 3600",
+          "legendFormat": "{{effect}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "type": "timeseries",
+      "title": "Best relevance per ranked decision",
+      "description": "Highest composed Jev relevance (0 to 1) among the candidates of a decision. A low value means no candidate matched the query.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 100,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.1, sum by (le) (rate(hippo_brain_decision_best_relevance_bucket[$__rate_interval])))",
+          "legendFormat": "p10",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(hippo_brain_decision_best_relevance_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(hippo_brain_decision_best_relevance_bucket[$__rate_interval])))",
+          "legendFormat": "p90",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 48,
+      "type": "timeseries",
+      "title": "Time past the decision deadline (p95)",
+      "description": "How far a decision ran beyond its deadline. Values near zero mean deadlines are enforced.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 100,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(hippo_brain_decision_duration_milliseconds_bucket{task=\"rerank\",stage=\"overrun\"}[$__rate_interval])))",
+          "legendFormat": "p95 overrun",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
     }
   ]
 }

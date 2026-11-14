@@ -106,7 +106,12 @@ def test_mcp_startup_primes_decision_counters_for_jev_rerank(tmp_path, monkeypat
         (attrs["task"], attrs["outcome"])
         for value, attrs in records["hippo.brain.decision.count"]
         if value == 0 and attrs["backend"] == "jev"
-    } == {("rerank", "success"), ("rerank", "fallback"), ("rerank", "cancelled")}
+    } == {
+        ("rerank", "success"),
+        ("rerank", "fallback"),
+        ("rerank", "cancelled"),
+        ("rerank", "skipped"),
+    }
 
 
 def test_brain_server_startup_primes_rerank_and_classification_counters(tmp_db, monkeypatch):

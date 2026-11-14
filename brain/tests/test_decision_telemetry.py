@@ -261,7 +261,7 @@ def test_prime_covers_only_producible_outcomes_and_error_outcomes(meter):
     def outcomes(name, task):
         return {dict(attrs)["outcome"] for attrs in primed[name] if dict(attrs)["task"] == task}
 
-    assert outcomes("count", "rerank") == {"success", "fallback", "cancelled"}
+    assert outcomes("count", "rerank") == {"success", "fallback", "cancelled", "skipped"}
     assert outcomes("count", "classification") == {
         "success",
         "stale",
@@ -283,12 +283,18 @@ FAILED_PASS = {"status": "failed", "usage": None, "transport": None}
 @pytest.mark.parametrize(
     "diagnostics",
     [
-        {"stop_reason": "single_pass", "passes": [RERANK_PASS]},
+        {"stop_reason": "single_pass", "passes": [RERANK_PASS], "effect": "set_changed"},
         {"stop_reason": "invalid_decision", "fallback_reason": "ValueError", "passes": []},
-        {"stop_reason": "deadline", "fallback_reason": "TimeoutError", "passes": [FAILED_PASS]},
+        {
+            "stop_reason": "deadline",
+            "fallback_reason": "TimeoutError",
+            "fallback_cause": "deadline",
+            "passes": [FAILED_PASS],
+        },
         {"stop_reason": "cancelled", "passes": [{**FAILED_PASS, "status": "cancelled"}]},
+        {"stop_reason": "native_preserve", "passes": []},
     ],
-    ids=["success", "fallback-invalid", "fallback-deadline", "cancelled"],
+    ids=["success", "fallback-invalid", "fallback-deadline", "cancelled", "skipped"],
 )
 @pytest.mark.parametrize("backend", ["jev", "rules"])
 def test_recorded_rerank_label_sets_were_primed(monkeypatch, backend, diagnostics):
@@ -379,3 +385,183 @@ def test_prime_produces_zero_data_points_through_the_otel_sdk(monkeypatch):
         ("task", "rerank"),
     )
     assert points[(PREFIX + "tokens", labels)] == 0
+
+
+def attrs_of(meter, name):
+    return [attrs for _, attrs in meter.records[PREFIX + name]]
+
+
+def test_native_preserve_is_skipped_not_a_jev_success(meter):
+    telemetry.record_decision_metrics(
+        {"backend": "jev", "stop_reason": "native_preserve", "elapsed_ms": 1, "passes": []}
+    )
+    assert attrs_of(meter, "count")[0]["outcome"] == "skipped"
+    assert values(meter, "errors") == []
+
+
+@pytest.mark.parametrize("cause", telemetry.FALLBACK_CAUSES)
+def test_fallback_cause_is_counted_under_a_bounded_label(meter, cause):
+    telemetry.record_decision_metrics(
+        {
+            "backend": "jev",
+            "stop_reason": "assessment_failed",
+            "fallback_reason": "HTTPStatusError",
+            "fallback_cause": cause,
+            "passes": [],
+        }
+    )
+    assert meter.records[PREFIX + "fallbacks"] == [
+        (1, {"backend": "jev", "task": "rerank", "cause": cause})
+    ]
+
+
+def test_unlisted_fallback_cause_is_counted_as_other(meter):
+    telemetry.record_decision_metrics(
+        {
+            "backend": "jev",
+            "stop_reason": "assessment_failed",
+            "fallback_reason": "PrivateError",
+            "fallback_cause": "private exception text",
+            "passes": [],
+        }
+    )
+    assert attrs_of(meter, "fallbacks") == [{"backend": "jev", "task": "rerank", "cause": "other"}]
+
+
+def test_rank_effect_and_best_relevance_are_recorded_for_a_ranked_decision(meter):
+    telemetry.record_decision_metrics(
+        {
+            "backend": "jev",
+            "stop_reason": "single_pass",
+            "effect": "set_and_top_changed",
+            "best_relevance": 0.83,
+            "passes": [RERANK_PASS],
+        }
+    )
+    assert meter.records[PREFIX + "effects"] == [
+        (1, {"backend": "jev", "task": "rerank", "effect": "set_and_top_changed"})
+    ]
+    assert meter.records[PREFIX + "best_relevance"] == [
+        (0.83, {"backend": "jev", "task": "rerank"})
+    ]
+
+
+def test_a_fallback_without_a_ranking_records_no_effect(meter):
+    telemetry.record_decision_metrics(
+        {
+            "backend": "jev",
+            "stop_reason": "deadline",
+            "fallback_reason": "TimeoutError",
+            "passes": [],
+        }
+    )
+    assert meter.records[PREFIX + "effects"] == []
+    assert meter.records[PREFIX + "best_relevance"] == []
+
+
+def test_time_past_the_deadline_is_recorded_as_overrun(meter):
+    for elapsed in (1900, 2600):
+        telemetry.record_decision_metrics(
+            {
+                "backend": "jev",
+                "stop_reason": "deadline",
+                "fallback_reason": "TimeoutError",
+                "deadline_ms": 2000,
+                "elapsed_ms": elapsed,
+                "passes": [],
+            }
+        )
+    overruns = [
+        value for value, attrs in meter.records[PREFIX + "duration"] if attrs["stage"] == "overrun"
+    ]
+    assert overruns == [600]
+
+
+def test_prime_covers_every_fallback_cause_and_rank_effect(meter):
+    telemetry.prime_decision_metrics("jev")
+    base = {"backend": "jev", "task": "rerank"}
+    assert meter.records[PREFIX + "fallbacks"] == [
+        (0, {**base, "cause": cause}) for cause in telemetry.FALLBACK_CAUSES
+    ]
+    assert meter.records[PREFIX + "effects"] == [
+        (0, {**base, "effect": effect}) for effect in telemetry.RANK_EFFECTS
+    ]
+
+
+@pytest.mark.parametrize(
+    "diagnostics,expected",
+    [
+        ({"stop_reason": "single_pass"}, "success"),
+        ({"stop_reason": "native_preserve"}, "skipped"),
+        ({"stop_reason": "deadline", "fallback_reason": "TimeoutError"}, "fallback"),
+        ({"stop_reason": "cancelled"}, "cancelled"),
+        ({"status": "ready"}, "success"),
+        ({"status": "retry"}, "retry"),
+        ({"status": "private text"}, "unknown"),
+    ],
+)
+def test_decision_outcome_is_one_shared_mapping(diagnostics, expected):
+    assert telemetry.decision_outcome(diagnostics) == expected
+
+
+def test_decision_summary_is_flat_and_carries_no_identifiers_or_text():
+    summary = telemetry.summarize_decision(
+        {
+            "backend": "jev",
+            "recipe": "multi-v1",
+            "stop_reason": "single_pass",
+            "candidates": 30,
+            "limit": 5,
+            "effect": "set_changed",
+            "best_relevance": 0.8333,
+            "elapsed_ms": 512.4,
+            "deadline_ms": 2000,
+            "input_hash": "a" * 64,
+            "original_order": ["private-node"],
+            "passes": [
+                {
+                    "transport": {"http_ms": 440.2, "status_code": 200, "payload_bytes": 88012},
+                    "usage": {"input_tokens": 22400, "output_tokens": 300},
+                    "judgments": {"candidate_0": {"score": 3}},
+                }
+            ],
+        }
+    )
+    assert summary == {
+        "backend": "jev",
+        "recipe": "multi-v1",
+        "outcome": "success",
+        "cause": None,
+        "stop": "single_pass",
+        "candidates": 30,
+        "limit": 5,
+        "effect": "set_changed",
+        "best_relevance": 0.833,
+        "elapsed_ms": 512,
+        "deadline_ms": 2000,
+        "http_ms": 440,
+        "status": 200,
+        "input_tokens": 22400,
+        "output_tokens": 300,
+        "payload_bytes": 88012,
+        "input": "a" * 12,
+    }
+
+
+def test_decision_summary_sums_tokens_over_every_pass():
+    summary = telemetry.summarize_decision(
+        {
+            "backend": "jev",
+            "stop_reason": "stable_order",
+            "passes": [
+                {"usage": {"input_tokens": 23000, "output_tokens": 300}},
+                {"usage": None},
+                {"usage": {"input_tokens": 5000, "output_tokens": 60}},
+            ],
+        }
+    )
+    assert (summary["input_tokens"], summary["output_tokens"]) == (28000, 360)
+
+
+def test_best_relevance_buckets_cover_the_whole_range():
+    assert telemetry._RELEVANCE_BUCKETS[-1] == 1.0

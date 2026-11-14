@@ -520,7 +520,9 @@ def test_decision_samples_and_queue_callbacks(collected_brain_metrics):
         "success": 1,
         "fallback": 1,
     }
-    assert values("decision_errors_total") == [1]
+    assert values("decision_errors_total") == [1, 1]
+    assert values("decision_fallbacks_total") == values("decision_effects_total") == [1]
+    assert metric("decision_best_relevance")["data"]["data_points"][0]["sum"] == 0.8
     assert values("decision_requests_total") == [2]
     assert {
         point["attributes"]["direction"]: point["value"]
@@ -599,6 +601,8 @@ def _collect_brain_metrics(directory: Path) -> str:
             {
                 "backend": "jev",
                 "stop_reason": "single_pass",
+                "effect": "set_changed",
+                "best_relevance": 0.8,
                 "elapsed_ms": 30,
                 "rule_ms": 1,
                 "passes": [
@@ -608,6 +612,15 @@ def _collect_brain_metrics(directory: Path) -> str:
                         "usage": {"input_tokens": 11, "output_tokens": 3},
                     }
                 ],
+            }
+        )
+        telemetry.record_decision_metrics(
+            {
+                "backend": "jev",
+                "stop_reason": "deadline",
+                "fallback_reason": "TimeoutError",
+                "fallback_cause": "deadline",
+                "passes": [],
             }
         )
         telemetry.record_decision_metrics(
@@ -1084,3 +1097,16 @@ def test_exporter_script_exists():
 
 if __name__ == "__main__":
     print(_collect_brain_metrics(Path(sys.argv[1])))
+
+
+def test_jev_ranked_share_divides_decisions_by_decisions():
+    """Adaptive mode makes several requests per decision, so requests cannot be the numerator."""
+    panel = next(
+        panel
+        for _, dashboard in _load_prod_dashboards()
+        for panel in dashboard["panels"]
+        if panel.get("title") == "Jev-ranked share of rerank decisions"
+    )
+    expr = panel["targets"][0]["expr"]
+    assert "decision_requests_total" not in expr
+    assert expr.count("hippo_brain_decision_count_total") == 2
