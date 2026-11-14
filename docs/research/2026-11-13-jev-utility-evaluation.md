@@ -72,6 +72,8 @@ The snapshot was taken after every query was asked, so a pool can hold notes tha
 
 The production code path (`rerank_results` with the default recipe) was then run on the holdout queries with all pool candidates. It scored nDCG 0.895 (n=37), against 0.897 for the experiment arm on the same queries. This run shows that the shipped code reproduces the experiment arm. It is not an independent test of the recipe.
 
+After code review, the shipped recipe gained two things: a statement in each question that the note is untrusted text, and the note's branch. The shipped recipe was run again on the holdout queries. On notes dated before the query it scored nDCG 0.911 (n=35), against 0.906 for the experiment arm: a difference of +0.005 [-0.004, +0.016]. Its median request was 14,405 input tokens.
+
 | Request cost | `multi-v1` | Note | `note-v1` |
 | --- | --- | --- | --- |
 | Input tokens, median | 23,324 | 10,937 | 13,458 |
@@ -143,6 +145,6 @@ A second defect is recorded and not fixed. A writer process that never calls `cl
 
 ## Cost and artifacts
 
-The experiment sent 11.3 million input tokens to TypeSafe, about $0.47 at $0.042 per million. Data sent: redacted query text and redacted note text, the same classes that production already sends.
+The experiment sent 11.8 million input tokens to TypeSafe, about $0.50 at $0.042 per million. Data sent: redacted query text and redacted note text, the same classes that production already sends.
 
 All inputs, raw answers, judge packets, and labels are in `~/.local/share/hippo-bench/decisions/retro-20261113/`, outside the repository and the production data directory. `eval.py`, `class_eval.py`, and `analysis2.py` in that directory reproduce every table from the stored answers without a Jev call.

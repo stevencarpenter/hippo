@@ -78,3 +78,25 @@ def test_a_log_failure_cannot_fail_a_query(log_dir, monkeypatch):
     log_dir.parent.mkdir(parents=True)
     log_dir.write_text("a file where the directory should be")
     capture_decision(TRACE, origin="mcp")
+
+
+def test_a_symlinked_log_directory_is_not_followed(log_dir, tmp_path):
+    retrieval.configure({"decision_log": True})
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    log_dir.parent.mkdir(parents=True)
+    log_dir.symlink_to(outside, target_is_directory=True)
+    capture_decision(TRACE, origin="mcp")
+    assert list(outside.iterdir()) == []
+
+
+def test_a_symlinked_log_file_is_not_followed(log_dir, tmp_path):
+    import time
+
+    retrieval.configure({"decision_log": True})
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    log_dir.mkdir(parents=True)
+    (log_dir / time.strftime("%Y-%m.jsonl", time.gmtime())).symlink_to(victim)
+    capture_decision(TRACE, origin="mcp")
+    assert victim.read_text() == "keep"

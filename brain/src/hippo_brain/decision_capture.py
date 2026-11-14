@@ -143,12 +143,16 @@ def _log_decision(diagnostics: dict, origin: str) -> None:
         if isinstance(scores, list) and all(type(score) in (int, float) for score in scores)
         else None,
     }
-    directory = decision_root() / "decision-log"
+    root = decision_root()
+    directory = (root / "decision-log").resolve()
+    if directory.parent != root:
+        raise ValueError("decision log directory must remain inside decision artifacts")
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = directory / time.strftime("%Y-%m.jsonl", time.gmtime())
     if path.exists() and path.stat().st_size > _DECISION_LOG_MAX_BYTES:
         return
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    # O_NOFOLLOW: a symlinked log file must not redirect the append outside the root.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "wb") as stream:
         stream.write((json.dumps(record, allow_nan=False) + "\n").encode())
 

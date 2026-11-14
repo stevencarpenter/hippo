@@ -1097,3 +1097,16 @@ def test_exporter_script_exists():
 
 if __name__ == "__main__":
     print(_collect_brain_metrics(Path(sys.argv[1])))
+
+
+def test_jev_ranked_share_divides_decisions_by_decisions():
+    """Adaptive mode makes several requests per decision, so requests cannot be the numerator."""
+    panel = next(
+        panel
+        for _, dashboard in _load_prod_dashboards()
+        for panel in dashboard["panels"]
+        if panel.get("title") == "Jev-ranked share of rerank decisions"
+    )
+    expr = panel["targets"][0]["expr"]
+    assert "decision_requests_total" not in expr
+    assert expr.count("hippo_brain_decision_count_total") == 2
